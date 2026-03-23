@@ -6,6 +6,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -28,7 +31,7 @@ jobs:
         run: |
           cd hev-socks5-tunnel
           ${{ steps.setup-ndk.outputs.ndk-path }}/ndk-build \
-            APP_ABI="arm64-v8a armeabi-v7a x86_64 x86" \
+            APP_ABI="arm64-v8a" \
             APP_PLATFORM=android-29 \
             NDK_PROJECT_PATH=. \
             APP_BUILD_SCRIPT=jni/Android.mk \
@@ -37,37 +40,28 @@ jobs:
       - name: Collect .so files
         run: |
           mkdir -p output/jniLibs/arm64-v8a
-          mkdir -p output/jniLibs/armeabi-v7a
-          mkdir -p output/jniLibs/x86_64
-          mkdir -p output/jniLibs/x86
-
-          cp hev-socks5-tunnel/libs/arm64-v8a/libhev-socks5-tunnel.so   output/jniLibs/arm64-v8a/
-          cp hev-socks5-tunnel/libs/armeabi-v7a/libhev-socks5-tunnel.so output/jniLibs/armeabi-v7a/
-          cp hev-socks5-tunnel/libs/x86_64/libhev-socks5-tunnel.so       output/jniLibs/x86_64/
-          cp hev-socks5-tunnel/libs/x86/libhev-socks5-tunnel.so           output/jniLibs/x86/
+          cp hev-socks5-tunnel/libs/arm64-v8a/libhev-socks5-tunnel.so output/jniLibs/arm64-v8a/
 
       - name: Push to libs branch
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Clonar solo la rama destino (o crearla si no existe)
-          git clone --depth=1 --branch libs \
+          git clone --depth=1 \
             https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git \
-            libs-branch || \
-          (git clone --depth=1 \
-            https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git \
-            libs-branch && \
-           cd libs-branch && \
-           git checkout --orphan libs && \
-           git rm -rf . && \
-           cd ..)
-
-          # Copiar los .so a la rama
-          cp -r output/jniLibs libs-branch/
+            libs-branch
 
           cd libs-branch
+
+          if git ls-remote --exit-code --heads origin libs; then
+            git checkout libs
+          else
+            git checkout --orphan libs
+            git rm -rf .
+          fi
+
+          cp -r ../output/jniLibs ./
+
           git add jniLibs/
           git commit -m "Update hev-socks5-tunnel libs [$(date +'%Y-%m-%d %H:%M:%S')]" || echo "Nothing to commit"
           git push origin libs
-          
