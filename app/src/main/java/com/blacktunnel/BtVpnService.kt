@@ -48,7 +48,13 @@ class BtVpnService : VpnService() {
         }
 
         startVpnForeground()
-        Socks5Mock.start()
+        val hwid = "TU_HWID_AQUI"
+        BtProxy.start(
+            hwid = hwid,
+            tunnelDomain = "1.brawlpass.com.ar",
+            protectSocket = { socket -> protect(socket) },
+            logger = { LogStore.add(it) }
+        )
 
         val builder = Builder()
             .setSession("BlackTunnel")
@@ -87,13 +93,11 @@ class BtVpnService : VpnService() {
             LogStore.add("HEV terminó con code=$result")
         }
 
-        thread(name = "hev-stats", isDaemon = true) {
-            while (pfd != null) {
-                val s = runCatching { HevBridge.stats() }.getOrNull()
-                if (s != null && s.size >= 4) {
-                    LogStore.add("HEV stats txBytes=${s[1]} rxBytes=${s[3]}")
-                }
-                Thread.sleep(3_000)
+        thread(isDaemon = true, name = "stats") {
+            while (true) {
+                Thread.sleep(5000)
+                val s = HevBridge.stats()
+                LogStore.add("tx=${s[1]}B rx=${s[3]}B")
             }
         }
     }
@@ -126,7 +130,7 @@ class BtVpnService : VpnService() {
         runCatching { HevBridge.stop() }
         runCatching { pfd?.close() }
         pfd = null
-        Socks5Mock.stop()
+        BtProxy.stop()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
