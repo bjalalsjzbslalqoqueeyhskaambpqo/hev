@@ -25,14 +25,17 @@ object BtProxy {
 
     @Volatile private var xrayProcess: Process? = null
     @Volatile private var running = false
+    @Volatile private var muxConcurrency: Int = 8
     private val tunnelSlots = Semaphore(MAX_PARALLEL_TUNNELS)
 
     fun start(
         ctx: Context,
+        mux: Int,
         protectSocket: (Socket) -> Unit,
         logger: (String) -> Unit
     ) {
         running = true
+        muxConcurrency = mux.coerceIn(1, 64)
         logger("BtProxy.start()")
 
         thread(isDaemon = true, name = "btproxy-init") {
@@ -196,8 +199,8 @@ object BtProxy {
                   },
                   "mux": {
                     "enabled": true,
-                    "concurrency": 8,
-                    "xudpConcurrency": 8,
+                    "concurrency": $muxConcurrency,
+                    "xudpConcurrency": $muxConcurrency,
                     "xudpProxyUDP443": "allow"
                   }
                 }

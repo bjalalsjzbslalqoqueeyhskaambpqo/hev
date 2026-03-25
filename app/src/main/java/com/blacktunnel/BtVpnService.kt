@@ -48,8 +48,11 @@ class BtVpnService : VpnService() {
         }
 
         startVpnForeground()
+        val mtu = TunnelPrefs.getMtu(this).coerceIn(1200, 9000)
+        val mux = TunnelPrefs.getMux(this).coerceIn(1, 64)
         BtProxy.start(
             ctx = this,
+            mux = mux,
             protectSocket = { socket -> protect(socket) },
             logger = { LogStore.add(it) }
         )
@@ -78,10 +81,9 @@ class BtVpnService : VpnService() {
             .addRoute("0.0.0.0", 0)
             .addRoute("::", 0)
             .addDnsServer("8.8.8.8")
-            .setMtu(1300)
-        runCatching { builder.addAllowedApplication(TARGET_APP_PACKAGE) }
-            .onSuccess { LogStore.add("Modo foco app habilitado: $TARGET_APP_PACKAGE (dual-stack)") }
-            .onFailure { LogStore.add("ERROR addAllowedApplication: ${it.message}") }
+            .setMtu(mtu)
+        runCatching { builder.addDisallowedApplication(packageName) }
+            .onFailure { LogStore.add("ERROR addDisallowedApplication: ${it.message}") }
 
         val established = runCatching { builder.establish() }.getOrElse {
             LogStore.add("VPN establish failed: ${it.message}")
@@ -110,13 +112,6 @@ class BtVpnService : VpnService() {
             LogStore.add("HEV terminó con code=$result")
         }
 
-        thread(isDaemon = true, name = "stats") {
-            while (true) {
-                Thread.sleep(5000)
-                val s = HevBridge.stats()
-                LogStore.add("tx=${s[1]}B rx=${s[3]}B")
-            }
-        }
     }
 
     private fun startVpnForeground() {
@@ -157,7 +152,7 @@ class BtVpnService : VpnService() {
         val yaml = """
             tunnel:
               name: trehev
-              mtu: 1300
+              mtu: ${TunnelPrefs.getMtu(this).coerceIn(1200, 9000)}
               ipv4: 198.18.0.1
               ipv6: fc00::1
             socks5:
@@ -174,7 +169,6 @@ class BtVpnService : VpnService() {
     companion object {
         const val ACTION_START = "com.blacktunnel.START"
         const val ACTION_STOP = "com.blacktunnel.STOP"
-        private const val TARGET_APP_PACKAGE = "com.biomes.vanced"
         private const val VPN_CHANNEL_ID = "vpn_channel"
         private const val VPN_NOTIFICATION_ID = 1
     }

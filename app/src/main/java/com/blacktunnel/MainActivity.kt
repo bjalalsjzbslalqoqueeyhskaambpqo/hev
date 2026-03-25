@@ -1,97 +1,49 @@
 package com.blacktunnel
 
 import android.content.Intent
-import android.content.ClipboardManager
-import android.content.ClipData
 import android.net.VpnService
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.util.Log
-import android.text.method.ScrollingMovementMethod
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import java.io.File
 
 class MainActivity : AppCompatActivity() {
     private lateinit var toggleButton: Button
-    private lateinit var copyLogsButton: Button
-    private lateinit var logsView: TextView
-    private val handler = Handler(Looper.getMainLooper())
-    private var lastDump = ""
-
-    private val refreshTask = object : Runnable {
-        override fun run() {
-            val dump = LogStore.dump()
-            if (dump != lastDump) {
-                lastDump = dump
-                logsView.text = dump
-                if (logsView.layout != null) {
-                    val delta = logsView.layout.getLineTop(logsView.lineCount) - logsView.height
-                    if (delta > 0) logsView.scrollTo(0, delta) else logsView.scrollTo(0, 0)
-                }
-            }
-            handler.postDelayed(this, 1_500)
-        }
-    }
+    private lateinit var mtuInput: EditText
+    private lateinit var muxInput: EditText
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        installCrashHandler()
         super.onCreate(savedInstanceState)
 
         toggleButton = Button(this).apply {
             text = "ON"
             setOnClickListener { onToggle() }
         }
-        copyLogsButton = Button(this).apply {
-            text = "COPIAR LOG"
-            setOnClickListener { copyLogs() }
+
+        mtuInput = EditText(this).apply {
+            hint = "MTU (1200-9000)"
+            setText(TunnelPrefs.getMtu(this@MainActivity).toString())
         }
-        logsView = TextView(this).apply {
-            movementMethod = ScrollingMovementMethod()
-            textSize = 12f
+
+        muxInput = EditText(this).apply {
+            hint = "MUX concurrency (1-64)"
+            setText(TunnelPrefs.getMux(this@MainActivity).toString())
         }
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(24, 24, 24, 24)
+            addView(mtuInput, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            addView(muxInput, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
             addView(toggleButton, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            addView(copyLogsButton, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            addView(
-                logsView,
-                LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    0,
-                    1f
-                )
-            )
         }
         setContentView(root)
-
-        handler.post(refreshTask)
-    }
-
-    override fun onDestroy() {
-        handler.removeCallbacks(refreshTask)
-        super.onDestroy()
-    }
-
-    private fun installCrashHandler() {
-        Thread.setDefaultUncaughtExceptionHandler { crashThread, throwable ->
-            LogStore.add("CRASH en $crashThread: ${throwable.message}")
-            Log.e("BlackTunnel", "CRASH", throwable)
-            runCatching {
-                val dir = getExternalFilesDir(null) ?: return@runCatching
-                val logFile = File(dir, "crash.log")
-                logFile.appendText("${System.currentTimeMillis()} CRASH: ${throwable.stackTraceToString()}\n")
-            }
-        }
     }
 
     private fun onToggle() {
         if (toggleButton.text == "ON") {
+            saveSettings()
             val prepareIntent = VpnService.prepare(this)
             if (prepareIntent != null) {
                 startActivityForResult(prepareIntent, REQ_VPN_PREPARE)
@@ -102,8 +54,14 @@ class MainActivity : AppCompatActivity() {
             stopService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
             startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
             toggleButton.text = "ON"
-            LogStore.add("VPN requested OFF")
         }
+    }
+
+    private fun saveSettings() {
+        val mtu = mtuInput.text.toString().toIntOrNull()?.coerceIn(1200, 9000) ?: 1300
+        val mux = muxInput.text.toString().toIntOrNull()?.coerceIn(1, 64) ?: 8
+        TunnelPrefs.setMtu(this, mtu)
+        TunnelPrefs.setMux(this, mux)
     }
 
     @Deprecated("Deprecated in Java")
@@ -117,14 +75,6 @@ class MainActivity : AppCompatActivity() {
     private fun startVpn() {
         startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_START))
         toggleButton.text = "OFF"
-        LogStore.add("VPN requested ON")
-    }
-
-    private fun copyLogs() {
-        val dump = LogStore.dump()
-        val clipboard = getSystemService(ClipboardManager::class.java)
-        clipboard?.setPrimaryClip(ClipData.newPlainText("blacktunnel-log", dump))
-        LogStore.add("Log copiado al portapapeles (${dump.length} chars)")
     }
 
     companion object {
