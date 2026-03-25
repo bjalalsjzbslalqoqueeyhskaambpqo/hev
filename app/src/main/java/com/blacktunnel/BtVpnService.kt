@@ -163,7 +163,7 @@ class BtVpnService : VpnService() {
             socks5:
               address: 127.0.0.1
               port: 10808
-              udp: 'udp'
+              udp: 'tcp'
             misc:
               log-level: warn
         """.trimIndent()

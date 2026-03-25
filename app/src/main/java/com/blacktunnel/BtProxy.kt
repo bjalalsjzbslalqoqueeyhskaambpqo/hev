@@ -133,10 +133,10 @@ object BtProxy {
             }
 
             // gost: SOCKS5 inbound en 10808, forward a bridge en 10809
-            // notls=true → sin cifrado, sin overhead
+            // UDP se desactiva aquí porque en este entorno Android falla bind UDP (::)
             val cmd = listOf(
                 binary.absolutePath,
-                "-L", "socks5://127.0.0.1:$GOST_SOCKS5_PORT?udp=true",
+                "-L", "socks5://127.0.0.1:$GOST_SOCKS5_PORT",
                 "-F", "relay+yamux://127.0.0.1:$TUNNEL_LOCAL_PORT"
             )
 
