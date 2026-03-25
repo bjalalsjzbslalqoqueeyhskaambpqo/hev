@@ -3,17 +3,47 @@ set -euo pipefail
 
 mkdir -p /opt/btserver
 
-curl -L "https://github.com/go-gost/gost/releases/download/v3.2.6/gost_3.2.6_linux_amd64.tar.gz" \
-  -o /opt/btserver/gost.tar.gz
-tar -xzf /opt/btserver/gost.tar.gz -C /opt/btserver
-chmod +x /opt/btserver/gost
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+
+cat > /usr/local/etc/xray/config.json << 'XCFG'
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [
+    {
+      "port": 10809,
+      "listen": "127.0.0.1",
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "a3482e88-686a-4a58-8126-99c9df64b7bf",
+            "encryption": "none"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "none"
+      }
+    }
+  ],
+  "outbounds": [
+    { "protocol": "freedom" }
+  ]
+}
+XCFG
+
+systemctl daemon-reload
+systemctl enable xray
+systemctl restart xray
 
 cat > /opt/btserver/btserver.py << 'PYEOF'
 import socket
 import threading
 
 PORT = 80
-GOST_SOCKS_ADDR = ("127.0.0.1", 10808)
+XRAY_ADDR = ("127.0.0.1", 10809)
 
 
 def pipe(src, dst):
@@ -35,7 +65,7 @@ def pipe(src, dst):
 def handle_tunnel(client):
     upstream = None
     try:
-        upstream = socket.create_connection(GOST_SOCKS_ADDR, 5)
+        upstream = socket.create_connection(XRAY_ADDR, 5)
         t1 = threading.Thread(target=pipe, args=(client, upstream), daemon=True)
         t2 = threading.Thread(target=pipe, args=(upstream, client), daemon=True)
         t1.start()
@@ -117,10 +147,10 @@ PYEOF
 cat > /etc/systemd/system/btserver.service << 'SVCEOF'
 [Unit]
 Description=BlackTunnel Server
-After=network.target
+After=network.target xray.service
 
 [Service]
-ExecStart=/bin/bash -lc '/opt/btserver/gost -L "socks5://127.0.0.1:10808?udp=true" & exec /usr/bin/python3 /opt/btserver/btserver.py'
+ExecStart=/usr/bin/python3 /opt/btserver/btserver.py
 Restart=always
 RestartSec=2
 
@@ -131,4 +161,5 @@ SVCEOF
 systemctl daemon-reload
 systemctl enable btserver
 systemctl restart btserver
+systemctl status xray --no-pager
 systemctl status btserver --no-pager
