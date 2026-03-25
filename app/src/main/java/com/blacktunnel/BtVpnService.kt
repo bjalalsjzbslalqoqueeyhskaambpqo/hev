@@ -52,6 +52,21 @@ class BtVpnService : VpnService() {
             protectSocket = { socket -> protect(socket) },
             logger = { LogStore.add(it) }
         )
+        val deadline = System.currentTimeMillis() + 5000
+        var proxyReady = false
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                java.net.Socket("127.0.0.1", 10808).close()
+                proxyReady = true
+                LogStore.add("BtProxy listo en 10808")
+                break
+            } catch (_: Exception) {
+                Thread.sleep(100)
+            }
+        }
+        if (!proxyReady) {
+            LogStore.add("WARN BtProxy no respondió en 5s, continuando igual")
+        }
 
         val builder = Builder()
             .setSession("BlackTunnel")
