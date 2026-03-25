@@ -17,9 +17,6 @@ object BtProxy {
     // Puerto local donde BtProxy escucha para gost
     private const val TUNNEL_LOCAL_PORT = 10809
 
-    @Volatile private var tunnelSocket: Socket? = null
-    @Volatile private var tunnelIn: InputStream? = null
-    @Volatile private var tunnelOut: OutputStream? = null
     @Volatile private var gostProcess: Process? = null
     @Volatile private var running = false
 
@@ -32,20 +29,10 @@ object BtProxy {
         logger("BtProxy.start()")
 
         thread(isDaemon = true, name = "btproxy-init") {
-            // 1. Abrir túnel TCP al servidor
-            val sock = openTunnel(protectSocket, logger) ?: run {
-                logger("ERROR no se pudo abrir túnel")
-                return@thread
-            }
-            tunnelSocket = sock
-            tunnelIn  = sock.getInputStream()
-            tunnelOut = sock.getOutputStream()
-            logger("Túnel TCP abierto")
+            // 1. Arrancar bridge local que crea túnel remoto por cada conexión
+            startTunnelBridge(protectSocket, logger)
 
-            // 2. Arrancar servidor local que hace de bridge entre gost y el túnel
-            startTunnelBridge(logger)
-
-            // 3. Copiar y ejecutar gost
+            // 2. Ejecutar gost local
             startGost(ctx, logger)
         }
     }
@@ -54,13 +41,14 @@ object BtProxy {
         running = false
         gostProcess?.destroy()
         gostProcess = null
-        runCatching { tunnelSocket?.close() }
-        tunnelSocket = null
     }
 
     // Bridge local: escucha en TUNNEL_LOCAL_PORT, todo lo que llega
     // lo reenvía por el túnel TCP y viceversa
-    private fun startTunnelBridge(logger: (String) -> Unit) {
+    private fun startTunnelBridge(
+        protectSocket: (Socket) -> Unit,
+        logger: (String) -> Unit
+    ) {
         val srv = ServerSocket(TUNNEL_LOCAL_PORT, 4,
             InetAddress.getByName("127.0.0.1"))
         logger("Bridge escuchando en 127.0.0.1:$TUNNEL_LOCAL_PORT")
@@ -70,11 +58,13 @@ object BtProxy {
                 while (running) {
                     val client = srv.accept()
                     client.tcpNoDelay = true
-                    val tSock = tunnelSocket
+                    val tSock = openTunnel(protectSocket, logger)
                     if (tSock == null) {
+                        logger("ERROR no se pudo abrir túnel para conexión local")
                         client.close()
                         continue
                     }
+                    logger("Túnel TCP abierto para bridge")
                     relay(client, tSock, logger)
                 }
             } catch (_: Exception) {}
@@ -110,6 +100,7 @@ object BtProxy {
             }
             up.interrupt()
             runCatching { client.close() }
+            runCatching { tunnel.close() }
         }
     }
 
@@ -143,7 +134,7 @@ object BtProxy {
             // notls=true → sin cifrado, sin overhead
             val cmd = listOf(
                 binary.absolutePath,
-                "-L", "socks5://:$GOST_SOCKS5_PORT",
+                "-L", "socks5://:$GOST_SOCKS5_PORT?udp=true",
                 "-F", "relay+tcp://127.0.0.1:$TUNNEL_LOCAL_PORT?notls=true"
             )
 
