@@ -30,6 +30,13 @@ jobs:
           mkdir -p app/src/main/jniLibs/arm64-v8a
           curl -L "https://github.com/bjalalsjzbslalqoqueeyhskaambpqo/hev/raw/libs/jniLibs/arm64-v8a/libhev-socks5-tunnel.so" \
             -o app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so
+      - name: Download gost
+        run: |
+          curl -L "https://github.com/go-gost/gost/releases/download/v3.2.6/gost_3.2.6_android_arm64.tar.gz" \
+            -o gost.tar.gz
+          tar -xzf gost.tar.gz
+          mkdir -p app/src/main/assets
+          cp gost app/src/main/assets/gost
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:

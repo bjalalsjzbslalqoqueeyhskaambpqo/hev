@@ -49,6 +49,7 @@ class BtVpnService : VpnService() {
 
         startVpnForeground()
         BtProxy.start(
+            ctx = this,
             protectSocket = { socket -> protect(socket) },
             logger = { LogStore.add(it) }
         )

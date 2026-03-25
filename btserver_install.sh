@@ -3,230 +3,62 @@ set -euo pipefail
 
 mkdir -p /opt/btserver
 
+curl -L "https://github.com/go-gost/gost/releases/download/v3.2.6/gost_3.2.6_linux_amd64.tar.gz" \
+  -o /opt/btserver/gost.tar.gz
+tar -xzf /opt/btserver/gost.tar.gz -C /opt/btserver
+chmod +x /opt/btserver/gost
+
 cat > /opt/btserver/btserver.py << 'PYEOF'
 import socket
-import struct
 import threading
-import time
-import ipaddress
 
 PORT = 80
-BUF = 65536
+GOST_RELAY_ADDR = ("127.0.0.1", 18080)
 
 
-def recv_exact(s, n):
-    b = b""
-    while len(b) < n:
-        c = s.recv(n - len(b))
-        if not c:
-            raise ConnectionError()
-        b += c
-    return b
-
-
-def send_frame(s, lock, cmd, sid, data=b""):
-    with lock:
-        s.sendall(struct.pack(">BBHI", 1, cmd, len(data), sid) + data)
-
-
-def qc(fn):
+def pipe(src, dst):
     try:
-        fn()
-    except Exception:
-        pass
-
-
-class Stream:
-    def __init__(self, sid, sock, lock):
-        self.sid, self.sock, self.lock = sid, sock, lock
-        self.dst, self.buf, self.closed = None, bytearray(), False
-        self.mode = None
-        self.udp4 = None
-        self.udp6 = None
-
-    def feed(self, data):
-        if self.closed:
-            return
-
-        if self.mode is None:
-            self.buf.extend(data)
-            if b"\n" in self.buf:
-                line, rest = self.buf.split(b"\n", 1)
-                self.buf = rest
-                line = line.decode(errors="replace").strip()
-                if line == "UDP":
-                    self.mode = "udp"
-                    self.udp4 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    self.udp4.settimeout(1.0)
-                    try:
-                        self.udp6 = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
-                        self.udp6.settimeout(1.0)
-                    except Exception:
-                        self.udp6 = None
-                    threading.Thread(target=self._udp_up, daemon=True).start()
-                    if self.buf:
-                        self.feed(b"")
-                    return
-                self.mode = "tcp"
-                if line.startswith("TCP|"):
-                    parts = line.split("|", 2)
-                    if len(parts) != 3:
-                        self.close()
-                        return
-                    host, port = parts[1], parts[2]
-                else:
-                    host, port = line.rsplit(":", 1)
-                self._connect(host, port)
-        elif self.mode == "tcp":
-            try:
-                self.dst.sendall(data)
-            except Exception:
-                self.close()
-        elif self.mode == "udp":
-            self.buf.extend(data)
-            while True:
-                pkt = self._decode_udp(self.buf)
-                if pkt is None:
-                    break
-                host, port, payload, used = pkt
-                del self.buf[:used]
-                try:
-                    host = self._maybe_nat64_to_ipv4(host)
-                    ai = socket.getaddrinfo(host, port, 0, socket.SOCK_DGRAM)[0]
-                    family, _, _, _, sa = ai
-                    udp = self.udp6 if family == socket.AF_INET6 else self.udp4
-                    if udp:
-                        udp.sendto(payload, sa)
-                except Exception:
-                    continue
-
-    def _up(self):
-        b = bytearray(BUF)
-        sent = 0
-        try:
-            while not self.closed:
-                n = self.dst.recv_into(b)
-                if not n:
-                    break
-                sent += n
-                send_frame(self.sock, self.lock, 2, self.sid, bytes(b[:n]))
-        except Exception:
-            pass
-        finally:
-            print(f"stream #{self.sid} upstream done sent={sent}")
-            send_frame(self.sock, self.lock, 1, self.sid)
-            self.closed = True
-
-    def _connect(self, host, port):
-        try:
-            target_host = self._maybe_nat64_to_ipv4(host.strip())
-            self.dst = socket.create_connection((target_host, int(port)), 5)
-            self.dst.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            print(f"stream #{self.sid} connected {host}:{port}")
-            if self.buf:
-                self.dst.sendall(bytes(self.buf))
-                self.buf = bytearray()
-            threading.Thread(target=self._up, daemon=True).start()
-        except Exception as e:
-            print(f"stream #{self.sid} connect FAILED {host}:{port}: {e}")
-            self.close()
-
-    def _udp_up(self):
-        while not self.closed:
-            for udp in (self.udp4, self.udp6):
-                if self.closed or udp is None:
-                    continue
-                try:
-                    data, sa = udp.recvfrom(BUF)
-                    host = sa[0]
-                    port = sa[1]
-                    send_frame(self.sock, self.lock, 2, self.sid, self._encode_udp(host, port, data))
-                except socket.timeout:
-                    continue
-                except Exception:
-                    continue
-
-    def _decode_udp(self, b):
-        if len(b) < 2:
-            return None
-        host_len = (b[0] << 8) | b[1]
-        need = 2 + host_len + 2 + 2
-        if len(b) < need:
-            return None
-        host = bytes(b[2:2 + host_len]).decode(errors="replace")
-        p = 2 + host_len
-        port = (b[p] << 8) | b[p + 1]
-        p += 2
-        data_len = (b[p] << 8) | b[p + 1]
-        p += 2
-        if len(b) < p + data_len:
-            return None
-        payload = bytes(b[p:p + data_len])
-        return host, port, payload, p + data_len
-
-    def _encode_udp(self, host, port, payload):
-        hb = host.encode()
-        return struct.pack(">H", len(hb)) + hb + struct.pack(">HH", port, len(payload)) + payload
-
-    def _maybe_nat64_to_ipv4(self, host):
-        try:
-            ip = ipaddress.ip_address(host)
-            if isinstance(ip, ipaddress.IPv6Address):
-                b = ip.packed
-                if b[:12] == b"\x00\x64\xff\x9b" + b"\x00" * 8:
-                    return socket.inet_ntoa(b[12:])
-        except Exception:
-            pass
-        return host
-
-    def close(self):
-        if self.closed:
-            return
-        self.closed = True
-        qc(lambda: self.dst.close() if self.dst else None)
-        qc(lambda: self.udp4.close() if self.udp4 else None)
-        qc(lambda: self.udp6.close() if self.udp6 else None)
-        send_frame(self.sock, self.lock, 1, self.sid)
-
-
-def handle_smux(sock, addr):
-    lock, streams = threading.Lock(), {}
-    try:
-        sock.settimeout(300)
         while True:
-            _, cmd, length, sid = struct.unpack(">BBHI", recv_exact(sock, 8))
-            data = recv_exact(sock, length) if length else b""
-            if cmd == 0:
-                streams[sid] = Stream(sid, sock, lock)
-            elif cmd == 1:
-                s = streams.pop(sid, None)
-                if s:
-                    s.closed = True
-                    qc(lambda: s.dst.close() if s.dst else None)
-                    qc(lambda: s.udp4.close() if s.udp4 else None)
-                    qc(lambda: s.udp6.close() if s.udp6 else None)
-            elif cmd == 2:
-                s = streams.get(sid)
-                if s:
-                    s.feed(data)
-            elif cmd == 3:
-                send_frame(sock, lock, 3, 0)
+            data = src.recv(65536)
+            if not data:
+                break
+            dst.sendall(data)
     except Exception:
         pass
     finally:
-        for s in list(streams.values()):
-            s.closed = True
-            qc(lambda: s.dst.close() if s.dst else None)
-            qc(lambda: s.udp4.close() if s.udp4 else None)
-            qc(lambda: s.udp6.close() if s.udp6 else None)
-        qc(sock.close)
+        try:
+            dst.shutdown(socket.SHUT_WR)
+        except Exception:
+            pass
 
 
-def handle(sock, addr):
+def handle_tunnel(client):
+    upstream = None
     try:
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        sock.settimeout(10)
+        upstream = socket.create_connection(GOST_RELAY_ADDR, 5)
+        t1 = threading.Thread(target=pipe, args=(client, upstream), daemon=True)
+        t2 = threading.Thread(target=pipe, args=(upstream, client), daemon=True)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+    except Exception:
+        pass
+    finally:
+        try:
+            if upstream:
+                upstream.close()
+        except Exception:
+            pass
+        try:
+            client.close()
+        except Exception:
+            pass
 
+
+def handle(sock):
+    try:
+        sock.settimeout(10)
         raw = b""
         while b"\r\n\r\n" not in raw:
             c = sock.recv(4096)
@@ -242,21 +74,6 @@ def handle(sock, addr):
                 action = line.split(":", 1)[1].strip().lower()
                 break
 
-        if not action:
-            try:
-                raw2 = b""
-                while b"\r\n\r\n" not in raw2:
-                    c = sock.recv(4096)
-                    if not c:
-                        return
-                    raw2 += c
-                for line in raw2.decode(errors="replace").splitlines():
-                    if line.lower().startswith("action:"):
-                        action = line.split(":", 1)[1].strip().lower()
-                        break
-            except Exception:
-                pass
-
         if action in ("tunnel", "tunnel-fast"):
             sock.sendall(
                 b"HTTP/1.1 101 Switching Protocols\r\n"
@@ -265,7 +82,7 @@ def handle(sock, addr):
                 b"X-Status: OK\r\n\r\n"
             )
             sock.settimeout(None)
-            handle_smux(sock, addr)
+            handle_tunnel(sock)
         elif action == "auth":
             sock.sendall(
                 b"HTTP/1.1 101 Switching Protocols\r\n"
@@ -277,11 +94,14 @@ def handle(sock, addr):
                 b"X-Days-Left: 0\r\n"
                 b"X-Premium: 1\r\n\r\n"
             )
-            qc(sock.close)
+            sock.close()
         else:
-            qc(sock.close)
+            sock.close()
     except Exception:
-        qc(sock.close)
+        try:
+            sock.close()
+        except Exception:
+            pass
 
 
 srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -290,11 +110,8 @@ srv.bind(("0.0.0.0", PORT))
 srv.listen(512)
 print(f"escuchando :{PORT}")
 while True:
-    try:
-        conn, addr = srv.accept()
-        threading.Thread(target=handle, args=(conn, addr), daemon=True).start()
-    except Exception:
-        time.sleep(0.1)
+    conn, _ = srv.accept()
+    threading.Thread(target=handle, args=(conn,), daemon=True).start()
 PYEOF
 
 cat > /etc/systemd/system/btserver.service << 'SVCEOF'
@@ -303,7 +120,7 @@ Description=BlackTunnel Server
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python3 /opt/btserver/btserver.py
+ExecStart=/bin/bash -lc '/opt/btserver/gost -L "relay+tcp://127.0.0.1:18080?notls=true" & exec /usr/bin/python3 /opt/btserver/btserver.py'
 Restart=always
 RestartSec=2
 
