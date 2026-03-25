@@ -231,6 +231,15 @@ object BtProxy {
 
                 if (cmd != 1) { client.close(); return@runCatching }
 
+                // Filtrar IPv6 puras — el servidor no las puede resolver
+                if (atyp == 4) {
+                    // Responder connection refused
+                    cout.write(byteArrayOf(5, 4, 0, 1, 0, 0, 0, 0, 0, 0))
+                    cout.flush()
+                    client.close()
+                    return@runCatching
+                }
+
                 logger("CONNECT $host:$port")
                 val startedAt = System.currentTimeMillis()
                 val sent = AtomicLong(0)
