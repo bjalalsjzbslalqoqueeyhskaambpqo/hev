@@ -6,7 +6,6 @@ import kotlin.concurrent.thread
 
 object BtProxy {
 
-    private const val PROXY_IPV4  = "190.210.0.136"
     private const val PROXY_IPV6  = "2606:4700::6812:16b7"
     private const val PROXY_HOST  = "emailmarketing.personal.com.ar"
     private const val PROXY_PORT  = 80
@@ -17,6 +16,7 @@ object BtProxy {
     @Volatile private var protectFn: ((Socket) -> Unit)? = null
     @Volatile private var reconnecting = false
     @Volatile private var running = false
+    @Volatile private var lastNoSmuxLogAt = 0L
 
     fun start(
         protectSocket: (Socket) -> Unit,
@@ -50,16 +50,8 @@ object BtProxy {
         protectSocket: (Socket) -> Unit,
         logger: (String) -> Unit
     ): Socket? {
-        val candidates = listOf(
-            Pair(false, PROXY_IPV4),
-            Pair(true, PROXY_IPV6)
-        )
-        for ((isV6, ip) in candidates) {
-            logger("Intentando ${if (isV6) "IPv6" else "IPv4"} $ip...")
-            val sock = tryOpenTunnel(ip, isV6, protectSocket, logger)
-            if (sock != null) return sock
-        }
-        return null
+        logger("Intentando IPv6 $PROXY_IPV6...")
+        return tryOpenTunnel(PROXY_IPV6, true, protectSocket, logger)
     }
 
     private fun tryOpenTunnel(
@@ -141,7 +133,11 @@ object BtProxy {
                 client.tcpNoDelay = true
                 val smux = session
                 if (smux == null || !smux.isOpen) {
-                    logger("WARN smux no disponible, cerrando cliente")
+                    val now = System.currentTimeMillis()
+                    if (now - lastNoSmuxLogAt > 2000) {
+                        lastNoSmuxLogAt = now
+                        logger("WARN smux no disponible, cerrando cliente")
+                    }
                     client.close()
                     if (!reconnecting && (session == null || !session!!.isOpen)) {
                         reconnecting = true
