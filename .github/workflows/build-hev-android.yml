@@ -16,13 +16,20 @@ jobs:
         with:
           repository: XTLS/Xray-core
           ref: main
+          path: xray-core
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version-file: xray-core/go.mod
+          check-latest: true
+
+      - name: Download dependencies
+        working-directory: xray-core
+        run: go mod download
 
       - name: Build ARM64
+        working-directory: xray-core
         env:
           CGO_ENABLED: 0
           GOOS: android
@@ -36,7 +43,7 @@ jobs:
             ./main
 
       - name: Move binary
-        run: mkdir -p dist && mv libxray.so dist/
+        run: mkdir -p dist && mv xray-core/libxray.so dist/
 
       - name: Publish to branch
         uses: peaceiris/actions-gh-pages@v4
@@ -46,3 +53,4 @@ jobs:
           publish_dir: ./dist
           force_orphan: true
 
+ 
