@@ -5,11 +5,13 @@ import android.net.VpnService
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.text.method.ScrollingMovementMethod
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import java.io.File
 
 class MainActivity : AppCompatActivity() {
     private lateinit var toggleButton: Button
@@ -28,6 +30,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        installCrashHandler()
         super.onCreate(savedInstanceState)
 
         toggleButton = Button(this).apply {
@@ -60,6 +63,18 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         handler.removeCallbacks(refreshTask)
         super.onDestroy()
+    }
+
+    private fun installCrashHandler() {
+        Thread.setDefaultUncaughtExceptionHandler { crashThread, throwable ->
+            LogStore.add("CRASH en $crashThread: ${throwable.message}")
+            Log.e("BlackTunnel", "CRASH", throwable)
+            runCatching {
+                val dir = getExternalFilesDir(null) ?: return@runCatching
+                val logFile = File(dir, "crash.log")
+                logFile.appendText("${System.currentTimeMillis()} CRASH: ${throwable.stackTraceToString()}\n")
+            }
+        }
     }
 
     private fun onToggle() {

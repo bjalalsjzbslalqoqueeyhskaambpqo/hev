@@ -6,7 +6,9 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import androidx.core.app.NotificationCompat
+import java.io.File
 import kotlin.concurrent.thread
 
 class BtVpnService : VpnService() {
@@ -14,6 +16,7 @@ class BtVpnService : VpnService() {
     private var pfd: ParcelFileDescriptor? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        installCrashHandler()
         when (intent?.action) {
             ACTION_STOP -> stopTunnel()
             else -> startTunnel()
@@ -24,6 +27,18 @@ class BtVpnService : VpnService() {
     override fun onDestroy() {
         stopTunnel()
         super.onDestroy()
+    }
+
+    private fun installCrashHandler() {
+        Thread.setDefaultUncaughtExceptionHandler { crashThread, throwable ->
+            LogStore.add("CRASH en $crashThread: ${throwable.message}")
+            Log.e("BlackTunnel", "CRASH", throwable)
+            runCatching {
+                val dir = getExternalFilesDir(null) ?: return@runCatching
+                val logFile = File(dir, "crash.log")
+                logFile.appendText("${System.currentTimeMillis()} CRASH: ${throwable.stackTraceToString()}\n")
+            }
+        }
     }
 
     private fun startTunnel() {
