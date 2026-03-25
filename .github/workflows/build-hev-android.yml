@@ -1,3 +1,4 @@
+
 name: Build Xray ARM64
 
 on:
@@ -34,11 +35,14 @@ jobs:
             -ldflags="-s -w -buildid=" \
             ./main
 
+      - name: Move binary
+        run: mkdir -p dist && mv libxray.so dist/
+
       - name: Publish to branch
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: release-arm64
-          publish_dir: .
-          include_files: libxray.so
+          publish_dir: ./dist
           force_orphan: true
+
