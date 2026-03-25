@@ -67,7 +67,14 @@ class Stream:
                         self.feed(b"")
                     return
                 self.mode = "tcp"
-                host, port = line.rsplit(":", 1)
+                if line.startswith("TCP|"):
+                    parts = line.split("|", 2)
+                    if len(parts) != 3:
+                        self.close()
+                        return
+                    host, port = parts[1], parts[2]
+                else:
+                    host, port = line.rsplit(":", 1)
                 try:
                     self.dst = socket.create_connection((host.strip(), int(port)), 10)
                     self.dst.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)

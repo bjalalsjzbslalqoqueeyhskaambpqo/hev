@@ -217,7 +217,7 @@ object BtProxy {
                     }
                     4 -> {
                         val b = readExact(cin, 16) ?: return@runCatching
-                        b.joinToString(":") { "%02x".format(it) }
+                        InetAddress.getByAddress(b).hostAddress ?: return@runCatching
                     }
                     else -> { client.close(); return@runCatching }
                 }
@@ -232,9 +232,9 @@ object BtProxy {
 
                 logger("CONNECT $host:$port")
 
-                // Abrir stream smux — primer payload es "host:port\n"
+                // Abrir stream smux — primer payload usa formato explícito TCP|host|port
                 val stream = smux.openStream(priorityHint = classifyPriority(port))
-                stream.write("$host:$port\n".toByteArray())
+                stream.write(encodeTcpOpenLine(host, port))
                 // SOCKS5 OK
                 cout.write(byteArrayOf(5, 0, 0, 1, 0, 0, 0, 0, 0, 0))
                 cout.flush()
@@ -425,7 +425,7 @@ object BtProxy {
     private fun encodeSocksUdpPacket(host: String, port: Int, payload: ByteArray): ByteArray {
         val out = ByteArrayOutputStream()
         out.write(byteArrayOf(0, 0, 0))
-        val ip = runCatching { InetAddress.getByName(host) }.getOrNull()
+        val ip = parseNumericIp(host)
         if (ip is Inet4Address) {
             out.write(1)
             out.write(ip.address)
@@ -442,6 +442,17 @@ object BtProxy {
         out.write(port and 0xFF)
         out.write(payload)
         return out.toByteArray()
+    }
+
+    private fun encodeTcpOpenLine(host: String, port: Int): ByteArray {
+        return "TCP|$host|$port\n".toByteArray()
+    }
+
+    private fun parseNumericIp(host: String): InetAddress? {
+        val maybeIpv4 = host.matches(Regex("""^\d{1,3}(\.\d{1,3}){3}$"""))
+        val maybeIpv6 = host.contains(":")
+        if (!maybeIpv4 && !maybeIpv6) return null
+        return runCatching { InetAddress.getByName(host) }.getOrNull()
     }
 
     private fun readExact(input: InputStream, len: Int): ByteArray? {
