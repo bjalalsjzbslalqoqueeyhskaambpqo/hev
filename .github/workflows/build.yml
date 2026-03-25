@@ -9,12 +9,27 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.android/build-cache
+          key: gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: gradle-
+      - name: Cache Android SDK
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/lib/android/sdk
+          key: android-sdk-${{ runner.os }}
+          restore-keys: android-sdk-
+      - uses: android-actions/setup-android@v3
       - name: Download HEV
         run: |
           mkdir -p app/src/main/jniLibs/arm64-v8a
           curl -L "https://github.com/bjalalsjzbslalqoqueeyhskaambpqo/hev/raw/libs/jniLibs/arm64-v8a/libhev-socks5-tunnel.so" \
             -o app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so
-      - uses: android-actions/setup-android@v3
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:

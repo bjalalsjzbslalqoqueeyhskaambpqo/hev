@@ -1,8 +1,12 @@
 package com.blacktunnel
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Intent
 import android.net.VpnService
+import android.os.Build
 import android.os.ParcelFileDescriptor
+import androidx.core.app.NotificationCompat
 import kotlin.concurrent.thread
 
 class BtVpnService : VpnService() {
@@ -28,6 +32,7 @@ class BtVpnService : VpnService() {
             return
         }
 
+        startVpnForeground()
         Socks5Mock.start()
 
         val builder = Builder()
@@ -42,12 +47,14 @@ class BtVpnService : VpnService() {
 
         val established = runCatching { builder.establish() }.getOrElse {
             LogStore.add("VPN establish failed: ${it.message}")
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
         }
 
         if (established == null) {
             LogStore.add("VPN establish returned null")
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
         }
@@ -57,13 +64,12 @@ class BtVpnService : VpnService() {
         LogStore.add("TUN established fd=$rawFd")
 
         val configFile = writeHevConfig()
-        thread(name = "hev-main", isDaemon = true) {
-            LogStore.add("HEV start with ${configFile.absolutePath}")
-            val rc = runCatching { HevBridge.start(configFile.absolutePath, rawFd) }.getOrElse {
+        thread(isDaemon = true, name = "hev-main") {
+            val result = runCatching { HevBridge.start(configFile.absolutePath, rawFd) }.getOrElse {
                 LogStore.add("HEV crashed: ${it.message}")
                 -1
             }
-            LogStore.add("HEV exited rc=$rc")
+            LogStore.add("HEV terminó con code=$result")
         }
 
         thread(name = "hev-stats", isDaemon = true) {
@@ -77,6 +83,26 @@ class BtVpnService : VpnService() {
         }
     }
 
+    private fun startVpnForeground() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                VPN_CHANNEL_ID,
+                "BlackTunnel VPN",
+                NotificationManager.IMPORTANCE_MIN
+            )
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(channel)
+        }
+
+        val notification = NotificationCompat.Builder(this, VPN_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setContentTitle("BlackTunnel activo")
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .build()
+
+        startForeground(VPN_NOTIFICATION_ID, notification)
+    }
+
     private fun stopTunnel() {
         if (pfd == null) {
             return
@@ -86,6 +112,7 @@ class BtVpnService : VpnService() {
         runCatching { pfd?.close() }
         pfd = null
         Socks5Mock.stop()
+        stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
@@ -111,5 +138,7 @@ class BtVpnService : VpnService() {
     companion object {
         const val ACTION_START = "com.blacktunnel.START"
         const val ACTION_STOP = "com.blacktunnel.STOP"
+        private const val VPN_CHANNEL_ID = "vpn_channel"
+        private const val VPN_NOTIFICATION_ID = 1
     }
 }
