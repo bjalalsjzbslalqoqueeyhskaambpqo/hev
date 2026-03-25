@@ -21,6 +21,14 @@ object BtProxy {
     @Volatile private var lastUdpLogAt = 0L
     private val ioExecutor = Executors.newFixedThreadPool(16)
 
+    private fun classifyPriority(port: Int): Int {
+        return when (port) {
+            53, 123, 443, 3478, 3479, 19302, 19305 -> 0 // DNS/QUIC/interactive real-time
+            in 1..1024 -> 1024 // control plane
+            else -> 20000 // likely bulk/background
+        }
+    }
+
     fun start(
         protectSocket: (Socket) -> Unit,
         logger: (String) -> Unit
@@ -227,7 +235,7 @@ object BtProxy {
                 logger("CONNECT $host:$port")
 
                 // Abrir stream smux — primer payload es "host:port\n"
-                val stream = smux.openStream()
+                val stream = smux.openStream(priorityHint = classifyPriority(port))
                 stream.write("$host:$port\n".toByteArray())
                 // SOCKS5 OK
                 cout.write(byteArrayOf(5, 0, 0, 1, 0, 0, 0, 0, 0, 0))
