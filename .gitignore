@@ -1,0 +1,7 @@
+# Android / Gradle
+.gradle/
+local.properties
+**/build/
+
+# Native binaries fetched by CI
+app/src/main/jniLibs/**/libhev-socks5-tunnel.so
