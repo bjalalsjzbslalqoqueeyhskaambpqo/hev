@@ -72,7 +72,11 @@ object BtProxy {
                 while (running) {
                     val client = srv.accept()
                     client.tcpNoDelay = true
-                    val tSock = tunnelSocket ?: run { client.close(); continue }
+                    val tSock = tunnelSocket
+                    if (tSock == null) {
+                        client.close()
+                        continue
+                    }
                     relay(client, tSock, logger)
                 }
             } catch (_: Exception) {}
