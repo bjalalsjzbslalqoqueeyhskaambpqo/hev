@@ -117,16 +117,34 @@ object BtProxy {
     private fun startGost(ctx: Context, logger: (String) -> Unit) {
         try {
             val nativeLibDir = ctx.applicationInfo.nativeLibraryDir
-            val gostFile = File(nativeLibDir, "libgost.so")
-            if (!gostFile.exists()) {
-                logger("ERROR gost no encontrado en $nativeLibDir/libgost.so")
+            val candidates = listOf(
+                File(nativeLibDir, "libgost.so"),
+                File("/data/data/${ctx.packageName}/lib/libgost.so"),
+                File(ctx.filesDir, "libgost.so"),
+                File(ctx.filesDir, "gost")
+            )
+            candidates.forEach { c ->
+                logger("gost candidato: ${c.absolutePath} exists=${c.exists()} exec=${c.canExecute()} size=${if (c.exists()) c.length() else 0L}")
+            }
+            val gostFile = candidates.firstOrNull { it.exists() } ?: run {
+                logger("ERROR gost no encontrado en rutas conocidas")
                 return
             }
+
+            // Fallback: copiar a codeCacheDir y forzar permisos de ejecución
+            val execFile = File(ctx.codeCacheDir, "gost.bin")
+            runCatching {
+                gostFile.inputStream().use { input ->
+                    execFile.outputStream().use { output -> input.copyTo(output) }
+                }
+                execFile.setExecutable(true)
+            }
+            val binary = if (execFile.exists() && execFile.canExecute()) execFile else gostFile
 
             // gost: SOCKS5 inbound en 10808, forward a bridge en 10809
             // notls=true → sin cifrado, sin overhead
             val cmd = listOf(
-                gostFile.absolutePath,
+                binary.absolutePath,
                 "-L", "socks5://:$GOST_SOCKS5_PORT",
                 "-F", "relay+tcp://127.0.0.1:$TUNNEL_LOCAL_PORT?notls=true"
             )
@@ -134,7 +152,7 @@ object BtProxy {
             logger("Iniciando gost: ${cmd.joinToString(" ")}")
 
             val process = ProcessBuilder(cmd)
-                .directory(File(nativeLibDir))
+                .directory(binary.parentFile ?: File(nativeLibDir))
                 .redirectErrorStream(true)
                 .start()
 
