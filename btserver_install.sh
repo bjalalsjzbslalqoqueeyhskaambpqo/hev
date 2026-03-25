@@ -5,7 +5,7 @@ mkdir -p /opt/btserver
 
 bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 
-cat > /usr/local/etc/xray/config.json << 'XCFG'
+cat > /usr/local/etc/xray/config.json << 'EOF'
 {
   "log": { "loglevel": "warning" },
   "inbounds": [
@@ -16,8 +16,7 @@ cat > /usr/local/etc/xray/config.json << 'XCFG'
       "settings": {
         "clients": [
           {
-            "id": "a3482e88-686a-4a58-8126-99c9df64b7bf",
-            "encryption": "none"
+            "id": "a3482e88-686a-4a58-8126-99c9df64b7bf"
           }
         ],
         "decryption": "none"
@@ -32,11 +31,7 @@ cat > /usr/local/etc/xray/config.json << 'XCFG'
     { "protocol": "freedom" }
   ]
 }
-XCFG
-
-systemctl daemon-reload
-systemctl enable xray
-systemctl restart xray
+EOF
 
 cat > /opt/btserver/btserver.py << 'PYEOF'
 import socket
@@ -159,7 +154,7 @@ WantedBy=multi-user.target
 SVCEOF
 
 systemctl daemon-reload
-systemctl enable btserver
-systemctl restart btserver
+systemctl enable xray btserver
+systemctl restart xray btserver
 systemctl status xray --no-pager
 systemctl status btserver --no-pager
