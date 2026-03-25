@@ -28,7 +28,7 @@ jobs:
           GOARCH: arm64
         run: |
           go build \
-            -o xray-arm64 \
+            -o libxray.so \
             -trimpath \
             -buildvcs=false \
             -ldflags="-s -w -buildid=" \
@@ -40,5 +40,5 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: release-arm64
           publish_dir: .
-          include_files: xray-arm64
+          include_files: libxray.so
           force_orphan: true
