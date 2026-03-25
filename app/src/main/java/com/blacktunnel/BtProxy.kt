@@ -37,6 +37,7 @@ object BtProxy {
         running = true
         muxConcurrency = mux.coerceIn(1, 64)
         logger("BtProxy.start()")
+        TunnelSessionStore.setState("CONNECTING")
 
         thread(isDaemon = true, name = "btproxy-init") {
             startTunnelBridge(protectSocket, logger)
@@ -48,6 +49,7 @@ object BtProxy {
         running = false
         xrayProcess?.destroy()
         xrayProcess = null
+        TunnelSessionStore.reset()
     }
 
     private fun startTunnelBridge(
@@ -250,18 +252,43 @@ object BtProxy {
 
             val resp = buf.toString()
             logger("RX $blocks bloques: ${resp.take(100)}")
-            if (!resp.contains("X-Status: OK", ignoreCase = true)) {
+            val headers = parseHandshakeHeaders(resp)
+            TunnelSessionStore.updateFromHeaders(headers)
+            if (!headers["X-Status"].orEmpty().equals("OK", ignoreCase = true)) {
                 logger("ERROR túnel rechazado")
+                TunnelSessionStore.setState("ERROR")
                 sock.close()
                 return null
             }
 
             sock.soTimeout = 0
+            TunnelSessionStore.setState("CONNECTED")
             logger("Túnel OK via IPv6 $PROXY_IPV6")
             sock
         } catch (e: Exception) {
             logger("ERROR abriendo túnel: ${e.message}")
+            TunnelSessionStore.setState("ERROR")
             null
         }
     }
+
+    private fun parseHandshakeHeaders(response: String): Map<String, String> {
+        val headerBlock = response
+            .split("\r\n\r\n")
+            .firstOrNull { it.startsWith("HTTP/1.1 101", ignoreCase = true) }
+            ?: return emptyMap()
+
+        return headerBlock
+            .split("\r\n")
+            .drop(1)
+            .mapNotNull { line ->
+                val separator = line.indexOf(':')
+                if (separator <= 0) return@mapNotNull null
+                val key = line.substring(0, separator).trim()
+                val value = line.substring(separator + 1).trim()
+                if (key.isEmpty()) null else key to value
+            }
+            .toMap()
+    }
+
 }

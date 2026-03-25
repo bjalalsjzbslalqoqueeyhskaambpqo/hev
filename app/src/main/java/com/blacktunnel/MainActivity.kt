@@ -3,65 +3,81 @@ package com.blacktunnel
 import android.content.Intent
 import android.net.VpnService
 import android.os.Bundle
-import android.widget.Button
-import android.widget.EditText
-import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import com.google.android.material.button.MaterialButton
 
 class MainActivity : AppCompatActivity() {
-    private lateinit var toggleButton: Button
-    private lateinit var mtuInput: EditText
-    private lateinit var muxInput: EditText
+    private lateinit var toggleButton: MaterialButton
+    private lateinit var stateText: TextView
+    private lateinit var statusValue: TextView
+    private lateinit var nameValue: TextView
+    private lateinit var expireValue: TextView
+    private lateinit var daysLeftValue: TextView
+    private lateinit var premiumValue: TextView
+
+    private val sessionListener: (TunnelSessionSnapshot) -> Unit = { snapshot ->
+        runOnUiThread { render(snapshot) }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
 
-        toggleButton = Button(this).apply {
-            text = "ON"
-            setOnClickListener { onToggle() }
+        toggleButton = findViewById(R.id.toggleButton)
+        stateText = findViewById(R.id.stateText)
+        statusValue = findViewById(R.id.statusValue)
+        nameValue = findViewById(R.id.nameValue)
+        expireValue = findViewById(R.id.expireValue)
+        daysLeftValue = findViewById(R.id.daysLeftValue)
+        premiumValue = findViewById(R.id.premiumValue)
+
+        toggleButton.setOnClickListener { onToggle() }
+        render(TunnelSessionStore.current())
+    }
+
+    override fun onStart() {
+        super.onStart()
+        TunnelSessionStore.addListener(sessionListener)
+    }
+
+    override fun onStop() {
+        TunnelSessionStore.removeListener(sessionListener)
+        super.onStop()
+    }
+
+    private fun render(snapshot: TunnelSessionSnapshot) {
+        stateText.text = when (snapshot.state) {
+            "CONNECTING" -> getString(R.string.state_connecting)
+            "CONNECTED" -> getString(R.string.state_connected)
+            "ERROR" -> getString(R.string.state_error)
+            else -> getString(R.string.state_disconnected)
         }
 
-        mtuInput = EditText(this).apply {
-            hint = "MTU (1200-9000)"
-            setText(TunnelPrefs.getMtu(this@MainActivity).toString())
-        }
+        val isConnected = snapshot.state == "CONNECTING" || snapshot.state == "CONNECTED"
+        toggleButton.text = if (isConnected) getString(R.string.disconnect) else getString(R.string.connect)
 
-        muxInput = EditText(this).apply {
-            hint = "MUX concurrency (1-64)"
-            setText(TunnelPrefs.getMux(this@MainActivity).toString())
-        }
-
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(24, 24, 24, 24)
-            addView(mtuInput, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            addView(muxInput, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            addView(toggleButton, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-        }
-        setContentView(root)
+        statusValue.text = getString(R.string.session_status) + ": " + snapshot.status
+        nameValue.text = getString(R.string.session_name) + ": " + snapshot.name
+        expireValue.text = getString(R.string.session_expire) + ": " + snapshot.expire
+        daysLeftValue.text = getString(R.string.session_days_left) + ": " + snapshot.daysLeft
+        premiumValue.text = getString(R.string.session_premium) + ": " + snapshot.premium
     }
 
     private fun onToggle() {
-        if (toggleButton.text == "ON") {
-            saveSettings()
-            val prepareIntent = VpnService.prepare(this)
-            if (prepareIntent != null) {
-                startActivityForResult(prepareIntent, REQ_VPN_PREPARE)
-                return
-            }
-            startVpn()
-        } else {
+        val current = TunnelSessionStore.current()
+        if (current.state == "CONNECTING" || current.state == "CONNECTED") {
             stopService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
             startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
-            toggleButton.text = "ON"
+            return
         }
-    }
 
-    private fun saveSettings() {
-        val mtu = mtuInput.text.toString().toIntOrNull()?.coerceIn(1200, 9000) ?: 1300
-        val mux = muxInput.text.toString().toIntOrNull()?.coerceIn(1, 64) ?: 8
-        TunnelPrefs.setMtu(this, mtu)
-        TunnelPrefs.setMux(this, mux)
+        val prepareIntent = VpnService.prepare(this)
+        if (prepareIntent != null) {
+            startActivityForResult(prepareIntent, REQ_VPN_PREPARE)
+            return
+        }
+        startVpn()
     }
 
     @Deprecated("Deprecated in Java")
@@ -73,8 +89,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startVpn() {
+        TunnelSessionStore.setState("CONNECTING")
         startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_START))
-        toggleButton.text = "OFF"
     }
 
     companion object {

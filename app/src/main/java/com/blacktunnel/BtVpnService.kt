@@ -44,9 +44,11 @@ class BtVpnService : VpnService() {
     private fun startTunnel() {
         if (pfd != null) {
             LogStore.add("VPN already running")
+            TunnelSessionStore.setState("CONNECTED")
             return
         }
 
+        TunnelSessionStore.setState("CONNECTING")
         startVpnForeground()
         val mtu = TunnelPrefs.getMtu(this).coerceIn(1200, 9000)
         val mux = TunnelPrefs.getMux(this).coerceIn(1, 64)
@@ -87,6 +89,7 @@ class BtVpnService : VpnService() {
 
         val established = runCatching { builder.establish() }.getOrElse {
             LogStore.add("VPN establish failed: ${it.message}")
+            TunnelSessionStore.setState("ERROR")
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
@@ -94,6 +97,7 @@ class BtVpnService : VpnService() {
 
         if (established == null) {
             LogStore.add("VPN establish returned null")
+            TunnelSessionStore.setState("ERROR")
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
@@ -107,6 +111,7 @@ class BtVpnService : VpnService() {
         thread(isDaemon = true, name = "hev-main") {
             val result = runCatching { HevBridge.start(configFile.absolutePath, rawFd) }.getOrElse {
                 LogStore.add("HEV crashed: ${it.message}")
+                TunnelSessionStore.setState("ERROR")
                 -1
             }
             LogStore.add("HEV terminó con code=$result")
@@ -142,6 +147,7 @@ class BtVpnService : VpnService() {
         runCatching { HevBridge.stop() }
         runCatching { pfd?.close() }
         pfd = null
+        TunnelSessionStore.setState("DISCONNECTED")
         BtProxy.stop()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()

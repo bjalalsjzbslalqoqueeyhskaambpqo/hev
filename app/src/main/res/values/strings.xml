@@ -1,3 +1,15 @@
 <resources>
     <string name="app_name">XTunnel</string>
+    <string name="connect">Conectar</string>
+    <string name="disconnect">Desconectar</string>
+    <string name="state_disconnected">Desconectado</string>
+    <string name="state_connecting">Conectando…</string>
+    <string name="state_connected">Conectado</string>
+    <string name="state_error">Error</string>
+    <string name="session_info">Información de sesión</string>
+    <string name="session_status">Estado servidor</string>
+    <string name="session_name">Nombre</string>
+    <string name="session_expire">Expira</string>
+    <string name="session_days_left">Días restantes</string>
+    <string name="session_premium">Premium</string>
 </resources>
