@@ -1,6 +1,8 @@
 package com.blacktunnel
 
 import android.content.Intent
+import android.content.ClipboardManager
+import android.content.ClipData
 import android.net.VpnService
 import android.os.Bundle
 import android.os.Handler
@@ -15,6 +17,7 @@ import java.io.File
 
 class MainActivity : AppCompatActivity() {
     private lateinit var toggleButton: Button
+    private lateinit var copyLogsButton: Button
     private lateinit var logsView: TextView
     private val handler = Handler(Looper.getMainLooper())
     private var lastDump = ""
@@ -42,6 +45,10 @@ class MainActivity : AppCompatActivity() {
             text = "ON"
             setOnClickListener { onToggle() }
         }
+        copyLogsButton = Button(this).apply {
+            text = "COPIAR LOG"
+            setOnClickListener { copyLogs() }
+        }
         logsView = TextView(this).apply {
             movementMethod = ScrollingMovementMethod()
             textSize = 12f
@@ -51,6 +58,7 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(24, 24, 24, 24)
             addView(toggleButton, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            addView(copyLogsButton, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
             addView(
                 logsView,
                 LinearLayout.LayoutParams(
@@ -110,6 +118,13 @@ class MainActivity : AppCompatActivity() {
         startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_START))
         toggleButton.text = "OFF"
         LogStore.add("VPN requested ON")
+    }
+
+    private fun copyLogs() {
+        val dump = LogStore.dump()
+        val clipboard = getSystemService(ClipboardManager::class.java)
+        clipboard?.setPrimaryClip(ClipData.newPlainText("blacktunnel-log", dump))
+        LogStore.add("Log copiado al portapapeles (${dump.length} chars)")
     }
 
     companion object {

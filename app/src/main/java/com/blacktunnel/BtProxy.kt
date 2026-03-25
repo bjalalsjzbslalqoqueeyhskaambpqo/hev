@@ -4,6 +4,7 @@ import java.io.*
 import java.net.*
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
 object BtProxy {
@@ -231,6 +232,9 @@ object BtProxy {
                 if (cmd != 1) { client.close(); return@runCatching }
 
                 logger("CONNECT $host:$port")
+                val startedAt = System.currentTimeMillis()
+                val sent = AtomicLong(0)
+                val recv = AtomicLong(0)
 
                 // Abrir stream smux — primer payload usa formato explícito TCP|host|port
                 val stream = smux.openStream(priorityHint = classifyPriority(port))
@@ -244,31 +248,31 @@ object BtProxy {
                 val buf  = ByteArray(32768)
 
                 val up = thread(isDaemon = true, name = "btproxy-uplink") {
-                    var sent = 0L
                     runCatching {
                         while (true) {
                             val r = cin.read(buf)
                             if (r < 0) break
                             sOut.write(buf, 0, r)
                             sOut.flush()
-                            sent += r
+                            sent.addAndGet(r.toLong())
                         }
                     }
                     runCatching { stream.close() }
                 }
 
-                var recv = 0L
                 runCatching {
                     while (true) {
                         val r = sIn.read(buf)
                         if (r < 0) break
                         cout.write(buf, 0, r)
                         cout.flush()
-                        recv += r
+                        recv.addAndGet(r.toLong())
                     }
                 }
                 up.join(1000)
                 runCatching { client.close() }
+                val took = System.currentTimeMillis() - startedAt
+                logger("CLOSE $host:$port ${sentFmt(sent.get(), recv.get())} tookMs=$took")
 
             }.onFailure {
                 logger("ERROR handleSocks5: ${it.message}")
@@ -304,6 +308,11 @@ object BtProxy {
         stream.write("UDP\n".toByteArray())
         val senderRef = arrayOfNulls<SocketAddress>(1)
         val upBuf = ByteArray(65535)
+        val udpUpPackets = AtomicLong(0)
+        val udpDownPackets = AtomicLong(0)
+        val udpUpBytes = AtomicLong(0)
+        val udpDownBytes = AtomicLong(0)
+        val udpStartAt = System.currentTimeMillis()
         val localToSmux = thread(isDaemon = true, name = "btproxy-udp-up") {
             while (keepRunning.get()) {
                 try {
@@ -312,6 +321,8 @@ object BtProxy {
                     senderRef[0] = packet.socketAddress
                     val parsed = parseSocksUdpPacket(packet.data, packet.offset, packet.length) ?: continue
                     stream.write(encodeUdpSmuxFrame(parsed.host, parsed.port, parsed.payload))
+                    udpUpPackets.incrementAndGet()
+                    udpUpBytes.addAndGet(parsed.payload.size.toLong())
                 } catch (_: SocketTimeoutException) {
                     // poll loop
                 } catch (_: Exception) {
@@ -329,6 +340,8 @@ object BtProxy {
                     val payload = encodeSocksUdpPacket(incoming.host, incoming.port, incoming.payload)
                     val datagram = DatagramPacket(payload, payload.size, target)
                     relay.send(datagram)
+                    udpDownPackets.incrementAndGet()
+                    udpDownBytes.addAndGet(incoming.payload.size.toLong())
                 } catch (_: Exception) {
                     break
                 }
@@ -352,7 +365,14 @@ object BtProxy {
         localToSmux.join(1000)
         smuxToLocal.join(1000)
         runCatching { client.close() }
+        val elapsed = System.currentTimeMillis() - udpStartAt
+        logger(
+            "UDP relay close packetsUp=${udpUpPackets.get()} packetsDown=${udpDownPackets.get()} " +
+                "bytesUp=${udpUpBytes.get()} bytesDown=${udpDownBytes.get()} tookMs=$elapsed"
+        )
     }
+
+    private fun sentFmt(sent: Long, recv: Long): String = "tx=${sent}B rx=${recv}B"
 
     private data class UdpTarget(val host: String, val port: Int, val payload: ByteArray)
 

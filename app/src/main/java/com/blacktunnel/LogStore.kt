@@ -5,7 +5,7 @@ import java.util.Date
 import java.util.Locale
 
 object LogStore {
-    private const val CAPACITY = 200
+    private const val CAPACITY = 1500
     private val lock = Any()
     private val entries = ArrayDeque<String>(CAPACITY)
     private val formatter = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)

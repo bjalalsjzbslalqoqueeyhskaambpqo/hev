@@ -77,8 +77,19 @@ class BtVpnService : VpnService() {
             .addRoute("0.0.0.0", 0)
             .addRoute("::", 0)
             .addDnsServer("8.8.8.8")
-            .addDisallowedApplication(packageName)
             .setMtu(1300)
+
+        val focusedModeEnabled = runCatching {
+            packageManager.getPackageInfo(TARGET_APP_PACKAGE, 0)
+            builder.addAllowedApplication(TARGET_APP_PACKAGE)
+            true
+        }.getOrElse { false }
+        if (focusedModeEnabled) {
+            LogStore.add("Modo foco app habilitado: $TARGET_APP_PACKAGE")
+        } else {
+            LogStore.add("WARN app foco no instalada, usando modo global")
+            runCatching { builder.addDisallowedApplication(packageName) }
+        }
 
         val established = runCatching { builder.establish() }.getOrElse {
             LogStore.add("VPN establish failed: ${it.message}")
@@ -171,6 +182,7 @@ class BtVpnService : VpnService() {
     companion object {
         const val ACTION_START = "com.blacktunnel.START"
         const val ACTION_STOP = "com.blacktunnel.STOP"
+        private const val TARGET_APP_PACKAGE = "com.biomes.vanced"
         private const val VPN_CHANNEL_ID = "vpn_channel"
         private const val VPN_NOTIFICATION_ID = 1
     }
