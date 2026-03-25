@@ -2,7 +2,6 @@ package com.blacktunnel
 
 object HevBridge {
     init {
-        System.loadLibrary("hev-socks5-tunnel")
         System.loadLibrary("hev-jni")
     }
 
