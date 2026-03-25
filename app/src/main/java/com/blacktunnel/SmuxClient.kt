@@ -27,7 +27,7 @@ private const val STREAM_INBOUND_BUFFER = 512 * 1024
 private const val STREAM_INBOUND_OFFER_TIMEOUT_MS = 250L
 private const val STREAM_IDLE_TIMEOUT_MS = 120_000L
 
-private enum class StreamPriority { HIGH, NORMAL, BULK }
+enum class StreamPriority { HIGH, NORMAL, BULK }
 
 private data class OutboundChunk(
     val streamId: Int,
