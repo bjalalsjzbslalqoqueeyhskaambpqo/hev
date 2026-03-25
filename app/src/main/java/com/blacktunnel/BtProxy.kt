@@ -131,15 +131,13 @@ object BtProxy {
                 return
             }
 
-            // Fallback: copiar a codeCacheDir y forzar permisos de ejecución
-            val execFile = File(ctx.codeCacheDir, "gost.bin")
-            runCatching {
-                gostFile.inputStream().use { input ->
-                    execFile.outputStream().use { output -> input.copyTo(output) }
-                }
-                execFile.setExecutable(true)
+            // Usar directamente libgost.so desde nativeLibraryDir (evita error=13 en code_cache)
+            val binary = gostFile
+            runCatching { binary.setExecutable(true, false) }
+            if (!binary.canExecute()) {
+                logger("ERROR gost no ejecutable: ${binary.absolutePath}")
+                return
             }
-            val binary = if (execFile.exists() && execFile.canExecute()) execFile else gostFile
 
             // gost: SOCKS5 inbound en 10808, forward a bridge en 10809
             // notls=true → sin cifrado, sin overhead
@@ -152,7 +150,7 @@ object BtProxy {
             logger("Iniciando gost: ${cmd.joinToString(" ")}")
 
             val process = ProcessBuilder(cmd)
-                .directory(binary.parentFile ?: File(nativeLibDir))
+                .directory(File(nativeLibDir))
                 .redirectErrorStream(true)
                 .start()
 
