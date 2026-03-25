@@ -22,7 +22,6 @@ object BtProxy {
     @Volatile private var tunnelOut: OutputStream? = null
     @Volatile private var gostProcess: Process? = null
     @Volatile private var running = false
-    @Volatile private var context: Context? = null
 
     fun start(
         ctx: Context,
@@ -30,7 +29,6 @@ object BtProxy {
         logger: (String) -> Unit
     ) {
         running = true
-        context = ctx
         logger("BtProxy.start()")
 
         thread(isDaemon = true, name = "btproxy-init") {
@@ -115,18 +113,15 @@ object BtProxy {
         }
     }
 
-    // Copiar gost de assets a filesDir y ejecutarlo
+    // Ejecutar gost desde nativeLibraryDir como libgost.so
     private fun startGost(ctx: Context, logger: (String) -> Unit) {
         try {
-            val gostFile = File(ctx.filesDir, "gost")
-            if (!gostFile.exists() || gostFile.length() == 0L) {
-                ctx.assets.open("gost").use { input ->
-                    gostFile.outputStream().use { output ->
-                        input.copyTo(output)
-                    }
-                }
+            val nativeLibDir = ctx.applicationInfo.nativeLibraryDir
+            val gostFile = File(nativeLibDir, "libgost.so")
+            if (!gostFile.exists()) {
+                logger("ERROR gost no encontrado en $nativeLibDir/libgost.so")
+                return
             }
-            gostFile.setExecutable(true)
 
             // gost: SOCKS5 inbound en 10808, forward a bridge en 10809
             // notls=true → sin cifrado, sin overhead
@@ -139,7 +134,7 @@ object BtProxy {
             logger("Iniciando gost: ${cmd.joinToString(" ")}")
 
             val process = ProcessBuilder(cmd)
-                .directory(ctx.filesDir)
+                .directory(File(nativeLibDir))
                 .redirectErrorStream(true)
                 .start()
 
