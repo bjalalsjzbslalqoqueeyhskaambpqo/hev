@@ -10,6 +10,9 @@ class SmuxSession(
 ) {
     private val lock = Any()
 
+    val isOpen: Boolean
+        get() = !socket.isClosed
+
     fun openStream(): SmuxStream {
         logger("smux openStream")
         return SmuxStream(socket, lock)

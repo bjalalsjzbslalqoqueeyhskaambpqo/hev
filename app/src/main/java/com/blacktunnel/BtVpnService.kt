@@ -48,10 +48,7 @@ class BtVpnService : VpnService() {
         }
 
         startVpnForeground()
-        val hwid = "TU_HWID_AQUI"
         BtProxy.start(
-            hwid = hwid,
-            tunnelDomain = "1.brawlpass.com.ar",
             protectSocket = { socket -> protect(socket) },
             logger = { LogStore.add(it) }
         )
