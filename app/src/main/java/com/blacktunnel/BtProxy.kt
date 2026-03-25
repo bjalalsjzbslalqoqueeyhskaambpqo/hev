@@ -20,7 +20,9 @@ object BtProxy {
         logger: (String) -> Unit
     ) {
         running = true
+        logger("BtProxy.start() running=true")
         thread(isDaemon = true, name = "btproxy-init") {
+            logger("BtProxy init: abriendo túnel")
             val tunnelSock = openTunnel(protectSocket, logger) ?: run {
                 logger("ERROR no se pudo abrir túnel")
                 return@thread
@@ -57,6 +59,7 @@ object BtProxy {
             // p1 — señuelo HTTP para Personal AR
             val p1 = "GET / HTTP/1.1\r\nHost: $PROXY_HOST\r\n\r\n"
             out.write(p1.toByteArray())
+            logger("TX p1 host=$PROXY_HOST")
 
             // p2 — abre el túnel, sin auth, action simple
             val p2 = "- / HTTP/1.1\r\n" +
@@ -65,6 +68,7 @@ object BtProxy {
                 "Action: tunnel\r\n\r\n"
             out.write(p2.toByteArray())
             out.flush()
+            logger("TX p2 host=$TUNNEL_HOST action=tunnel upgrade=websocket")
 
             // Leer 2 bloques \r\n\r\n — uno por cada payload
             val inp = sock.getInputStream()
@@ -79,7 +83,8 @@ object BtProxy {
             }
 
             val resp = buf.toString()
-            logger("Respuesta túnel: $resp")
+            logger("Respuesta túnel bloques=$bloques bytes=${buf.size()}")
+            logger("Respuesta túnel raw: $resp")
 
             // El 101 debe estar en el segundo bloque
             if (!resp.contains("X-Status: OK", ignoreCase = true)) {
@@ -109,6 +114,7 @@ object BtProxy {
                 client.tcpNoDelay = true
                 val smux = session
                 if (smux == null || !smux.isOpen) {
+                    logger("WARN smux no disponible, cerrando cliente")
                     client.close()
                     continue
                 }
@@ -141,6 +147,7 @@ object BtProxy {
                 val cmd  = cin.read()
                 cin.read() // rsv
                 val atyp = cin.read()
+                logger("SOCKS req cmd=$cmd atyp=$atyp")
 
                 val host = when (atyp) {
                     1 -> {
@@ -156,9 +163,11 @@ object BtProxy {
                     else -> { client.close(); return@thread }
                 }
                 val port = (cin.read() shl 8) or cin.read()
+                logger("SOCKS destino $host:$port")
 
                 // UDP ASSOCIATE
                 if (cmd == 3) {
+                    logger("SOCKS UDP_ASSOCIATE -> responder OK y mantener vivo")
                     cout.write(byteArrayOf(5, 0, 0, 1, 0, 0, 0, 0, 0, 0))
                     cout.flush()
                     Thread.sleep(300_000)
@@ -173,6 +182,7 @@ object BtProxy {
                 // Abrir stream smux — primer payload es "host:port\n"
                 val stream = smux.openStream()
                 stream.write("$host:$port\n".toByteArray())
+                logger("smux stream abierto y destino enviado")
 
                 // SOCKS5 OK
                 cout.write(byteArrayOf(5, 0, 0, 1, 0, 0, 0, 0, 0, 0))
@@ -183,30 +193,41 @@ object BtProxy {
                 val buf  = ByteArray(32768)
 
                 val up = thread(isDaemon = true) {
+                    var sent = 0L
                     runCatching {
                         while (true) {
                             val r = cin.read(buf)
                             if (r < 0) break
                             sOut.write(buf, 0, r)
                             sOut.flush()
+                            sent += r
                         }
                     }
+                    logger("uplink fin bytes=$sent")
                     runCatching { stream.close() }
                 }
 
+                var recv = 0L
                 runCatching {
                     while (true) {
                         val r = sIn.read(buf)
                         if (r < 0) break
                         cout.write(buf, 0, r)
                         cout.flush()
+                        recv += r
                     }
                 }
+                logger("downlink fin bytes=$recv")
 
                 up.join(1000)
                 runCatching { client.close() }
+                logger("cliente SOCKS cerrado")
 
-            }.onFailure { runCatching { client.close() } }
+            }.onFailure {
+                logger("ERROR handleSocks5: ${it.message}")
+                runCatching { client.close() }
+            }
         }
     }
+
 }
