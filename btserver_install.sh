@@ -116,61 +116,6 @@ def handle_smux(sock, addr):
         qc(sock.close)
 
 
-def handle_plain_tunnel(sock, addr):
-    dst = None
-    try:
-        sock.settimeout(30)
-        line = b""
-        while b"\n" not in line:
-            c = sock.recv(1)
-            if not c:
-                return
-            line += c
-            if len(line) > 1024:
-                return
-
-        target = line.decode(errors="replace").strip()
-        host, port = target.rsplit(":", 1)
-        dst = socket.create_connection((host.strip(), int(port)), 10)
-        dst.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        sock.settimeout(None)
-        dst.settimeout(None)
-
-        def up():
-            try:
-                while True:
-                    data = sock.recv(BUF)
-                    if not data:
-                        break
-                    dst.sendall(data)
-            except Exception:
-                pass
-            finally:
-                qc(dst.close)
-                qc(sock.close)
-
-        def down():
-            try:
-                while True:
-                    data = dst.recv(BUF)
-                    if not data:
-                        break
-                    sock.sendall(data)
-            except Exception:
-                pass
-            finally:
-                qc(dst.close)
-                qc(sock.close)
-
-        threading.Thread(target=up, daemon=True).start()
-        down()
-    except Exception:
-        pass
-    finally:
-        qc(lambda: dst.close() if dst else None)
-        qc(sock.close)
-
-
 def handle(sock, addr):
     try:
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -214,12 +159,7 @@ def handle(sock, addr):
                 b"X-Status: OK\r\n\r\n"
             )
             sock.settimeout(None)
-            # Compat: si llega framing smux (v1) usar smux; si no, modo línea host:port\\n
-            first = sock.recv(1, socket.MSG_PEEK)
-            if first and first[0] == 1:
-                handle_smux(sock, addr)
-            else:
-                handle_plain_tunnel(sock, addr)
+            handle_smux(sock, addr)
         elif action == "auth":
             sock.sendall(
                 b"HTTP/1.1 101 Switching Protocols\r\n"
