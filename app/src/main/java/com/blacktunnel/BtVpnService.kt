@@ -73,11 +73,13 @@ class BtVpnService : VpnService() {
         val builder = Builder()
             .setSession("BlackTunnel")
             .addAddress("198.18.0.1", 30)
+            .addAddress("fc00::1", 126)
             .addRoute("0.0.0.0", 0)
+            .addRoute("::", 0)
             .addDnsServer("8.8.8.8")
             .setMtu(1300)
         runCatching { builder.addAllowedApplication(TARGET_APP_PACKAGE) }
-            .onSuccess { LogStore.add("Modo foco app habilitado: $TARGET_APP_PACKAGE (solo IPv4)") }
+            .onSuccess { LogStore.add("Modo foco app habilitado: $TARGET_APP_PACKAGE (dual-stack)") }
             .onFailure { LogStore.add("ERROR addAllowedApplication: ${it.message}") }
 
         val established = runCatching { builder.establish() }.getOrElse {
@@ -156,6 +158,7 @@ class BtVpnService : VpnService() {
               name: trehev
               mtu: 1300
               ipv4: 198.18.0.1
+              ipv6: fc00::1
             socks5:
               address: 127.0.0.1
               port: 10808
