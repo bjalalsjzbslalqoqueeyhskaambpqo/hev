@@ -12,6 +12,7 @@ import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import kotlin.math.min
 
@@ -44,7 +45,7 @@ class SmuxSession(
     private val running = AtomicInteger(1)
     private val lastPongAt = AtomicLong(System.currentTimeMillis())
 
-    private val globalCredits = Semaphore(GLOBAL_OUTBOUND_BUFFER)
+    internal val globalCredits = Semaphore(GLOBAL_OUTBOUND_BUFFER)
     private val highQueue = LinkedBlockingQueue<OutboundChunk>()
     private val normalQueue = LinkedBlockingQueue<OutboundChunk>()
     private val bulkQueue = LinkedBlockingQueue<OutboundChunk>()
@@ -130,12 +131,13 @@ class SmuxSession(
         }
     }
 
-    internal fun closeStream(streamId: Int) {
+    internal fun closeStream(streamId: Int, creditsAlreadyReleased: Int = 0) {
         val stream = streams.remove(streamId)
         val released = reclaimPendingCredits(streamId)
-        if (released > 0) {
-            globalCredits.release(released)
-            stream?.releaseOutboundCredit(released)
+        val effectiveRelease = (released - creditsAlreadyReleased).coerceAtLeast(0)
+        if (effectiveRelease > 0) {
+            globalCredits.release(effectiveRelease)
+            stream?.releaseOutboundCredit(effectiveRelease)
         }
         runCatching { sendFrameDirect(CMD_CLOSE, streamId, ByteArray(0)) }
     }
@@ -309,26 +311,28 @@ class SmuxStream(
     private val inboundBufferedBytes = AtomicInteger(0)
     private val activityTs = AtomicLong(System.currentTimeMillis())
 
-    @Volatile
-    private var closed = false
+    private val closed = AtomicBoolean(false)
+    private val unackedBytes = AtomicInteger(0)
     private var currentChunk: ByteArray? = null
     private var currentOffset = 0
 
     fun id(): Int = streamId
-    fun isOpen(): Boolean = !closed
+    fun isOpen(): Boolean = !closed.get()
     fun lastActivityAt(): Long = activityTs.get()
 
     fun write(bytes: ByteArray) {
-        if (closed || bytes.isEmpty()) return
+        if (closed.get() || bytes.isEmpty()) return
         touch()
         session.sendData(streamId, bytes, 0, bytes.size, priority)
     }
 
     internal fun acquireOutboundCredit(bytes: Int) {
         outboundCredits.acquire(bytes)
+        unackedBytes.addAndGet(bytes)
     }
 
     internal fun releaseOutboundCredit(bytes: Int) {
+        unackedBytes.addAndGet(-bytes)
         outboundCredits.release(bytes)
     }
 
@@ -340,7 +344,7 @@ class SmuxStream(
         }
 
         override fun read(b: ByteArray, off: Int, len: Int): Int {
-            if (closed && currentChunk == null && queue.isEmpty()) return -1
+            if (closed.get() && currentChunk == null && queue.isEmpty()) return -1
             while (currentChunk == null || currentOffset >= currentChunk!!.size) {
                 val next = queue.take()
                 if (next === eofMarker) return -1
@@ -378,8 +382,8 @@ class SmuxStream(
     }
 
     internal fun onData(data: ByteArray) {
-        if (closed) return
-        while (!closed) {
+        if (closed.get()) return
+        while (!closed.get()) {
             val used = inboundBufferedBytes.get()
             if (used + data.size <= STREAM_INBOUND_BUFFER) {
                 val offered = runCatching {
@@ -397,15 +401,20 @@ class SmuxStream(
     }
 
     internal fun remoteClosed() {
-        closed = true
+        closed.set(true)
         queue.offer(eofMarker)
     }
 
     fun close() {
-        if (closed) return
-        closed = true
-        session.closeStream(streamId)
-        queue.offer(eofMarker)
+        if (closed.compareAndSet(false, true)) {
+            val pending = unackedBytes.getAndSet(0)
+            if (pending > 0) {
+                session.globalCredits.release(pending)
+                outboundCredits.release(pending)
+            }
+            session.closeStream(streamId, pending)
+            queue.offer(eofMarker)
+        }
     }
 
     private fun touch() {
