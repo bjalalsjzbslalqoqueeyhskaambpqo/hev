@@ -6,6 +6,7 @@ import kotlin.concurrent.thread
 
 object BtProxy {
 
+    private const val PROXY_IPV4  = "190.210.0.136"
     private const val PROXY_IPV6  = "2606:4700::6812:16b7"
     private const val PROXY_HOST  = "emailmarketing.personal.com.ar"
     private const val PROXY_PORT  = 80
@@ -45,60 +46,82 @@ object BtProxy {
         protectSocket: (Socket) -> Unit,
         logger: (String) -> Unit
     ): Socket? {
+        val candidates = listOf(
+            Pair(false, PROXY_IPV4),
+            Pair(true, PROXY_IPV6)
+        )
+        for ((isV6, ip) in candidates) {
+            logger("Intentando ${if (isV6) "IPv6" else "IPv4"} $ip...")
+            val sock = tryOpenTunnel(ip, isV6, protectSocket, logger)
+            if (sock != null) return sock
+        }
+        return null
+    }
+
+    private fun tryOpenTunnel(
+        ip: String,
+        isV6: Boolean,
+        protectSocket: (Socket) -> Unit,
+        logger: (String) -> Unit
+    ): Socket? {
         return try {
+            val family = if (isV6) Inet6Address.getByName(ip)
+            else Inet4Address.getByName(ip)
             val sock = Socket()
             protectSocket(sock)
-            sock.connect(
-                InetSocketAddress(Inet6Address.getByName(PROXY_IPV6), PROXY_PORT),
-                10_000
-            )
+            sock.connect(InetSocketAddress(family, PROXY_PORT), 8_000)
             sock.tcpNoDelay = true
 
             val out = sock.getOutputStream()
+            val inp = sock.getInputStream()
 
-            // p1 — señuelo HTTP para Personal AR
             val p1 = "GET / HTTP/1.1\r\nHost: $PROXY_HOST\r\n\r\n"
             out.write(p1.toByteArray())
+            out.flush()
             logger("TX p1 host=$PROXY_HOST")
 
-            // p2 — abre el túnel, sin auth, action simple
+            sock.soTimeout = 5000
+            val buf1 = ByteArrayOutputStream()
+            while (true) {
+                val b = inp.read()
+                if (b == -1) break
+                buf1.write(b)
+                if (buf1.toString().endsWith("\r\n\r\n")) break
+                if (buf1.size() > 8192) break
+            }
+            logger("RX p1: ${buf1.toString().lines().firstOrNull() ?: "<vacío>"}")
+
             val p2 = "- / HTTP/1.1\r\n" +
                 "Host: $TUNNEL_HOST\r\n" +
                 "Upgrade: websocket\r\n" +
                 "Action: tunnel\r\n\r\n"
             out.write(p2.toByteArray())
             out.flush()
-            logger("TX p2 host=$TUNNEL_HOST action=tunnel upgrade=websocket")
+            logger("TX p2 host=$TUNNEL_HOST action=tunnel")
 
-            // Leer 2 bloques \r\n\r\n — uno por cada payload
-            val inp = sock.getInputStream()
-            val buf = ByteArrayOutputStream()
-            var bloques = 0
-            while (bloques < 2) {
+            sock.soTimeout = 8000
+            val buf2 = ByteArrayOutputStream()
+            while (true) {
                 val b = inp.read()
                 if (b == -1) break
-                buf.write(b)
-                if (buf.toString().endsWith("\r\n\r\n")) bloques++
-                if (buf.size() > 16384) break
+                buf2.write(b)
+                if (buf2.toString().endsWith("\r\n\r\n")) break
+                if (buf2.size() > 8192) break
             }
+            val resp = buf2.toString()
+            logger("RX p2: $resp")
 
-            val resp = buf.toString()
-            logger("Respuesta túnel bloques=$bloques bytes=${buf.size()}")
-            logger("Respuesta túnel raw: $resp")
-
-            // El 101 debe estar en el segundo bloque
             if (!resp.contains("X-Status: OK", ignoreCase = true)) {
-                logger("ERROR túnel no aceptado")
+                logger("WARN túnel rechazado por $ip")
                 sock.close()
                 return null
             }
 
-            logger("Túnel abierto OK")
+            logger("Túnel OK via ${if (isV6) "IPv6" else "IPv4"} $ip")
             sock.soTimeout = 0
             sock
-
         } catch (e: Exception) {
-            logger("ERROR abriendo túnel: ${e.message}")
+            logger("WARN $ip falló: ${e.message}")
             null
         }
     }
