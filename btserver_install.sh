@@ -8,6 +8,7 @@ import socket
 import struct
 import threading
 import time
+import ipaddress
 
 PORT = 80
 BUF = 65536
@@ -76,7 +77,8 @@ class Stream:
                 else:
                     host, port = line.rsplit(":", 1)
                 try:
-                    self.dst = socket.create_connection((host.strip(), int(port)), 10)
+                    target_host = self._maybe_nat64_to_ipv4(host.strip())
+                    self.dst = socket.create_connection((target_host, int(port)), 5)
                     self.dst.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                     if self.buf:
                         self.dst.sendall(bytes(self.buf))
@@ -98,6 +100,7 @@ class Stream:
                 host, port, payload, used = pkt
                 del self.buf[:used]
                 try:
+                    host = self._maybe_nat64_to_ipv4(host)
                     ai = socket.getaddrinfo(host, port, 0, socket.SOCK_DGRAM)[0]
                     family, _, _, _, sa = ai
                     udp = self.udp6 if family == socket.AF_INET6 else self.udp4
@@ -156,6 +159,17 @@ class Stream:
     def _encode_udp(self, host, port, payload):
         hb = host.encode()
         return struct.pack(">H", len(hb)) + hb + struct.pack(">HH", port, len(payload)) + payload
+
+    def _maybe_nat64_to_ipv4(self, host):
+        try:
+            ip = ipaddress.ip_address(host)
+            if isinstance(ip, ipaddress.IPv6Address):
+                b = ip.packed
+                if b[:12] == b"\x00\x64\xff\x9b" + b"\x00" * 8:
+                    return socket.inet_ntoa(b[12:])
+        except Exception:
+            pass
+        return host
 
     def close(self):
         if self.closed:

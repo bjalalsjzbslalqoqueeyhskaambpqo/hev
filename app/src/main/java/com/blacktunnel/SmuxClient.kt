@@ -131,7 +131,12 @@ class SmuxSession(
     }
 
     internal fun closeStream(streamId: Int) {
-        streams.remove(streamId)
+        val stream = streams.remove(streamId)
+        val released = reclaimPendingCredits(streamId)
+        if (released > 0) {
+            globalCredits.release(released)
+            stream?.releaseOutboundCredit(released)
+        }
         runCatching { sendFrameDirect(CMD_CLOSE, streamId, ByteArray(0)) }
     }
 
@@ -149,6 +154,8 @@ class SmuxSession(
     }
 
     private fun shutdownAll() {
+        val released = reclaimPendingCredits(null)
+        if (released > 0) globalCredits.release(released)
         streams.values.forEach { it.remoteClosed() }
         streams.clear()
         highQueue.clear()
@@ -162,6 +169,25 @@ class SmuxSession(
             StreamPriority.NORMAL -> normalQueue.put(chunk)
             StreamPriority.BULK -> bulkQueue.put(chunk)
         }
+    }
+
+    private fun reclaimPendingCredits(streamId: Int?): Int {
+        return reclaimFromQueue(highQueue, streamId) +
+            reclaimFromQueue(normalQueue, streamId) +
+            reclaimFromQueue(bulkQueue, streamId)
+    }
+
+    private fun reclaimFromQueue(queue: LinkedBlockingQueue<OutboundChunk>, streamId: Int?): Int {
+        var released = 0
+        val it = queue.iterator()
+        while (it.hasNext()) {
+            val c = it.next()
+            if (streamId == null || c.streamId == streamId) {
+                released += c.payload.size
+                it.remove()
+            }
+        }
+        return released
     }
 
     private fun writerLoop() {
