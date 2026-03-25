@@ -49,7 +49,7 @@ object BtProxy {
         protectSocket: (Socket) -> Unit,
         logger: (String) -> Unit
     ) {
-        val srv = ServerSocket(TUNNEL_LOCAL_PORT, 4,
+        val srv = ServerSocket(TUNNEL_LOCAL_PORT, 128,
             InetAddress.getByName("127.0.0.1"))
         logger("Bridge escuchando en 127.0.0.1:$TUNNEL_LOCAL_PORT")
 
@@ -58,14 +58,16 @@ object BtProxy {
                 while (running) {
                     val client = srv.accept()
                     client.tcpNoDelay = true
-                    val tSock = openTunnel(protectSocket, logger)
-                    if (tSock == null) {
-                        logger("ERROR no se pudo abrir túnel para conexión local")
-                        client.close()
-                        continue
+                    thread(isDaemon = true, name = "bridge-conn") {
+                        val tSock = openTunnel(protectSocket, logger)
+                        if (tSock == null) {
+                            logger("ERROR no se pudo abrir túnel para conexión local")
+                            client.close()
+                            return@thread
+                        }
+                        logger("Túnel TCP abierto para bridge")
+                        relay(client, tSock, logger)
                     }
-                    logger("Túnel TCP abierto para bridge")
-                    relay(client, tSock, logger)
                 }
             } catch (_: Exception) {}
         }
@@ -134,7 +136,7 @@ object BtProxy {
             // notls=true → sin cifrado, sin overhead
             val cmd = listOf(
                 binary.absolutePath,
-                "-L", "socks5://:$GOST_SOCKS5_PORT?udp=true",
+                "-L", "socks5://127.0.0.1:$GOST_SOCKS5_PORT?udp=true",
                 "-F", "relay+yamux://127.0.0.1:$TUNNEL_LOCAL_PORT"
             )
 
