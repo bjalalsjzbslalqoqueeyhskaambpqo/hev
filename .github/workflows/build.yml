@@ -15,7 +15,17 @@ jobs:
           curl -L "https://github.com/bjalalsjzbslalqoqueeyhskaambpqo/hev/raw/libs/jniLibs/arm64-v8a/libhev-socks5-tunnel.so" \
             -o app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so
       - uses: android-actions/setup-android@v3
-      - run: ./gradlew assembleDebug
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+      - name: Setup Gradle wrapper
+        run: |
+          cd app/..
+          gradle wrapper --gradle-version 8.7
+          chmod +x gradlew
+      - name: Build APK
+        run: ./gradlew assembleDebug
       - uses: actions/upload-artifact@v4
         with:
           name: apk
