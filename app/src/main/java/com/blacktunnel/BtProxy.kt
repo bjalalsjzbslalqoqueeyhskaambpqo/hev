@@ -3,6 +3,7 @@ package com.blacktunnel
 import android.content.Context
 import java.io.*
 import java.net.*
+import java.util.concurrent.Semaphore
 import kotlin.concurrent.thread
 
 object BtProxy {
@@ -16,9 +17,11 @@ object BtProxy {
     private const val GOST_SOCKS5_PORT = 10808
     // Puerto local donde BtProxy escucha para gost
     private const val TUNNEL_LOCAL_PORT = 10809
+    private const val MAX_PARALLEL_TUNNELS = 4
 
     @Volatile private var gostProcess: Process? = null
     @Volatile private var running = false
+    private val tunnelSlots = Semaphore(MAX_PARALLEL_TUNNELS)
 
     fun start(
         ctx: Context,
@@ -59,14 +62,17 @@ object BtProxy {
                     val client = srv.accept()
                     client.tcpNoDelay = true
                     thread(isDaemon = true, name = "bridge-conn") {
+                        tunnelSlots.acquire()
                         val tSock = openTunnel(protectSocket, logger)
                         if (tSock == null) {
                             logger("ERROR no se pudo abrir túnel para conexión local")
                             client.close()
+                            tunnelSlots.release()
                             return@thread
                         }
                         logger("Túnel TCP abierto para bridge")
                         relay(client, tSock, logger)
+                        tunnelSlots.release()
                     }
                 }
             } catch (_: Exception) {}
@@ -89,7 +95,7 @@ object BtProxy {
             }
         }
         // túnel → gost
-        thread(isDaemon = true) {
+        val down = thread(isDaemon = true) {
             runCatching {
                 val tin = tunnel.getInputStream()
                 val cout = client.getOutputStream()
@@ -104,6 +110,8 @@ object BtProxy {
             runCatching { client.close() }
             runCatching { tunnel.close() }
         }
+        up.join()
+        down.join()
     }
 
     // Ejecutar gost desde nativeLibraryDir como libgost.so
