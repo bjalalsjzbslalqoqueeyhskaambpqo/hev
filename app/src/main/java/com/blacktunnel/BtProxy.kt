@@ -132,12 +132,12 @@ object BtProxy {
                 return
             }
 
-            // gost: SOCKS5 inbound en 10808, forward a bridge en 10809
-            // UDP se desactiva aquí porque en este entorno Android falla bind UDP (::)
+            // gost: SOCKS5 inbound en 10808, forward SOCKS5 por bridge en 10809
+            // cada conexión abre su propio túnel websocket en bridge-conn (sin mux)
             val cmd = listOf(
                 binary.absolutePath,
-                "-L", "socks5://127.0.0.1:$GOST_SOCKS5_PORT",
-                "-F", "relay+yamux://127.0.0.1:$TUNNEL_LOCAL_PORT"
+                "-L", "socks5://127.0.0.1:$GOST_SOCKS5_PORT?udp=true",
+                "-F", "socks5://127.0.0.1:$TUNNEL_LOCAL_PORT"
             )
 
             logger("Iniciando gost: ${cmd.joinToString(" ")}")

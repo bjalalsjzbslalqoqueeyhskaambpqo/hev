@@ -13,7 +13,7 @@ import socket
 import threading
 
 PORT = 80
-GOST_RELAY_ADDR = ("127.0.0.1", 10808)
+GOST_SOCKS_ADDR = ("127.0.0.1", 10808)
 
 
 def pipe(src, dst):
@@ -35,7 +35,7 @@ def pipe(src, dst):
 def handle_tunnel(client):
     upstream = None
     try:
-        upstream = socket.create_connection(GOST_RELAY_ADDR, 5)
+        upstream = socket.create_connection(GOST_SOCKS_ADDR, 5)
         t1 = threading.Thread(target=pipe, args=(client, upstream), daemon=True)
         t2 = threading.Thread(target=pipe, args=(upstream, client), daemon=True)
         t1.start()
@@ -120,7 +120,7 @@ Description=BlackTunnel Server
 After=network.target
 
 [Service]
-ExecStart=/bin/bash -lc '/opt/btserver/gost -L "relay+yamux://127.0.0.1:10808" & exec /usr/bin/python3 /opt/btserver/btserver.py'
+ExecStart=/bin/bash -lc '/opt/btserver/gost -L "socks5://127.0.0.1:10808?udp=true" & exec /usr/bin/python3 /opt/btserver/btserver.py'
 Restart=always
 RestartSec=2
 
