@@ -66,22 +66,23 @@ object BtProxy {
             out.write(p2.toByteArray())
             out.flush()
 
-            // Leer respuesta hasta \r\n\r\n
+            // Leer 2 bloques \r\n\r\n — uno por cada payload
             val inp = sock.getInputStream()
             val buf = ByteArrayOutputStream()
-            var prev = 0
-            var b: Int
-            while (inp.read().also { b = it } != -1) {
+            var bloques = 0
+            while (bloques < 2) {
+                val b = inp.read()
+                if (b == -1) break
                 buf.write(b)
-                val s = buf.toString()
-                if (s.endsWith("\r\n\r\n")) break
-                if (buf.size() > 8192) break
+                if (buf.toString().endsWith("\r\n\r\n")) bloques++
+                if (buf.size() > 16384) break
             }
 
             val resp = buf.toString()
             logger("Respuesta túnel: $resp")
 
-            if (!resp.contains("101", ignoreCase = true)) {
+            // El 101 debe estar en el segundo bloque
+            if (!resp.contains("X-Status: OK", ignoreCase = true)) {
                 logger("ERROR túnel no aceptado")
                 sock.close()
                 return null
