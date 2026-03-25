@@ -57,6 +57,31 @@ jobs:
           gradle wrapper --gradle-version 8.7
           chmod +x gradlew
 
+
+      - name: Prepare signing credentials
+        id: signing
+        env:
+          RAW_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          RAW_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          STORE_PASSWORD="${RAW_STORE_PASSWORD:-}"
+          KEY_PASSWORD="${RAW_KEY_PASSWORD:-}"
+
+          if [ ${#STORE_PASSWORD} -lt 6 ]; then
+            STORE_PASSWORD="xtunnel_store_2026"
+            echo "ANDROID_KEYSTORE_PASSWORD is missing/short; using CI fallback password." >&2
+          fi
+
+          if [ ${#KEY_PASSWORD} -lt 6 ]; then
+            KEY_PASSWORD="$STORE_PASSWORD"
+            echo "ANDROID_KEY_PASSWORD is missing/short; using store password as key password." >&2
+          fi
+
+          echo "store_password=$STORE_PASSWORD" >> "$GITHUB_OUTPUT"
+          echo "key_password=$KEY_PASSWORD" >> "$GITHUB_OUTPUT"
+
       - name: Restore release keystore cache
         id: release_keystore_cache
         uses: actions/cache@v4
@@ -76,16 +101,16 @@ jobs:
             -keyalg RSA \
             -keysize 4096 \
             -validity 3650 \
-            -storepass "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" \
-            -keypass "${{ secrets.ANDROID_KEY_PASSWORD }}" \
+            -storepass "${{ steps.signing.outputs.store_password }}" \
+            -keypass "${{ steps.signing.outputs.key_password }}" \
             -dname "CN=XTunnel,OU=Mobile,O=XTunnel,L=Internet,ST=Global,C=US"
 
       - name: Build signed release APK
         env:
           ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/.ci/release-keystore.jks
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ steps.signing.outputs.store_password }}
           ANDROID_KEY_ALIAS: xtunnel-release
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ steps.signing.outputs.key_password }}
         run: ./gradlew assembleRelease
 
       - id: upload_apk_primary
