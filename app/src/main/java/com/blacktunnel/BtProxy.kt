@@ -17,6 +17,7 @@ object BtProxy {
     @Volatile private var reconnecting = false
     @Volatile private var running = false
     @Volatile private var lastNoSmuxLogAt = 0L
+    @Volatile private var lastUdpLogAt = 0L
 
     fun start(
         protectSocket: (Socket) -> Unit,
@@ -192,8 +193,6 @@ object BtProxy {
                 val cmd  = cin.read()
                 cin.read() // rsv
                 val atyp = cin.read()
-                logger("SOCKS req cmd=$cmd atyp=$atyp")
-
                 val host = when (atyp) {
                     1 -> {
                         val b = ByteArray(4).also { cin.read(it) }
@@ -208,11 +207,13 @@ object BtProxy {
                     else -> { client.close(); return@thread }
                 }
                 val port = (cin.read() shl 8) or cin.read()
-                logger("SOCKS destino $host:$port")
-
                 // UDP ASSOCIATE
                 if (cmd == 3) {
-                    logger("SOCKS UDP_ASSOCIATE -> responder OK y mantener vivo")
+                    val now = System.currentTimeMillis()
+                    if (now - lastUdpLogAt > 3000) {
+                        lastUdpLogAt = now
+                        logger("SOCKS UDP_ASSOCIATE -> responder OK")
+                    }
                     cout.write(byteArrayOf(5, 0, 0, 1, 0, 0, 0, 0, 0, 0))
                     cout.flush()
                     client.close()
@@ -221,13 +222,11 @@ object BtProxy {
 
                 if (cmd != 1) { client.close(); return@thread }
 
-                logger("→ $host:$port")
+                logger("CONNECT $host:$port")
 
                 // Abrir stream smux — primer payload es "host:port\n"
                 val stream = smux.openStream()
                 stream.write("$host:$port\n".toByteArray())
-                logger("smux stream abierto y destino enviado")
-
                 // SOCKS5 OK
                 cout.write(byteArrayOf(5, 0, 0, 1, 0, 0, 0, 0, 0, 0))
                 cout.flush()
@@ -247,7 +246,6 @@ object BtProxy {
                             sent += r
                         }
                     }
-                    logger("uplink fin bytes=$sent")
                     runCatching { stream.close() }
                 }
 
@@ -261,11 +259,8 @@ object BtProxy {
                         recv += r
                     }
                 }
-                logger("downlink fin bytes=$recv")
-
                 up.join(1000)
                 runCatching { client.close() }
-                logger("cliente SOCKS cerrado")
 
             }.onFailure {
                 logger("ERROR handleSocks5: ${it.message}")

@@ -17,15 +17,20 @@ class MainActivity : AppCompatActivity() {
     private lateinit var toggleButton: Button
     private lateinit var logsView: TextView
     private val handler = Handler(Looper.getMainLooper())
+    private var lastDump = ""
 
     private val refreshTask = object : Runnable {
         override fun run() {
-            logsView.text = LogStore.dump()
-            if (logsView.layout != null) {
-                val delta = logsView.layout.getLineTop(logsView.lineCount) - logsView.height
-                if (delta > 0) logsView.scrollTo(0, delta) else logsView.scrollTo(0, 0)
+            val dump = LogStore.dump()
+            if (dump != lastDump) {
+                lastDump = dump
+                logsView.text = dump
+                if (logsView.layout != null) {
+                    val delta = logsView.layout.getLineTop(logsView.lineCount) - logsView.height
+                    if (delta > 0) logsView.scrollTo(0, delta) else logsView.scrollTo(0, 0)
+                }
             }
-            handler.postDelayed(this, 1_000)
+            handler.postDelayed(this, 1_500)
         }
     }
 

@@ -76,7 +76,7 @@ class BtVpnService : VpnService() {
             .addRoute("::", 0)
             .addDnsServer("8.8.8.8")
             .addDisallowedApplication(packageName)
-            .setMtu(8500)
+            .setMtu(1300)
 
         val established = runCatching { builder.establish() }.getOrElse {
             LogStore.add("VPN establish failed: ${it.message}")
@@ -152,7 +152,7 @@ class BtVpnService : VpnService() {
         val yaml = """
             tunnel:
               name: trehev
-              mtu: 8500
+              mtu: 1300
               ipv4: 198.18.0.1
               ipv6: fc00::1
             socks5:
