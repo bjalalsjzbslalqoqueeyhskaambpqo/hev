@@ -76,16 +76,7 @@ class Stream:
                     host, port = parts[1], parts[2]
                 else:
                     host, port = line.rsplit(":", 1)
-                try:
-                    target_host = self._maybe_nat64_to_ipv4(host.strip())
-                    self.dst = socket.create_connection((target_host, int(port)), 5)
-                    self.dst.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                    if self.buf:
-                        self.dst.sendall(bytes(self.buf))
-                        self.buf = bytearray()
-                    threading.Thread(target=self._up, daemon=True).start()
-                except Exception:
-                    self.close()
+                self._connect(host, port)
         elif self.mode == "tcp":
             try:
                 self.dst.sendall(data)
@@ -111,17 +102,34 @@ class Stream:
 
     def _up(self):
         b = bytearray(BUF)
+        sent = 0
         try:
             while not self.closed:
                 n = self.dst.recv_into(b)
                 if not n:
                     break
+                sent += n
                 send_frame(self.sock, self.lock, 2, self.sid, bytes(b[:n]))
         except Exception:
             pass
         finally:
+            print(f"stream #{self.sid} upstream done sent={sent}")
             send_frame(self.sock, self.lock, 1, self.sid)
             self.closed = True
+
+    def _connect(self, host, port):
+        try:
+            target_host = self._maybe_nat64_to_ipv4(host.strip())
+            self.dst = socket.create_connection((target_host, int(port)), 5)
+            self.dst.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            print(f"stream #{self.sid} connected {host}:{port}")
+            if self.buf:
+                self.dst.sendall(bytes(self.buf))
+                self.buf = bytearray()
+            threading.Thread(target=self._up, daemon=True).start()
+        except Exception as e:
+            print(f"stream #{self.sid} connect FAILED {host}:{port}: {e}")
+            self.close()
 
     def _udp_up(self):
         while not self.closed:
