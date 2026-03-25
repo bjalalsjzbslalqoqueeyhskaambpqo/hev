@@ -39,17 +39,35 @@ class Stream:
     def __init__(self, sid, sock, lock):
         self.sid, self.sock, self.lock = sid, sock, lock
         self.dst, self.buf, self.closed = None, bytearray(), False
+        self.mode = None
+        self.udp4 = None
+        self.udp6 = None
 
     def feed(self, data):
         if self.closed:
             return
 
-        if self.dst is None:
+        if self.mode is None:
             self.buf.extend(data)
             if b"\n" in self.buf:
                 line, rest = self.buf.split(b"\n", 1)
                 self.buf = rest
-                host, port = line.decode(errors="replace").strip().rsplit(":", 1)
+                line = line.decode(errors="replace").strip()
+                if line == "UDP":
+                    self.mode = "udp"
+                    self.udp4 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    self.udp4.settimeout(1.0)
+                    try:
+                        self.udp6 = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+                        self.udp6.settimeout(1.0)
+                    except Exception:
+                        self.udp6 = None
+                    threading.Thread(target=self._udp_up, daemon=True).start()
+                    if self.buf:
+                        self.feed(b"")
+                    return
+                self.mode = "tcp"
+                host, port = line.rsplit(":", 1)
                 try:
                     self.dst = socket.create_connection((host.strip(), int(port)), 10)
                     self.dst.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -59,11 +77,27 @@ class Stream:
                     threading.Thread(target=self._up, daemon=True).start()
                 except Exception:
                     self.close()
-        else:
+        elif self.mode == "tcp":
             try:
                 self.dst.sendall(data)
             except Exception:
                 self.close()
+        elif self.mode == "udp":
+            self.buf.extend(data)
+            while True:
+                pkt = self._decode_udp(self.buf)
+                if pkt is None:
+                    break
+                host, port, payload, used = pkt
+                del self.buf[:used]
+                try:
+                    ai = socket.getaddrinfo(host, port, 0, socket.SOCK_DGRAM)[0]
+                    family, _, _, _, sa = ai
+                    udp = self.udp6 if family == socket.AF_INET6 else self.udp4
+                    if udp:
+                        udp.sendto(payload, sa)
+                except Exception:
+                    continue
 
     def _up(self):
         b = bytearray(BUF)
@@ -79,11 +113,50 @@ class Stream:
             send_frame(self.sock, self.lock, 1, self.sid)
             self.closed = True
 
+    def _udp_up(self):
+        while not self.closed:
+            for udp in (self.udp4, self.udp6):
+                if self.closed or udp is None:
+                    continue
+                try:
+                    data, sa = udp.recvfrom(BUF)
+                    host = sa[0]
+                    port = sa[1]
+                    send_frame(self.sock, self.lock, 2, self.sid, self._encode_udp(host, port, data))
+                except socket.timeout:
+                    continue
+                except Exception:
+                    continue
+
+    def _decode_udp(self, b):
+        if len(b) < 2:
+            return None
+        host_len = (b[0] << 8) | b[1]
+        need = 2 + host_len + 2 + 2
+        if len(b) < need:
+            return None
+        host = bytes(b[2:2 + host_len]).decode(errors="replace")
+        p = 2 + host_len
+        port = (b[p] << 8) | b[p + 1]
+        p += 2
+        data_len = (b[p] << 8) | b[p + 1]
+        p += 2
+        if len(b) < p + data_len:
+            return None
+        payload = bytes(b[p:p + data_len])
+        return host, port, payload, p + data_len
+
+    def _encode_udp(self, host, port, payload):
+        hb = host.encode()
+        return struct.pack(">H", len(hb)) + hb + struct.pack(">HH", port, len(payload)) + payload
+
     def close(self):
         if self.closed:
             return
         self.closed = True
         qc(lambda: self.dst.close() if self.dst else None)
+        qc(lambda: self.udp4.close() if self.udp4 else None)
+        qc(lambda: self.udp6.close() if self.udp6 else None)
         send_frame(self.sock, self.lock, 1, self.sid)
 
 
@@ -101,6 +174,8 @@ def handle_smux(sock, addr):
                 if s:
                     s.closed = True
                     qc(lambda: s.dst.close() if s.dst else None)
+                    qc(lambda: s.udp4.close() if s.udp4 else None)
+                    qc(lambda: s.udp6.close() if s.udp6 else None)
             elif cmd == 2:
                 s = streams.get(sid)
                 if s:
@@ -113,6 +188,8 @@ def handle_smux(sock, addr):
         for s in list(streams.values()):
             s.closed = True
             qc(lambda: s.dst.close() if s.dst else None)
+            qc(lambda: s.udp4.close() if s.udp4 else None)
+            qc(lambda: s.udp6.close() if s.udp6 else None)
         qc(sock.close)
 
 
