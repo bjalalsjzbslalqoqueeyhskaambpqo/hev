@@ -2,6 +2,7 @@ package com.blacktunnel
 
 import java.io.*
 import java.net.*
+import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 
 object BtProxy {
@@ -18,6 +19,7 @@ object BtProxy {
     @Volatile private var running = false
     @Volatile private var lastNoSmuxLogAt = 0L
     @Volatile private var lastUdpLogAt = 0L
+    private val ioExecutor = Executors.newFixedThreadPool(16)
 
     fun start(
         protectSocket: (Socket) -> Unit,
@@ -176,13 +178,13 @@ object BtProxy {
         smux: SmuxSession,
         logger: (String) -> Unit
     ) {
-        thread(isDaemon = true) {
+        ioExecutor.execute {
             runCatching {
                 val cin  = client.getInputStream()
                 val cout = client.getOutputStream()
 
                 // Handshake SOCKS5
-                if (cin.read() != 5) { client.close(); return@thread }
+                if (cin.read() != 5) { client.close(); return@runCatching }
                 val n = cin.read()
                 repeat(n) { cin.read() }
                 cout.write(byteArrayOf(5, 0))
@@ -204,7 +206,7 @@ object BtProxy {
                         val b = ByteArray(16).also { cin.read(it) }
                         b.joinToString(":") { "%02x".format(it) }
                     }
-                    else -> { client.close(); return@thread }
+                    else -> { client.close(); return@runCatching }
                 }
                 val port = (cin.read() shl 8) or cin.read()
                 // UDP ASSOCIATE
@@ -217,10 +219,10 @@ object BtProxy {
                     cout.write(byteArrayOf(5, 0, 0, 1, 0, 0, 0, 0, 0, 0))
                     cout.flush()
                     client.close()
-                    return@thread
+                    return@runCatching
                 }
 
-                if (cmd != 1) { client.close(); return@thread }
+                if (cmd != 1) { client.close(); return@runCatching }
 
                 logger("CONNECT $host:$port")
 
@@ -235,7 +237,7 @@ object BtProxy {
                 val sOut = stream.outputStream()
                 val buf  = ByteArray(32768)
 
-                val up = thread(isDaemon = true) {
+                val up = thread(isDaemon = true, name = "btproxy-uplink") {
                     var sent = 0L
                     runCatching {
                         while (true) {
