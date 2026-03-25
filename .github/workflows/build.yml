@@ -41,7 +41,15 @@ jobs:
           chmod +x gradlew
       - name: Build APK
         run: ./gradlew assembleDebug
-      - uses: actions/upload-artifact@v4
+      - id: upload_apk_primary
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: app/build/outputs/apk/debug/*.apk
+      - name: Retry upload artifact
+        if: steps.upload_apk_primary.outcome == 'failure'
+        uses: actions/upload-artifact@v4
         with:
           name: apk
           path: app/build/outputs/apk/debug/*.apk
