@@ -13,7 +13,7 @@ import socket
 import threading
 
 PORT = 80
-GOST_RELAY_ADDR = ("127.0.0.1", 18080)
+GOST_RELAY_ADDR = ("127.0.0.1", 10808)
 
 
 def pipe(src, dst):
@@ -120,7 +120,7 @@ Description=BlackTunnel Server
 After=network.target
 
 [Service]
-ExecStart=/bin/bash -lc '/opt/btserver/gost -L "relay+tcp://127.0.0.1:18080?notls=true" & exec /usr/bin/python3 /opt/btserver/btserver.py'
+ExecStart=/bin/bash -lc '/opt/btserver/gost -L "relay+yamux://127.0.0.1:10808" & exec /usr/bin/python3 /opt/btserver/btserver.py'
 Restart=always
 RestartSec=2
 

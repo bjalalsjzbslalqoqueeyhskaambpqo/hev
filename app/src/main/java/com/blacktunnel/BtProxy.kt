@@ -135,7 +135,7 @@ object BtProxy {
             val cmd = listOf(
                 binary.absolutePath,
                 "-L", "socks5://:$GOST_SOCKS5_PORT?udp=true",
-                "-F", "relay+tcp://127.0.0.1:$TUNNEL_LOCAL_PORT?notls=true"
+                "-F", "relay+yamux://127.0.0.1:$TUNNEL_LOCAL_PORT"
             )
 
             logger("Iniciando gost: ${cmd.joinToString(" ")}")
