@@ -1,7 +1,5 @@
 package com.blacktunnel
 
-import android.app.AlarmManager
-import android.app.PendingIntent
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
@@ -281,6 +279,10 @@ class MainActivity : AppCompatActivity() {
             forceRestartAfterStop()
             return
         }
+        if (getSelectedServerHost().isNullOrBlank()) {
+            Toast.makeText(this, getString(R.string.select_server_required), Toast.LENGTH_SHORT).show()
+            return
+        }
 
         saveSettings(showToast = false)
         val prepareIntent = VpnService.prepare(this)
@@ -321,25 +323,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun forceRestartAfterStop() {
-        stopService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
-        startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
         TunnelSessionStore.reset()
-
-        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-        if (launchIntent != null) {
-            val pendingIntent = PendingIntent.getActivity(
-                this,
-                1122,
-                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK),
-                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
-            )
-            val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
-            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC, System.currentTimeMillis() + 350, pendingIntent)
-        }
-
         finishAffinity()
         android.os.Process.killProcess(android.os.Process.myPid())
         exitProcess(0)
+    }
+
+    private fun getSelectedServerHost(): String? {
+        if (servers.isNotEmpty()) {
+            val fromSpinner = servers.getOrNull(serverSpinner.selectedItemPosition)?.host?.trim()
+            if (!fromSpinner.isNullOrEmpty()) return fromSpinner
+        }
+        return TunnelPrefs.getSelectedServer(this).trim().ifEmpty { null }
     }
 
     private fun getHotspotIp(): String? {

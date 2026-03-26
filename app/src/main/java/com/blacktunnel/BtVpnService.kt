@@ -54,10 +54,19 @@ class BtVpnService : VpnService() {
         val mtu = TunnelPrefs.getMtu(this).coerceIn(1200, 9000)
         val mux = TunnelPrefs.getMux(this).coerceIn(1, 64)
         val profile = TunnelPrefs.getProfile(this)
+        val selectedServer = TunnelPrefs.getSelectedServer(this).trim()
+        if (selectedServer.isBlank()) {
+            LogStore.add("ERROR no hay servidor seleccionado")
+            TunnelSessionStore.setState("ERROR")
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
         BtProxy.start(
             ctx = this,
             mux = mux,
             profile = profile,
+            serverHost = selectedServer,
             protectSocket = { socket -> protect(socket) },
             logger = { LogStore.add(it) }
         )

@@ -12,10 +12,7 @@ import kotlin.concurrent.thread
 
 object BtProxy {
 
-    private const val PROXY_IPV6  = "2606:4700::6812:16b7"
-    private const val PROXY_HOST  = "emailmarketing.personal.com.ar"
     private const val PROXY_PORT  = 80
-    private const val TUNNEL_HOST = "7.brawlpass.com.ar"
 
     private const val XRAY_SOCKS5_PORT = 10808
     private const val TUNNEL_LOCAL_PORT = 10809
@@ -29,16 +26,19 @@ object BtProxy {
     @Volatile private var tunnelSlots = Semaphore(16)
     @Volatile private var tunnelRetries: Int = 2
     @Volatile private var clientId: String = ""
+    @Volatile private var selectedServerHost: String = ""
 
     fun start(
         ctx: Context,
         mux: Int,
         profile: String,
+        serverHost: String,
         protectSocket: (Socket) -> Unit,
         logger: (String) -> Unit
     ) {
         running = true
         clientId = TunnelPrefs.getOrCreateClientId(ctx)
+        selectedServerHost = serverHost.trim()
         val isPerformance = profile.equals("performance", ignoreCase = true)
         muxConcurrency = if (isPerformance) mux.coerceIn(48, 64) else mux.coerceIn(24, 42)
         xudpConcurrency = if (isPerformance) 192 else 72
@@ -278,16 +278,16 @@ object BtProxy {
             val out = sock.getOutputStream()
             val inp = sock.getInputStream()
 
-            val p1 = "GET / HTTP/1.1\r\nHost: $PROXY_HOST\r\n\r\n"
+            val p1 = "GET / HTTP/1.1\r\nHost: $selectedServerHost\r\n\r\n"
             out.write(p1.toByteArray())
             out.flush()
-            logger("TX p1 host=$PROXY_HOST")
+            logger("TX p1 host=$selectedServerHost")
             Thread.sleep(200)
 
-            val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\nAction: tunnel\r\nAuth: $clientId\r\n\r\n"
+            val p2 = "- / HTTP/1.1\r\nHost: $selectedServerHost\r\nUpgrade: websocket\r\nAction: tunnel\r\nAuth: $clientId\r\n\r\n"
             out.write(p2.toByteArray())
             out.flush()
-            logger("TX p2 host=$TUNNEL_HOST action=tunnel auth=${clientId.take(8)}***")
+            logger("TX p2 host=$selectedServerHost action=tunnel auth=${clientId.take(8)}***")
 
             sock.soTimeout = 8000
             val buf = ByteArrayOutputStream()
@@ -357,14 +357,17 @@ object BtProxy {
         protectSocket: (Socket) -> Unit,
         logger: (String) -> Unit
     ): Socket? {
+        if (selectedServerHost.isBlank()) {
+            logger("ERROR host de servidor vacío")
+            TunnelSessionStore.setState("ERROR")
+            return null
+        }
         val candidates = linkedSetOf<InetAddress>()
-        runCatching { candidates += InetAddress.getByName(PROXY_IPV6) }
-            .onFailure { logger("WARN IPv6 preferido inválido: ${it.message}") }
-        runCatching { candidates += InetAddress.getAllByName(PROXY_HOST).toList() }
+        runCatching { candidates += InetAddress.getAllByName(selectedServerHost).toList() }
             .onFailure { logger("WARN resolución DNS de proxy falló: ${it.message}") }
 
         if (candidates.isEmpty()) {
-            logger("ERROR no hay direcciones para proxy host=$PROXY_HOST")
+            logger("ERROR no hay direcciones para proxy host=$selectedServerHost")
             TunnelSessionStore.setState("ERROR")
             return null
         }
