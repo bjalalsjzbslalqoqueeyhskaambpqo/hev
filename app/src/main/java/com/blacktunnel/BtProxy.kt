@@ -23,27 +23,28 @@ object BtProxy {
 
     @Volatile private var xrayProcess: Process? = null
     @Volatile private var running = false
-    @Volatile private var muxConcurrency: Int = 16
-    @Volatile private var xudpConcurrency: Int = 32
+    private const val MAX_SIMULTANEOUS_TUNNELS = 6
+
+    @Volatile private var muxConcurrency: Int = 1024
+    @Volatile private var xudpConcurrency: Int = 1024
     @Volatile private var logLevel: String = "warning"
-    @Volatile private var tunnelSlots = Semaphore(16)
+    @Volatile private var tunnelSlots = Semaphore(MAX_SIMULTANEOUS_TUNNELS)
     @Volatile private var tunnelRetries: Int = 2
 
     fun start(
         ctx: Context,
-        mux: Int,
+        _mux: Int,
         profile: String,
         protectSocket: (Socket) -> Unit,
         logger: (String) -> Unit
     ) {
         running = true
-        val isPerformance = profile.equals("performance", ignoreCase = true)
-        muxConcurrency = if (isPerformance) mux.coerceIn(48, 64) else mux.coerceIn(24, 42)
-        xudpConcurrency = if (isPerformance) 192 else 72
-        logLevel = if (isPerformance) "none" else "warning"
-        tunnelSlots = Semaphore(if (isPerformance) 120 else 56)
-        tunnelRetries = if (isPerformance) 6 else 3
-        logger("BtProxy.start() profile=$profile mux=$muxConcurrency xudp=$xudpConcurrency slots=${if (isPerformance) 120 else 56}")
+        muxConcurrency = 1024
+        xudpConcurrency = 1024
+        logLevel = if (profile.equals("performance", ignoreCase = true)) "none" else "warning"
+        tunnelSlots = Semaphore(MAX_SIMULTANEOUS_TUNNELS)
+        tunnelRetries = 3
+        logger("BtProxy.start() profile=$profile mux=$muxConcurrency xudp=$xudpConcurrency slots=$MAX_SIMULTANEOUS_TUNNELS")
         TunnelSessionStore.setState("CONNECTING")
 
         thread(isDaemon = true, name = "btproxy-init") {

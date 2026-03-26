@@ -39,6 +39,8 @@ import threading
 
 PORT = 80
 XRAY_ADDR = ("127.0.0.1", 10809)
+MAX_ACTIVE_TUNNELS = 6
+tunnel_slots = threading.BoundedSemaphore(MAX_ACTIVE_TUNNELS)
 
 
 def pipe(src, dst):
@@ -59,7 +61,11 @@ def pipe(src, dst):
 
 def handle_tunnel(client):
     upstream = None
+    acquired = False
     try:
+        acquired = tunnel_slots.acquire(timeout=8)
+        if not acquired:
+            return
         upstream = socket.create_connection(XRAY_ADDR, 5)
         t1 = threading.Thread(target=pipe, args=(client, upstream), daemon=True)
         t2 = threading.Thread(target=pipe, args=(upstream, client), daemon=True)
@@ -75,6 +81,11 @@ def handle_tunnel(client):
                 upstream.close()
         except Exception:
             pass
+        if acquired:
+            try:
+                tunnel_slots.release()
+            except Exception:
+                pass
         try:
             client.close()
         except Exception:
