@@ -29,6 +29,7 @@ object BtProxy {
     @Volatile private var tunnelRetries: Int = 2
     @Volatile private var clientId: String = ""
     @Volatile private var selectedServerHost: String = ""
+    private val terminalStatuses = setOf("INVALID", "EXPIRED", "DENIED", "CENTRAL_OFFLINE", "BANNED")
 
     fun start(
         ctx: Context,
@@ -309,21 +310,25 @@ object BtProxy {
 
             val resp = buf.toString()
             logger("RX $blocks bloques: ${resp.take(100)}")
-            val handshake = parseTunnelHandshake(resp)
-            val headersForUi = handshake?.headers?.toMutableMap() ?: mutableMapOf()
-            if (headersForUi["x-status"].isNullOrBlank()) {
-                headersForUi["x-status"] = if (handshake?.statusCode == 101) "OK" else "OPEN"
-            }
-            logger("Handshake tolerante code=${handshake?.statusCode ?: -1} x-status=${headersForUi["x-status"]}")
+            val handshake = pickHandshakeWithHeaders(resp)
+            val headersForUi = handshake.headers.toMutableMap()
+            val status = (headersForUi["x-status"] ?: "UNKNOWN").uppercase()
+            logger("Handshake tolerante code=${handshake.statusCode} x-status=$status")
             TunnelSessionStore.updateFromHeaders(
                 mapOf(
-                    "X-Status" to (headersForUi["x-status"] ?: "-"),
+                    "X-Status" to status,
                     "X-Name" to (headersForUi["x-name"] ?: "-"),
                     "X-Expire" to (headersForUi["x-expire"] ?: "-"),
                     "X-Days-Left" to (headersForUi["x-days-left"] ?: "-"),
                     "X-Premium" to (headersForUi["x-premium"] ?: "-")
                 )
             )
+            if (status != "OK") {
+                logger("Handshake rechazado status=$status")
+                TunnelSessionStore.setState("ERROR")
+                runCatching { sock.close() }
+                return null
+            }
 
             sock.soTimeout = 0
             TunnelSessionStore.setLatency(System.currentTimeMillis() - startMs)
@@ -344,6 +349,11 @@ object BtProxy {
         repeat(tunnelRetries) { attempt ->
             val tunnel = openTunnel(protectSocket, logger)
             if (tunnel != null) return tunnel
+            val currentStatus = TunnelSessionStore.current().status.uppercase()
+            if (currentStatus in terminalStatuses) {
+                logger("Cancelando reintentos por estado terminal=$currentStatus")
+                return null
+            }
             if (attempt < tunnelRetries - 1) {
                 val backoff = (250L * (attempt + 1)).coerceAtMost(1200L)
                 logger("Reintentando túnel (${attempt + 2}/$tunnelRetries) en ${backoff}ms")
@@ -400,7 +410,7 @@ object BtProxy {
         val headers: Map<String, String>
     )
 
-    private fun parseTunnelHandshake(response: String): HandshakeResult? {
+    private fun pickHandshakeWithHeaders(response: String): HandshakeResult {
         val candidates = response
             .split("\r\n\r\n")
             .map { it.trim() }
@@ -408,16 +418,24 @@ object BtProxy {
             .map { parseHandshakeBlock(it) }
 
         if (candidates.isEmpty()) {
-            return null
+            return HandshakeResult(-1, mapOf("x-status" to "UNKNOWN"))
         }
 
-        return candidates.firstOrNull {
+        val selected = candidates.firstOrNull {
             it.statusCode == 101 && it.headers["x-status"].isNullOrBlank().not()
+        } ?: candidates.firstOrNull {
+            it.headers["x-status"].isNullOrBlank().not()
         } ?: candidates.firstOrNull {
             it.statusCode == 101 && it.headers["upgrade"].equals("websocket", ignoreCase = true)
         } ?: candidates.lastOrNull {
             it.statusCode == 101
+        } ?: candidates.last()
+
+        val enrichedHeaders = selected.headers.toMutableMap()
+        if (enrichedHeaders["x-status"].isNullOrBlank()) {
+            enrichedHeaders["x-status"] = if (selected.statusCode == 101) "OK" else "UNKNOWN"
         }
+        return HandshakeResult(selected.statusCode, enrichedHeaders)
     }
 
     private fun parseHandshakeBlock(block: String): HandshakeResult {
