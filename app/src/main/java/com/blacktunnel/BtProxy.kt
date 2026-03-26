@@ -23,6 +23,7 @@ object BtProxy {
 
     @Volatile private var xrayProcess: Process? = null
     @Volatile private var running = false
+    @Volatile private var failureStopTriggered = false
     private val logLevel: String = "none"
     private val tunnelSlots = Semaphore(120)
     @Volatile private var bridgeServerSocket: ServerSocket? = null
@@ -43,6 +44,7 @@ object BtProxy {
         logger: (String) -> Unit
     ) {
         running = true
+        failureStopTriggered = false
         clientId = TunnelPrefs.getOrCreateClientId(ctx)
         selectedServerHost = serverHost.trim()
         logger("BtProxy.start()")
@@ -148,9 +150,10 @@ object BtProxy {
                         tunnelSlots.acquire()
                         val tunnel = openTunnel(protectSocket, logger)
                         if (tunnel == null) {
-                            logger("ERROR no se pudo abrir túnel para conexión local")
+                            logger("ERROR no se pudo abrir túnel para conexión local, deteniendo proxy hasta reconexión manual")
                             runCatching { client.close() }
                             tunnelSlots.release()
+                            triggerFailureStop(logger)
                             return@thread
                         }
                         logger("Túnel TCP abierto para bridge")
@@ -409,6 +412,17 @@ object BtProxy {
             ?: statuses.firstOrNull { it != "-" }
             ?: statuses.firstOrNull()
             ?: "UNKNOWN"
+    }
+
+    private fun triggerFailureStop(logger: (String) -> Unit) {
+        if (failureStopTriggered) return
+        synchronized(this) {
+            if (failureStopTriggered) return
+            failureStopTriggered = true
+        }
+        logger("Proxy detenido por fallo de túnel. Estado queda desconectado hasta reconexión manual.")
+        TunnelSessionStore.setState("DISCONNECTED")
+        stop()
     }
 
     private data class HandshakeSocketResponse(val socket: Socket, val data: String)
