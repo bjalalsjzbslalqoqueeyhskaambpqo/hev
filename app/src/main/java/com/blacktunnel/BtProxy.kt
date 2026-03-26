@@ -30,6 +30,8 @@ object BtProxy {
     @Volatile private var tunnelRetries: Int = 2
     @Volatile private var bridgeServerSocket: ServerSocket? = null
     @Volatile private var nextTunnelAttemptAtMs: Long = 0L
+    private val tunnelPool = java.util.concurrent.LinkedBlockingQueue<Socket>(8)
+    private val poolLock = Any()
     @Volatile private var clientId: String = ""
     @Volatile private var selectedServerHost: String = ""
     private val terminalStatuses = setOf("INVALID", "EXPIRED", "DENIED", "CENTRAL_OFFLINE", "BANNED")
@@ -123,6 +125,10 @@ object BtProxy {
         nextTunnelAttemptAtMs = 0L
         runCatching { bridgeServerSocket?.close() }
         bridgeServerSocket = null
+        synchronized(poolLock) {
+            tunnelPool.forEach { runCatching { it.close() } }
+            tunnelPool.clear()
+        }
         val proc = xrayProcess
         runCatching { proc?.destroy() }
         runCatching {
@@ -143,10 +149,30 @@ object BtProxy {
         protectSocket: (Socket) -> Unit,
         logger: (String) -> Unit
     ) {
+        synchronized(poolLock) {
+            tunnelPool.forEach { runCatching { it.close() } }
+            tunnelPool.clear()
+        }
         runCatching { bridgeServerSocket?.close() }
         val srv = ServerSocket(TUNNEL_LOCAL_PORT, 128, InetAddress.getByName("127.0.0.1"))
         bridgeServerSocket = srv
         logger("Bridge escuchando en 127.0.0.1:$TUNNEL_LOCAL_PORT")
+
+        thread(isDaemon = true, name = "tunnel-pool-filler") {
+            while (running) {
+                if (tunnelPool.size < 4) {
+                    val tunnel = openTunnelWithRetry(protectSocket, logger)
+                    if (tunnel != null) {
+                        tunnelPool.offer(tunnel)
+                        logger("Pool: túnel listo, pool.size=${tunnelPool.size}")
+                    } else {
+                        Thread.sleep(500)
+                    }
+                } else {
+                    Thread.sleep(200)
+                }
+            }
+        }
 
         thread(isDaemon = true, name = "bridge-accept") {
             try {
@@ -155,14 +181,15 @@ object BtProxy {
                     client.tcpNoDelay = true
                     thread(isDaemon = true, name = "bridge-conn") {
                         tunnelSlots.acquire()
-                        val tunnel = openTunnelWithRetry(protectSocket, logger)
+                        val tunnel = tunnelPool.poll(3, java.util.concurrent.TimeUnit.SECONDS)
+                            ?: openTunnelWithRetry(protectSocket, logger)
                         if (tunnel == null) {
-                            logger("ERROR no se pudo abrir túnel para conexión local")
+                            logger("ERROR no hay túnel disponible")
                             runCatching { client.close() }
                             tunnelSlots.release()
                             return@thread
                         }
-                        logger("Túnel TCP abierto para bridge")
+                        logger("Túnel TCP tomado para bridge")
                         relay(client, tunnel)
                         tunnelSlots.release()
                     }
