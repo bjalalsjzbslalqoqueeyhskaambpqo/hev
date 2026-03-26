@@ -9,7 +9,6 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.Semaphore
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
@@ -139,8 +138,8 @@ object BtProxy {
     private fun acquireReadyTunnel(logger: (String) -> Unit): Socket? {
         val direct = tunnelPool.poll()
         if (direct != null) return direct
-        logger("Pool vacío, esperando túnel listo...")
-        return tunnelPool.poll(8, TimeUnit.SECONDS)
+        logger("Pool vacío, esperando túnel persistente...")
+        return runCatching { tunnelPool.take() }.getOrNull()
     }
 
     private fun drainPool() {
