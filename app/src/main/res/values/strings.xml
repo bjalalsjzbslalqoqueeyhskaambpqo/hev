@@ -26,7 +26,9 @@
     <string name="no_servers">Sin servidores</string>
     <string name="servers_updated">Servidores actualizados</string>
     <string name="battery_settings_failed">No se pudo abrir ajustes de batería</string>
-    <string name="hotspot_proxy_toggle">Compartir internet por proxy SOCKS5</string>
+    <string name="hotspot_proxy_toggle">Compartir Wi‑Fi por proxy</string>
+    <string name="hotspot_requires_system">Primero activa \"Compartir Wi‑Fi\" del sistema y luego esta opción.</string>
+    <string name="block_non_selected_toggle">Bloquear apps no seleccionadas (requiere bloqueo VPN del sistema)</string>
     <string name="hotspot_info">Host: %1$s  Puerto: %2$d</string>
     <string name="hotspot_disabled">Hotspot proxy desactivado</string>
 </resources>

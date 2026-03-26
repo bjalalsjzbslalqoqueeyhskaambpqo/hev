@@ -8,6 +8,7 @@ import android.net.VpnService
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
+import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -34,6 +35,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var appSearchInput: EditText
     private lateinit var appListView: ListView
     private lateinit var hotspotSwitch: SwitchCompat
+    private lateinit var blockNonSelectedSwitch: SwitchCompat
     private lateinit var hotspotInfo: TextView
     private lateinit var stateText: TextView
     private lateinit var statusValue: TextView
@@ -68,6 +70,7 @@ class MainActivity : AppCompatActivity() {
         appSearchInput = findViewById(R.id.appSearchInput)
         appListView = findViewById(R.id.appListView)
         hotspotSwitch = findViewById(R.id.hotspotSwitch)
+        blockNonSelectedSwitch = findViewById(R.id.blockNonSelectedSwitch)
         hotspotInfo = findViewById(R.id.hotspotInfo)
         stateText = findViewById(R.id.stateText)
         statusValue = findViewById(R.id.statusValue)
@@ -88,21 +91,29 @@ class MainActivity : AppCompatActivity() {
         appListView.setOnItemClickListener { _, _, position, _ ->
             val pkg = filteredApps[position].second
             if (selectedPackages.contains(pkg)) selectedPackages.remove(pkg) else selectedPackages.add(pkg)
+            filterAppList(appSearchInput.text?.toString().orEmpty())
         }
 
-        serverSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+        serverSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 if (servers.isEmpty()) return
                 servers.getOrNull(position)?.let { TunnelPrefs.setSelectedServer(this@MainActivity, it.host) }
             }
-            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
         }
 
         toggleButton.setOnClickListener { onToggle() }
         refreshServersButton.setOnClickListener { refreshServers(manual = true) }
         saveSettingsButton.setOnClickListener { saveSettings(showToast = true) }
         batteryButton.setOnClickListener { openBatterySettings() }
-        hotspotSwitch.setOnCheckedChangeListener { _, _ -> render(TunnelSessionStore.current()) }
+        hotspotSwitch.setOnCheckedChangeListener { _, isChecked ->
+            if (isChecked && getHotspotIp() == null) {
+                hotspotSwitch.isChecked = false
+                Toast.makeText(this, getString(R.string.hotspot_requires_system), Toast.LENGTH_LONG).show()
+                return@setOnCheckedChangeListener
+            }
+            render(TunnelSessionStore.current())
+        }
 
         refreshServers(manual = false)
         render(TunnelSessionStore.current())
@@ -173,9 +184,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun filterAppList(query: String) {
-        filteredApps = if (query.isBlank()) allApps else allApps.filter {
+        val baseList = if (query.isBlank()) allApps else allApps.filter {
             it.first.contains(query, true) || it.second.contains(query, true)
         }
+        filteredApps = baseList.sortedWith(
+            compareByDescending<Pair<String, String>> { selectedPackages.contains(it.second) }
+                .thenBy { it.first.lowercase() }
+                .thenBy { it.second.lowercase() }
+        )
         val labels = filteredApps.map { "${it.first} (${it.second})" }
         appListView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_multiple_choice, labels)
         filteredApps.forEachIndexed { index, pair -> appListView.setItemChecked(index, selectedPackages.contains(pair.second)) }
@@ -186,6 +202,7 @@ class MainActivity : AppCompatActivity() {
         profileNormal.isChecked = profile == "normal"
         profilePerformance.isChecked = profile == "performance"
         hotspotSwitch.isChecked = TunnelPrefs.isHotspotProxyEnabled(this)
+        blockNonSelectedSwitch.isChecked = TunnelPrefs.isBlockNonSelectedEnabled(this)
 
         selectedPackages.clear()
         selectedPackages += TunnelPrefs.getIncludedApps(this)
@@ -204,9 +221,10 @@ class MainActivity : AppCompatActivity() {
     private fun saveSettings(showToast: Boolean) {
         val profile = if (profilePerformance.isChecked) "performance" else "normal"
         TunnelPrefs.setProfile(this, profile)
-        TunnelPrefs.setMux(this, if (profile == "performance") 36 else 24)
+        TunnelPrefs.setMux(this, if (profile == "performance") 52 else 28)
         TunnelPrefs.setIncludedApps(this, selectedPackages.toList())
         TunnelPrefs.setHotspotProxyEnabled(this, hotspotSwitch.isChecked)
+        TunnelPrefs.setBlockNonSelectedEnabled(this, blockNonSelectedSwitch.isChecked)
         if (showToast) Toast.makeText(this, getString(R.string.settings_saved), Toast.LENGTH_SHORT).show()
     }
 

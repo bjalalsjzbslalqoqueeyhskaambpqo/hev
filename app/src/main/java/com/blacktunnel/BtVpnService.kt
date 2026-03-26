@@ -173,6 +173,7 @@ class BtVpnService : VpnService() {
 
     private fun configureAllowedApplications(builder: Builder) {
         val profile = TunnelPrefs.getProfile(this)
+        val blockNonSelected = TunnelPrefs.isBlockNonSelectedEnabled(this)
 
         if (!profile.equals("performance", ignoreCase = true)) {
             runCatching { builder.addDisallowedApplication(packageName) }
@@ -198,6 +199,10 @@ class BtVpnService : VpnService() {
         includedApps.forEach { pkg ->
             runCatching { builder.addAllowedApplication(pkg) }
                 .onFailure { LogStore.add("WARN app incluida inválida $pkg: ${it.message}") }
+        }
+
+        if (blockNonSelected) {
+            LogStore.add("Modo performance estricto: requiere bloqueo VPN del sistema para negar apps no seleccionadas")
         }
         LogStore.add("Modo performance: apps en túnel=${includedApps.joinToString()}")
     }
