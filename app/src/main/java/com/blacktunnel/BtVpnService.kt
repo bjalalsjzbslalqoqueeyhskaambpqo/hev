@@ -15,12 +15,13 @@ import kotlin.concurrent.thread
 class BtVpnService : VpnService() {
 
     private var pfd: ParcelFileDescriptor? = null
+    @Volatile private var isStarting = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         installCrashHandler()
         when (intent?.action) {
             ACTION_STOP -> stopTunnel()
-            else -> startTunnel()
+            else -> startTunnelAsync()
         }
         return START_STICKY
     }
@@ -38,6 +39,21 @@ class BtVpnService : VpnService() {
                 val dir = getExternalFilesDir(null) ?: return@runCatching
                 val logFile = File(dir, "crash.log")
                 logFile.appendText("${System.currentTimeMillis()} CRASH: ${throwable.stackTraceToString()}\n")
+            }
+        }
+    }
+
+    private fun startTunnelAsync() {
+        if (isStarting) {
+            LogStore.add("VPN start ignorado: ya hay arranque en curso")
+            return
+        }
+        isStarting = true
+        thread(isDaemon = true, name = "vpn-startup") {
+            try {
+                startTunnel()
+            } finally {
+                isStarting = false
             }
         }
     }
