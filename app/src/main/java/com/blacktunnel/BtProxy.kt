@@ -57,6 +57,38 @@ object BtProxy {
         }
     }
 
+    fun preflightAuth(
+        ctx: Context,
+        serverHost: String,
+        protectSocket: (Socket) -> Unit,
+        logger: (String) -> Unit
+    ): Boolean {
+        selectedServerHost = serverHost.trim()
+        clientId = TunnelPrefs.getOrCreateClientId(ctx)
+        if (selectedServerHost.isBlank()) {
+            TunnelSessionStore.updateFromHeaders(mapOf("X-Status" to "INVALID"))
+            logger("Preflight AUTH inválido: host vacío")
+            return false
+        }
+
+        val response = runHandshakeRequest(action = "auth", protectSocket = protectSocket, logger = logger) ?: return false
+        val handshake = pickHandshakeWithHeaders(response.data)
+        val headers = handshake.headers
+        val status = (headers["x-status"] ?: "UNKNOWN").uppercase()
+        TunnelSessionStore.updateFromHeaders(
+            mapOf(
+                "X-Status" to status,
+                "X-Name" to (headers["x-name"] ?: "-"),
+                "X-Expire" to (headers["x-expire"] ?: "-"),
+                "X-Days-Left" to (headers["x-days-left"] ?: "-"),
+                "X-Premium" to (headers["x-premium"] ?: "-")
+            )
+        )
+        logger("Preflight AUTH code=${handshake.statusCode} status=$status")
+        runCatching { response.socket.close() }
+        return status == "OK"
+    }
+
     fun stop() {
         running = false
         xrayProcess?.destroy()
@@ -276,40 +308,10 @@ object BtProxy {
     ): Socket? {
         return try {
             val startMs = System.currentTimeMillis()
-            val sock = openProxySocket(protectSocket, logger) ?: return null
-            sock.tcpNoDelay = true
-            val out = sock.getOutputStream()
-            val inp = sock.getInputStream()
-
-            val p1 = "GET / HTTP/1.1\r\nHost: $DECOY_HOST\r\n\r\n"
-            out.write(p1.toByteArray())
-            out.flush()
-            logger("TX p1 host=$DECOY_HOST")
-            Thread.sleep(200)
-
-            val p2 = "- / HTTP/1.1\r\nHost: $selectedServerHost\r\nUpgrade: websocket\r\nAction: tunnel\r\nAuth: $clientId\r\n\r\n"
-            out.write(p2.toByteArray())
-            out.flush()
-            logger("TX p2 host=$selectedServerHost action=tunnel auth=${clientId.take(8)}***")
-
-            sock.soTimeout = 8000
-            val buf = ByteArrayOutputStream()
-            var blocks = 0
-            val deadline = System.currentTimeMillis() + 8000
-            while (blocks < 2 && System.currentTimeMillis() < deadline) {
-                try {
-                    val tmp = ByteArray(4096)
-                    val n = inp.read(tmp)
-                    if (n < 0) break
-                    buf.write(tmp, 0, n)
-                    blocks = buf.toString().split("\r\n\r\n").size - 1
-                } catch (_: java.net.SocketTimeoutException) {
-                    break
-                }
-            }
-
-            val resp = buf.toString()
-            logger("RX $blocks bloques: ${resp.take(100)}")
+            val response = runHandshakeRequest(action = "tunnel", protectSocket = protectSocket, logger = logger)
+                ?: return null
+            val sock = response.socket
+            val resp = response.data
             val handshake = pickHandshakeWithHeaders(resp)
             val headersForUi = handshake.headers.toMutableMap()
             val status = (headersForUi["x-status"] ?: "UNKNOWN").uppercase()
@@ -338,6 +340,55 @@ object BtProxy {
         } catch (e: Exception) {
             logger("ERROR abriendo túnel: ${e.message}")
             TunnelSessionStore.setState("ERROR")
+            null
+        }
+    }
+
+    private data class HandshakeSocketResponse(val socket: Socket, val data: String)
+
+    private fun runHandshakeRequest(
+        action: String,
+        protectSocket: (Socket) -> Unit,
+        logger: (String) -> Unit
+    ): HandshakeSocketResponse? {
+        val sock = openProxySocket(protectSocket, logger) ?: return null
+        return try {
+            sock.tcpNoDelay = true
+            val out = sock.getOutputStream()
+            val inp = sock.getInputStream()
+
+            val p1 = "GET / HTTP/1.1\r\nHost: $DECOY_HOST\r\n\r\n"
+            out.write(p1.toByteArray())
+            out.flush()
+            logger("TX p1 host=$DECOY_HOST")
+            Thread.sleep(200)
+
+            val p2 = "GET / HTTP/1.1\r\nHost: $selectedServerHost\r\nAction: $action\r\nAuth: $clientId\r\n\r\n"
+            out.write(p2.toByteArray())
+            out.flush()
+            logger("TX p2 host=$selectedServerHost action=$action auth=${clientId.take(8)}***")
+
+            sock.soTimeout = 8000
+            val buf = ByteArrayOutputStream()
+            var blocks = 0
+            val deadline = System.currentTimeMillis() + 8000
+            while (blocks < 2 && System.currentTimeMillis() < deadline) {
+                try {
+                    val tmp = ByteArray(4096)
+                    val n = inp.read(tmp)
+                    if (n < 0) break
+                    buf.write(tmp, 0, n)
+                    blocks = buf.toString().split("\r\n\r\n").size - 1
+                } catch (_: java.net.SocketTimeoutException) {
+                    break
+                }
+            }
+            val resp = buf.toString()
+            logger("RX $blocks bloques: ${resp.take(120)}")
+            HandshakeSocketResponse(sock, resp)
+        } catch (e: Exception) {
+            logger("ERROR handshake action=$action: ${e.message}")
+            runCatching { sock.close() }
             null
         }
     }
