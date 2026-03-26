@@ -252,9 +252,9 @@ object BtProxy {
 
             val resp = buf.toString()
             logger("RX $blocks bloques: ${resp.take(100)}")
-            val handshake = parseHandshake(resp)
-            if (handshake.statusCode != 101) {
-                logger("ERROR túnel rechazado code=${handshake.statusCode}")
+            val handshake = parseTunnelHandshake(resp)
+            if (handshake == null || handshake.statusCode != 101) {
+                logger("ERROR túnel rechazado code=${handshake?.statusCode ?: -1}")
                 TunnelSessionStore.setState("ERROR")
                 sock.close()
                 return null
@@ -264,6 +264,7 @@ object BtProxy {
             if (headersForUi["x-status"].isNullOrBlank()) {
                 headersForUi["x-status"] = "OK"
             }
+            logger("Handshake seleccionado code=${handshake.statusCode} x-status=${headersForUi["x-status"]}")
             TunnelSessionStore.updateFromHeaders(
                 mapOf(
                     "X-Status" to (headersForUi["x-status"] ?: "-"),
@@ -290,13 +291,28 @@ object BtProxy {
         val headers: Map<String, String>
     )
 
-    private fun parseHandshake(response: String): HandshakeResult {
-        val headerBlock = response
+    private fun parseTunnelHandshake(response: String): HandshakeResult? {
+        val candidates = response
             .split("\r\n\r\n")
-            .firstOrNull { it.startsWith("HTTP/1.1", ignoreCase = true) }
-            ?: return HandshakeResult(-1, emptyMap())
+            .map { it.trim() }
+            .filter { it.startsWith("HTTP/1.1", ignoreCase = true) }
+            .map { parseHandshakeBlock(it) }
 
-        val lines = headerBlock.split("\r\n")
+        if (candidates.isEmpty()) {
+            return null
+        }
+
+        return candidates.firstOrNull {
+            it.statusCode == 101 && it.headers["x-status"].isNullOrBlank().not()
+        } ?: candidates.firstOrNull {
+            it.statusCode == 101 && it.headers["upgrade"].equals("websocket", ignoreCase = true)
+        } ?: candidates.lastOrNull {
+            it.statusCode == 101
+        }
+    }
+
+    private fun parseHandshakeBlock(block: String): HandshakeResult {
+        val lines = block.split("\r\n")
         val statusCode = lines
             .firstOrNull()
             ?.split(" ")
@@ -317,4 +333,5 @@ object BtProxy {
 
         return HandshakeResult(statusCode, headers)
     }
+
 }
