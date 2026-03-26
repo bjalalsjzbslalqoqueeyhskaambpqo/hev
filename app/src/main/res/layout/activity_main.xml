@@ -95,18 +95,28 @@
                         android:textColor="@color/text_primary" />
                 </RadioGroup>
 
-                <com.google.android.material.textfield.TextInputLayout
+                <LinearLayout
+                    android:id="@+id/performanceContainer"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="10dp"
-                    android:hint="@string/included_apps_hint">
+                    android:orientation="vertical">
 
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/includedAppsInput"
+                    <EditText
+                        android:id="@+id/appSearchInput"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:textColor="@color/text_primary" />
-                </com.google.android.material.textfield.TextInputLayout>
+                        android:hint="@string/search_apps_hint"
+                        android:textColor="@color/text_primary"
+                        android:textColorHint="@color/text_secondary" />
+
+                    <ListView
+                        android:id="@+id/appListView"
+                        android:layout_width="match_parent"
+                        android:layout_height="220dp"
+                        android:layout_marginTop="8dp"
+                        android:choiceMode="multipleChoice" />
+                </LinearLayout>
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/saveSettingsButton"
@@ -153,6 +163,7 @@
                     android:textStyle="bold" />
 
                 <TextView android:id="@+id/statusValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:textColor="@color/text_secondary" />
+                <TextView android:id="@+id/latencyValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textColor="@color/text_secondary" />
                 <TextView android:id="@+id/nameValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textColor="@color/text_secondary" />
                 <TextView android:id="@+id/expireValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textColor="@color/text_secondary" />
                 <TextView android:id="@+id/daysLeftValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textColor="@color/text_secondary" />

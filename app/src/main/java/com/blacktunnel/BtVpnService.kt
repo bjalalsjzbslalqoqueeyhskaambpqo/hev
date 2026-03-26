@@ -172,8 +172,16 @@ class BtVpnService : VpnService() {
     }
 
     private fun configureAllowedApplications(builder: Builder) {
-        val includedApps = TunnelPrefs.getIncludedApps(this)
+        val profile = TunnelPrefs.getProfile(this)
 
+        if (!profile.equals("performance", ignoreCase = true)) {
+            runCatching { builder.addDisallowedApplication(packageName) }
+                .onFailure { LogStore.add("WARN no se pudo excluir app propia: ${it.message}") }
+            LogStore.add("Modo normal: todas las apps usan túnel")
+            return
+        }
+
+        val includedApps = TunnelPrefs.getIncludedApps(this)
         if (includedApps.isEmpty()) {
             val installedPackages = packageManager.getInstalledApplications(0)
                 .map { it.packageName }
@@ -183,7 +191,7 @@ class BtVpnService : VpnService() {
                 runCatching { builder.addDisallowedApplication(pkg) }
                     .onFailure { LogStore.add("WARN no se pudo excluir $pkg: ${it.message}") }
             }
-            LogStore.add("Modo apps: sin incluidas, tráfico por túnel desactivado")
+            LogStore.add("Modo performance: sin apps seleccionadas, tráfico por túnel desactivado")
             return
         }
 
@@ -191,8 +199,9 @@ class BtVpnService : VpnService() {
             runCatching { builder.addAllowedApplication(pkg) }
                 .onFailure { LogStore.add("WARN app incluida inválida $pkg: ${it.message}") }
         }
-        LogStore.add("Modo apps: incluidas=${includedApps.joinToString()}")
+        LogStore.add("Modo performance: apps en túnel=${includedApps.joinToString()}")
     }
+
 
     private fun writeHevConfig(): java.io.File {
         val file = java.io.File(filesDir, "hev.yml")

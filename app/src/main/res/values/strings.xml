@@ -8,6 +8,7 @@
     <string name="state_error">Error</string>
     <string name="session_info">Información de sesión</string>
     <string name="session_status">Estado servidor</string>
+    <string name="latency_label">Latencia cliente-servidor</string>
     <string name="session_name">Nombre</string>
     <string name="session_expire">Expira</string>
     <string name="session_days_left">Días restantes</string>
@@ -16,7 +17,7 @@
     <string name="settings_title">Ajustes</string>
     <string name="profile_normal">Normal</string>
     <string name="profile_performance">Performance</string>
-    <string name="included_apps_hint">Apps incluidas (paquetes, separadas por coma)</string>
+    <string name="search_apps_hint">Buscar app por nombre o paquete</string>
     <string name="save_settings">Guardar ajustes</string>
     <string name="open_battery_settings">Quitar restricción de batería</string>
     <string name="settings_saved">Ajustes guardados</string>

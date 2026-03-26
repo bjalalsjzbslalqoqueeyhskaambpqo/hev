@@ -37,10 +37,10 @@ object BtProxy {
     ) {
         running = true
         val isPerformance = profile.equals("performance", ignoreCase = true)
-        muxConcurrency = if (isPerformance) mux.coerceIn(16, 64) else mux.coerceIn(8, 32)
-        xudpConcurrency = if (isPerformance) 64 else 32
+        muxConcurrency = if (isPerformance) mux.coerceIn(24, 64) else mux.coerceIn(16, 48)
+        xudpConcurrency = if (isPerformance) 96 else 48
         logLevel = if (isPerformance) "none" else "warning"
-        tunnelSlots = Semaphore(if (isPerformance) 48 else 24)
+        tunnelSlots = Semaphore(if (isPerformance) 64 else 36)
         logger("BtProxy.start() profile=$profile mux=$muxConcurrency xudp=$xudpConcurrency")
         TunnelSessionStore.setState("CONNECTING")
 
@@ -229,6 +229,7 @@ object BtProxy {
         logger: (String) -> Unit
     ): Socket? {
         return try {
+            val startMs = System.currentTimeMillis()
             val sock = openProxySocket(protectSocket, logger) ?: return null
             sock.tcpNoDelay = true
             val out = sock.getOutputStream()
@@ -280,6 +281,7 @@ object BtProxy {
             )
 
             sock.soTimeout = 0
+            TunnelSessionStore.setLatency(System.currentTimeMillis() - startMs)
             TunnelSessionStore.setState("CONNECTED")
             logger("Túnel abierto (modo tolerante) via ${sock.inetAddress.hostAddress}")
             sock
