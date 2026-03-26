@@ -53,9 +53,11 @@ class BtVpnService : VpnService() {
         startVpnForeground()
         val mtu = TunnelPrefs.getMtu(this).coerceIn(1200, 9000)
         val mux = TunnelPrefs.getMux(this).coerceIn(1, 64)
+        val profile = TunnelPrefs.getProfile(this)
         BtProxy.start(
             ctx = this,
             mux = mux,
+            profile = profile,
             protectSocket = { socket -> protect(socket) },
             logger = { LogStore.add(it) }
         )
@@ -93,8 +95,7 @@ class BtVpnService : VpnService() {
             builder.allowFamily(OsConstants.AF_INET6)
         }
 
-        runCatching { builder.addDisallowedApplication(packageName) }
-            .onFailure { LogStore.add("ERROR addDisallowedApplication: ${it.message}") }
+        configureAllowedApplications(builder)
 
         val established = runCatching { builder.establish() }.getOrElse {
             LogStore.add("VPN establish failed: ${it.message}")
@@ -168,6 +169,29 @@ class BtVpnService : VpnService() {
         BtProxy.stop()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    private fun configureAllowedApplications(builder: Builder) {
+        val includedApps = TunnelPrefs.getIncludedApps(this)
+
+        if (includedApps.isEmpty()) {
+            val installedPackages = packageManager.getInstalledApplications(0)
+                .map { it.packageName }
+                .filter { it != packageName }
+
+            installedPackages.forEach { pkg ->
+                runCatching { builder.addDisallowedApplication(pkg) }
+                    .onFailure { LogStore.add("WARN no se pudo excluir $pkg: ${it.message}") }
+            }
+            LogStore.add("Modo apps: sin incluidas, tráfico por túnel desactivado")
+            return
+        }
+
+        includedApps.forEach { pkg ->
+            runCatching { builder.addAllowedApplication(pkg) }
+                .onFailure { LogStore.add("WARN app incluida inválida $pkg: ${it.message}") }
+        }
+        LogStore.add("Modo apps: incluidas=${includedApps.joinToString()}")
     }
 
     private fun writeHevConfig(): java.io.File {

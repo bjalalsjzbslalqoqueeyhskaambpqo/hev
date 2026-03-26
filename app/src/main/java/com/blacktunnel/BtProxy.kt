@@ -19,23 +19,29 @@ object BtProxy {
 
     private const val XRAY_SOCKS5_PORT = 10808
     private const val TUNNEL_LOCAL_PORT = 10809
-    private const val MAX_PARALLEL_TUNNELS = 8
     private const val TEST_UUID = "a3482e88-686a-4a58-8126-99c9df64b7bf"
 
     @Volatile private var xrayProcess: Process? = null
     @Volatile private var running = false
-    @Volatile private var muxConcurrency: Int = 8
-    private val tunnelSlots = Semaphore(MAX_PARALLEL_TUNNELS)
+    @Volatile private var muxConcurrency: Int = 16
+    @Volatile private var xudpConcurrency: Int = 32
+    @Volatile private var logLevel: String = "warning"
+    @Volatile private var tunnelSlots = Semaphore(16)
 
     fun start(
         ctx: Context,
         mux: Int,
+        profile: String,
         protectSocket: (Socket) -> Unit,
         logger: (String) -> Unit
     ) {
         running = true
-        muxConcurrency = mux.coerceIn(1, 64)
-        logger("BtProxy.start()")
+        val isPerformance = profile.equals("performance", ignoreCase = true)
+        muxConcurrency = if (isPerformance) mux.coerceIn(16, 64) else mux.coerceIn(8, 32)
+        xudpConcurrency = if (isPerformance) 64 else 32
+        logLevel = if (isPerformance) "none" else "warning"
+        tunnelSlots = Semaphore(if (isPerformance) 48 else 24)
+        logger("BtProxy.start() profile=$profile mux=$muxConcurrency xudp=$xudpConcurrency")
         TunnelSessionStore.setState("CONNECTING")
 
         thread(isDaemon = true, name = "btproxy-init") {
@@ -168,7 +174,15 @@ object BtProxy {
     private fun buildClientConfig(): String {
         return """
             {
-              "log": { "loglevel": "warning" },
+              "log": { "loglevel": "$logLevel" },
+              "policy": {
+                "system": {
+                  "udpTimeout": 600,
+                  "connIdle": 600,
+                  "downlinkOnly": 10,
+                  "uplinkOnly": 10
+                }
+              },
               "inbounds": [
                 {
                   "protocol": "socks",
@@ -201,7 +215,7 @@ object BtProxy {
                   "mux": {
                     "enabled": true,
                     "concurrency": $muxConcurrency,
-                    "xudpConcurrency": $muxConcurrency,
+                    "xudpConcurrency": $xudpConcurrency,
                     "xudpProxyUDP443": "allow"
                   }
                 }

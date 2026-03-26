@@ -12,4 +12,12 @@
     <string name="session_expire">Expira</string>
     <string name="session_days_left">Días restantes</string>
     <string name="session_premium">Premium</string>
+
+    <string name="settings_title">Ajustes</string>
+    <string name="profile_normal">Normal</string>
+    <string name="profile_performance">Performance</string>
+    <string name="included_apps_hint">Apps incluidas (paquetes, separadas por coma)</string>
+    <string name="save_settings">Guardar ajustes</string>
+    <string name="open_battery_settings">Quitar restricción de batería</string>
+    <string name="settings_saved">Ajustes guardados</string>
 </resources>
