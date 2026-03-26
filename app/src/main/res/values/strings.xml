@@ -19,6 +19,7 @@
     <string name="profile_performance">Performance</string>
     <string name="search_apps_hint">Buscar app por nombre o paquete</string>
     <string name="refresh_servers">Actualizar</string>
+    <string name="refreshing_servers">Actualizando…</string>
     <string name="save_settings">Guardar ajustes</string>
     <string name="open_battery_settings">Quitar restricción de batería</string>
     <string name="settings_saved">Ajustes guardados</string>

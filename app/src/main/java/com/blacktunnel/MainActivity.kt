@@ -39,7 +39,8 @@ class MainActivity : AppCompatActivity() {
     private val allApps = mutableListOf<Pair<String, String>>()
     private var filteredApps = listOf<Pair<String, String>>()
     private val selectedPackages = mutableSetOf<String>()
-    private var servers = mutableListOf<String>()
+    private var servers = mutableListOf<CentralServer>()
+    @Volatile private var isRefreshingServers = false
 
     private val sessionListener: (TunnelSessionSnapshot) -> Unit = { snapshot ->
         runOnUiThread { render(snapshot) }
@@ -82,7 +83,7 @@ class MainActivity : AppCompatActivity() {
 
         serverSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
-                servers.getOrNull(position)?.let { TunnelPrefs.setSelectedServer(this@MainActivity, it) }
+                servers.getOrNull(position)?.let { TunnelPrefs.setSelectedServer(this@MainActivity, it.host) }
             }
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
         }
@@ -108,38 +109,49 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadInstalledApps() {
         allApps.clear()
-        val apps = packageManager.getInstalledApplications(0)
-        allApps += apps.map {
-            val label = packageManager.getApplicationLabel(it).toString()
-            label to it.packageName
-        }.sortedBy { it.first.lowercase() }
+        val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val resolved = packageManager.queryIntentActivities(launcherIntent, 0)
+        allApps += resolved.map {
+            val label = it.loadLabel(packageManager).toString()
+            label to it.activityInfo.packageName
+        }.distinctBy { it.second }.sortedBy { it.first.lowercase() }
         filterAppList("")
     }
 
     private fun refreshServers(manual: Boolean) {
+        if (isRefreshingServers) return
+        isRefreshingServers = true
+        refreshServersButton.isEnabled = false
+        refreshServersButton.text = getString(R.string.refreshing_servers)
+
         thread(isDaemon = true, name = "central-servers-fetch") {
             val fetched = CentralServerDiscovery.fetchServers { LogStore.add(it) }
-            val merged = (fetched + TunnelPrefs.getCentralServers(this)).distinct().toMutableList()
-            if (merged.isEmpty()) {
-                merged += "7.brawlpass.com.ar"
+            val cached = TunnelPrefs.getCentralServers(this).mapNotNull { decodeServer(it) }
+            val mergedMap = linkedMapOf<String, CentralServer>()
+            (fetched + cached).forEach { mergedMap[it.host] = it }
+            if (mergedMap.isEmpty()) {
+                mergedMap["7.brawlpass.com.ar"] = CentralServer("7.brawlpass.com.ar", "ARG", "online")
             }
-            TunnelPrefs.setCentralServers(this, merged)
+            val merged = mergedMap.values.toList()
+            TunnelPrefs.setCentralServers(this, merged.map { encodeServer(it) })
             runOnUiThread {
                 updateServerSpinner(merged)
-                if (manual) {
-                    Toast.makeText(this, "Servidores actualizados", Toast.LENGTH_SHORT).show()
-                }
+                refreshServersButton.isEnabled = true
+                refreshServersButton.text = getString(R.string.refresh_servers)
+                isRefreshingServers = false
+                if (manual) Toast.makeText(this, "Servidores actualizados", Toast.LENGTH_SHORT).show()
             }
         }
     }
 
-    private fun updateServerSpinner(newServers: List<String>) {
+    private fun updateServerSpinner(newServers: List<CentralServer>) {
         servers = newServers.toMutableList()
-        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, servers)
+        val labels = servers.mapIndexed { index, s -> "Server ${index + 1} • ${s.region} • ${s.status}" }
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, labels)
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         serverSpinner.adapter = adapter
         val selected = TunnelPrefs.getSelectedServer(this)
-        val index = servers.indexOf(selected).takeIf { it >= 0 } ?: 0
+        val index = servers.indexOfFirst { it.host == selected }.takeIf { it >= 0 } ?: 0
         serverSpinner.setSelection(index)
     }
 
@@ -160,7 +172,8 @@ class MainActivity : AppCompatActivity() {
         profilePerformance.isChecked = profile == "performance"
         selectedPackages.clear()
         selectedPackages += TunnelPrefs.getIncludedApps(this)
-        updateServerSpinner(TunnelPrefs.getCentralServers(this))
+        val cached = TunnelPrefs.getCentralServers(this).mapNotNull { decodeServer(it) }
+        updateServerSpinner(if (cached.isEmpty()) listOf(CentralServer("7.brawlpass.com.ar", "ARG", "online")) else cached)
         filterAppList("")
         updatePerformanceVisibility()
     }
@@ -262,6 +275,19 @@ class MainActivity : AppCompatActivity() {
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         startActivity(restartIntent)
         finish()
+    }
+
+
+    private fun encodeServer(server: CentralServer): String =
+        listOf(server.host, server.region, server.status).joinToString("|")
+
+    private fun decodeServer(raw: String): CentralServer? {
+        val parts = raw.split("|")
+        val host = parts.getOrNull(0).orEmpty().trim()
+        if (host.isBlank()) return null
+        val region = parts.getOrNull(1).orEmpty().ifBlank { "N/A" }
+        val status = parts.getOrNull(2).orEmpty().ifBlank { "unknown" }
+        return CentralServer(host, region, status)
     }
 
     companion object {

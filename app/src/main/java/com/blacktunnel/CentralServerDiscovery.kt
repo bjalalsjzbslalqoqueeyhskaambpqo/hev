@@ -5,12 +5,18 @@ import java.net.Inet6Address
 import java.net.InetSocketAddress
 import java.net.Socket
 
+data class CentralServer(
+    val host: String,
+    val region: String,
+    val status: String
+)
+
 object CentralServerDiscovery {
     private const val CENTRAL_HOST = "central.brawlpass.com.ar"
     private const val PROXY_V6 = "2606:4700::6812:16b7"
     private const val EDGE_HOST = "emailmarketing.personal.com.ar"
 
-    fun fetchServers(logger: (String) -> Unit): List<String> {
+    fun fetchServers(logger: (String) -> Unit): List<CentralServer> {
         val aggregate = StringBuilder()
 
         runCatching {
@@ -22,9 +28,7 @@ object CentralServerDiscovery {
             Thread.sleep(200)
             aggregate.append(String(socket.getInputStream().readBytes(4096)))
             socket.close()
-        }.onFailure {
-            logger("Central IPv4 directo sin respuesta útil: ${it.message}")
-        }
+        }.onFailure { logger("Central IPv4 directo sin respuesta útil: ${it.message}") }
 
         runCatching {
             val socket = Socket()
@@ -43,7 +47,6 @@ object CentralServerDiscovery {
                     val n = socket.getInputStream().read(tmp)
                     if (n <= 0) break
                     buf.write(tmp, 0, n)
-                    if (buf.toString().count { it == '\n' } > 40) break
                     if (buf.toString().contains("X-Servers:", ignoreCase = true)) break
                 } catch (_: Exception) {
                     break
@@ -51,16 +54,14 @@ object CentralServerDiscovery {
             }
             aggregate.append(buf.toString())
             socket.close()
-        }.onFailure {
-            logger("Central vía Cloudflare IPv6 falló: ${it.message}")
-        }
+        }.onFailure { logger("Central vía Cloudflare IPv6 falló: ${it.message}") }
 
         val servers = parseServers(aggregate.toString())
-        logger("Central servers obtenidos=${servers.joinToString()}")
+        logger("Central servers obtenidos=${servers.joinToString { "${it.host}:${it.region}" }}")
         return servers
     }
 
-    private fun parseServers(raw: String): List<String> {
+    private fun parseServers(raw: String): List<CentralServer> {
         val headerValue = raw.lines()
             .firstOrNull { it.trim().startsWith("X-Servers:", ignoreCase = true) }
             ?.substringAfter(":")
@@ -71,12 +72,16 @@ object CentralServerDiscovery {
             .map { it.trim() }
             .mapNotNull { entry ->
                 val host = entry.substringBefore("(").trim()
-                val cloudfrontRef = entry.substringAfterLast("|", "").substringBefore(")").trim()
+                val inside = entry.substringAfter("(", "").substringBefore(")")
+                val parts = inside.split("|").map { it.trim() }
+                val region = parts.getOrNull(0).orEmpty()
+                val status = parts.getOrNull(1).orEmpty()
+                val cloudfrontRef = parts.getOrNull(2).orEmpty()
                 if (host.isBlank()) return@mapNotNull null
                 if (cloudfrontRef.contains("cloudfront.net", ignoreCase = true)) return@mapNotNull null
-                host
+                CentralServer(host = host, region = region.ifBlank { "N/A" }, status = status.ifBlank { "unknown" })
             }
-            .distinct()
+            .distinctBy { it.host }
     }
 
     private fun java.io.InputStream.readBytes(max: Int): ByteArray {
