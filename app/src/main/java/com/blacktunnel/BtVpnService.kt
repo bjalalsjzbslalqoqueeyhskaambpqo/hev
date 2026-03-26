@@ -85,19 +85,7 @@ class BtVpnService : VpnService() {
             stopSelf()
             return
         }
-        val authResult = BtProxy.preflightAuth(
-            ctx = this,
-            serverHost = selectedServer,
-            protectSocket = { socket -> protect(socket) },
-            logger = { LogStore.add(it) }
-        )
-        if (!authResult.ok) {
-            LogStore.add("AUTH inválida: ${authResult.userMessage}")
-            TunnelSessionStore.setState("ERROR")
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-            return
-        }
+        LogStore.add("Iniciando túnel con servidor seleccionado=$selectedServer (validación se resuelve en handshake del túnel)")
 
         BtProxy.start(
             ctx = this,
