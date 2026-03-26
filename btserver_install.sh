@@ -1,11 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-mkdir -p /opt/btserver
+BT_DIR=/opt/btserver
+BT_PY="$BT_DIR/btserver.py"
+BTCTL=/usr/local/bin/btctl
+XRAY_CFG=/usr/local/etc/xray/config.json
+SERVICE_FILE=/etc/systemd/system/btserver.service
 
-bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-
-cat > /usr/local/etc/xray/config.json << 'XRAYEOF'
+default_xray_config() {
+cat > "$XRAY_CFG" << 'XRAYEOF'
 {
   "log": { "loglevel": "warning" },
   "inbounds": [
@@ -28,14 +31,15 @@ cat > /usr/local/etc/xray/config.json << 'XRAYEOF'
   ]
 }
 XRAYEOF
+}
 
-cat > /opt/btserver/btserver.py << 'PYEOF'
+write_btserver_py() {
+cat > "$BT_PY" << 'PYEOF'
 #!/usr/bin/env python3
 import json
 import socket
 import subprocess
 import threading
-import time
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -342,10 +346,11 @@ if __name__ == "__main__":
     else:
         run_server()
 PYEOF
+chmod +x "$BT_PY"
+}
 
-chmod +x /opt/btserver/btserver.py
-
-cat > /usr/local/bin/btctl << 'CTLEOF'
+write_btctl() {
+cat > "$BTCTL" << 'CTLEOF'
 #!/bin/bash
 set -euo pipefail
 
@@ -386,9 +391,11 @@ else
   show_menu
 fi
 CTLEOF
-chmod +x /usr/local/bin/btctl
+chmod +x "$BTCTL"
+}
 
-cat > /etc/systemd/system/btserver.service << 'SVCEOF'
+write_service() {
+cat > "$SERVICE_FILE" << 'SVCEOF'
 [Unit]
 Description=BlackTunnel Server
 After=network.target xray.service
@@ -401,14 +408,119 @@ RestartSec=2
 [Install]
 WantedBy=multi-user.target
 SVCEOF
+}
 
-if [[ ! -f /opt/btserver/clients.json ]]; then
-  echo '{"clients":{}}' > /opt/btserver/clients.json
-fi
-python3 /opt/btserver/btserver.py list || true
+is_installed() {
+  [[ -x "$BTCTL" && -f "$BT_PY" && -f "$SERVICE_FILE" ]]
+}
 
-systemctl daemon-reload
-systemctl enable xray btserver
-systemctl restart xray btserver
-systemctl status xray --no-pager
-systemctl status btserver --no-pager
+install_or_update() {
+  mkdir -p "$BT_DIR"
+
+  # Solo en instalación/actualización explícita
+  bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+
+  default_xray_config
+  write_btserver_py
+  write_btctl
+  write_service
+
+  if [[ ! -f "$BT_DIR/clients.json" ]]; then
+    echo '{"clients":{}}' > "$BT_DIR/clients.json"
+  fi
+
+  systemctl daemon-reload
+  systemctl enable xray btserver
+  systemctl restart xray btserver
+
+  echo "✅ Instalación/actualización completada"
+  echo "Comando de gestión: btctl"
+}
+
+create_uuid() {
+  read -rp "Días (default 30): " days
+  days=${days:-30}
+  "$BTCTL" create --days "$days"
+}
+
+renew_uuid() {
+  read -rp "UUID: " uuid
+  read -rp "Días nuevos (default 30): " days
+  days=${days:-30}
+  "$BTCTL" extend "$uuid" --days "$days"
+}
+
+list_uuids() {
+  "$BTCTL" list
+}
+
+restart_services() {
+  systemctl restart xray btserver
+  systemctl status btserver --no-pager | sed -n '1,15p'
+}
+
+menu() {
+  while true; do
+    echo
+    echo "==== BT Server Control ===="
+    echo "1) Instalar / actualizar"
+    echo "2) Crear UUID"
+    echo "3) Renovar UUID"
+    echo "4) Listar UUIDs"
+    echo "5) Reiniciar servicios"
+    echo "6) Salir"
+    read -rp "Opción: " opt
+
+    case "$opt" in
+      1)
+        install_or_update
+        ;;
+      2)
+        if ! is_installed; then echo "⚠️ Primero ejecuta opción 1"; else create_uuid; fi
+        ;;
+      3)
+        if ! is_installed; then echo "⚠️ Primero ejecuta opción 1"; else renew_uuid; fi
+        ;;
+      4)
+        if ! is_installed; then echo "⚠️ Primero ejecuta opción 1"; else list_uuids; fi
+        ;;
+      5)
+        if ! is_installed; then echo "⚠️ Primero ejecuta opción 1"; else restart_services; fi
+        ;;
+      6)
+        exit 0
+        ;;
+      *)
+        echo "Opción inválida"
+        ;;
+    esac
+  done
+}
+
+# Modo CLI directo: ./btserver_install.sh install|create|extend|list|menu
+case "${1:-menu}" in
+  install)
+    install_or_update
+    ;;
+  create)
+    if ! is_installed; then echo "⚠️ Primero instala con: $0 install"; exit 1; fi
+    shift
+    "$BTCTL" create "$@"
+    ;;
+  extend)
+    if ! is_installed; then echo "⚠️ Primero instala con: $0 install"; exit 1; fi
+    shift
+    "$BTCTL" extend "$@"
+    ;;
+  list)
+    if ! is_installed; then echo "⚠️ Primero instala con: $0 install"; exit 1; fi
+    "$BTCTL" list
+    ;;
+  menu)
+    menu
+    ;;
+  *)
+    echo "Uso: $0 [menu|install|create|extend|list]"
+    exit 1
+    ;;
+esac
