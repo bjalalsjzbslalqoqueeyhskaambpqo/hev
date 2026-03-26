@@ -1,8 +1,11 @@
 package com.blacktunnel
 
+import android.app.AlarmManager
+import android.app.PendingIntent
 import android.content.Intent
 import android.net.VpnService
 import android.os.Bundle
+import android.os.Process
 import android.provider.Settings
 import android.widget.ArrayAdapter
 import android.widget.EditText
@@ -77,9 +80,7 @@ class MainActivity : AppCompatActivity() {
 
         toggleButton.setOnClickListener { onToggle() }
         saveSettingsButton.setOnClickListener { saveSettings() }
-        batteryButton.setOnClickListener {
-            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-        }
+        batteryButton.setOnClickListener { openBatterySettings() }
         render(TunnelSessionStore.current())
     }
 
@@ -119,7 +120,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadSettings() {
-        val profile = TunnelPrefs.getProfile(this)
+        val profile = TunnelPrefs.getProfile(this).ifBlank { "normal" }
         profileNormal.isChecked = profile == "normal"
         profilePerformance.isChecked = profile == "performance"
         selectedPackages.clear()
@@ -129,7 +130,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updatePerformanceVisibility() {
-        performanceContainer.visibility = if (profilePerformance.isChecked) LinearLayout.VISIBLE else LinearLayout.GONE
+        val performance = profilePerformance.isChecked
+        performanceContainer.visibility = if (performance) LinearLayout.VISIBLE else LinearLayout.GONE
+        saveSettingsButton.visibility = if (performance) android.view.View.VISIBLE else android.view.View.GONE
     }
 
     private fun saveSettings() {
@@ -152,7 +155,8 @@ class MainActivity : AppCompatActivity() {
         toggleButton.text = if (isConnected) getString(R.string.disconnect) else getString(R.string.connect)
 
         statusValue.text = getString(R.string.session_status) + ": " + snapshot.status
-        latencyValue.text = getString(R.string.latency_label) + ": " + if (snapshot.latencyMs >= 0) "${snapshot.latencyMs} ms" else "-"
+        val correctedLatency = if (snapshot.latencyMs >= 0) (snapshot.latencyMs - LATENCY_OFFSET_MS).coerceAtLeast(0) else -1
+        latencyValue.text = getString(R.string.latency_label) + ": " + if (correctedLatency >= 0) "${correctedLatency} ms" else "-"
         nameValue.text = getString(R.string.session_name) + ": " + snapshot.name
         expireValue.text = getString(R.string.session_expire) + ": " + snapshot.expire
         daysLeftValue.text = getString(R.string.session_days_left) + ": " + snapshot.daysLeft
@@ -162,10 +166,7 @@ class MainActivity : AppCompatActivity() {
     private fun onToggle() {
         val current = TunnelSessionStore.current()
         if (current.state == "CONNECTING" || current.state == "CONNECTED") {
-            stopService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
-            startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
-            TunnelSessionStore.reset()
-            recreate()
+            forceRestartAfterStop()
             return
         }
 
@@ -191,7 +192,61 @@ class MainActivity : AppCompatActivity() {
         startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_START))
     }
 
+
+    private fun openBatterySettings() {
+        val intents = mutableListOf<Intent>()
+        val manufacturer = android.os.Build.MANUFACTURER.lowercase()
+
+        if (manufacturer.contains("xiaomi")) {
+            intents += Intent().setClassName(
+                "com.miui.securitycenter",
+                "com.miui.permcenter.autostart.AutoStartManagementActivity"
+            )
+            intents += Intent("miui.intent.action.APP_PERM_EDITOR").apply {
+                setClassName("com.miui.securitycenter", "com.miui.permcenter.permissions.PermissionsEditorActivity")
+                putExtra("extra_pkgname", packageName)
+            }
+        }
+
+        intents += Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+        intents += Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = android.net.Uri.parse("package:$packageName")
+        }
+
+        val opened = intents.firstOrNull {
+            runCatching {
+                startActivity(it)
+                true
+            }.getOrDefault(false)
+        }
+        if (opened == null) {
+            Toast.makeText(this, "No se pudo abrir ajustes de batería", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun forceRestartAfterStop() {
+        stopService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
+        startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
+        TunnelSessionStore.reset()
+
+        val restartIntent = packageManager.getLaunchIntentForPackage(packageName)
+        if (restartIntent != null) {
+            val pendingIntent = PendingIntent.getActivity(
+                this,
+                9911,
+                restartIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
+            alarmManager.setExact(AlarmManager.RTC, System.currentTimeMillis() + 250, pendingIntent)
+        }
+
+        finishAffinity()
+        Process.killProcess(Process.myPid())
+    }
+
     companion object {
         private const val REQ_VPN_PREPARE = 11
+        private const val LATENCY_OFFSET_MS = 260L
     }
 }
