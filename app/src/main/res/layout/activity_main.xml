@@ -93,6 +93,22 @@
                     android:textColor="@color/text_primary"
                     android:textStyle="bold" />
 
+                <TextView
+                    android:id="@+id/clientIdValue"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/copyClientIdButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:layout_marginTop="6dp"
+                    android:text="@string/copy_client_id"
+                    android:textAllCaps="false" />
+
                 <RadioGroup
                     android:id="@+id/profileGroup"
                     android:layout_width="match_parent"

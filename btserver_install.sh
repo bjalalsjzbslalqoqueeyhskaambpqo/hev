@@ -34,11 +34,83 @@ cat > /usr/local/etc/xray/config.json << 'EOF'
 EOF
 
 cat > /opt/btserver/btserver.py << 'PYEOF'
+import os
 import socket
 import threading
 
 PORT = 80
 XRAY_ADDR = ("127.0.0.1", 10809)
+CENTRAL_HOST = os.environ.get("BT_CENTRAL_HOST", "127.0.0.1")
+CENTRAL_PORT = int(os.environ.get("BT_CENTRAL_PORT", "80"))
+
+
+def read_headers(raw: bytes):
+    headers = {}
+    lines = raw.decode(errors="replace").splitlines()
+    for line in lines[1:]:
+        if ":" not in line:
+            continue
+        k, v = line.split(":", 1)
+        headers[k.strip().lower()] = v.strip()
+    return headers
+
+
+def parse_status_block(raw: bytes):
+    lines = raw.decode(errors="replace").splitlines()
+    status_code = -1
+    if lines and lines[0].startswith("HTTP/1.1"):
+        parts = lines[0].split(" ")
+        if len(parts) > 1 and parts[1].isdigit():
+            status_code = int(parts[1])
+    headers = {}
+    for line in lines[1:]:
+        if ":" not in line:
+            continue
+        k, v = line.split(":", 1)
+        headers[k.strip().lower()] = v.strip()
+    return status_code, headers
+
+
+def verify_client_id(client_id: str):
+    if not client_id:
+        return False, {
+            "x-status": "INVALID",
+            "x-name": "-",
+            "x-expire": "-",
+            "x-days-left": "0",
+            "x-premium": "0",
+        }
+    try:
+        req = (
+            f"BT-VERIFY / HTTP/1.1\r\n"
+            f"Host: {CENTRAL_HOST}\r\n"
+            f"Auth: {client_id}\r\n\r\n"
+        ).encode()
+        with socket.create_connection((CENTRAL_HOST, CENTRAL_PORT), 5) as s:
+            s.sendall(req)
+            raw = b""
+            while b"\r\n\r\n" not in raw and len(raw) < 65536:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                raw += chunk
+        status_code, headers = parse_status_block(raw)
+        ok = status_code == 101 and headers.get("x-status", "").upper() == "OK"
+        return ok, {
+            "x-status": headers.get("x-status", "INVALID"),
+            "x-name": headers.get("x-name", "-"),
+            "x-expire": headers.get("x-expire", "-"),
+            "x-days-left": headers.get("x-days-left", "0"),
+            "x-premium": headers.get("x-premium", "0"),
+        }
+    except Exception:
+        return False, {
+            "x-status": "CENTRAL_OFFLINE",
+            "x-name": "-",
+            "x-expire": "-",
+            "x-days-left": "0",
+            "x-premium": "0",
+        }
 
 
 def pipe(src, dst):
@@ -93,18 +165,34 @@ def handle(sock):
             if len(raw) > 65536:
                 return
 
-        action = ""
-        for line in raw.decode(errors="replace").splitlines():
-            if line.lower().startswith("action:"):
-                action = line.split(":", 1)[1].strip().lower()
-                break
+        headers = read_headers(raw)
+        action = headers.get("action", "").lower()
+        client_id = headers.get("auth", "").strip()
 
         if action in ("tunnel", "tunnel-fast"):
+            is_valid, payload = verify_client_id(client_id)
+            if not is_valid:
+                sock.sendall(
+                    b"HTTP/1.1 101 Switching Protocols\r\n"
+                    b"Upgrade: websocket\r\n"
+                    b"Connection: Upgrade\r\n"
+                    + f"X-Status: {payload['x-status']}\r\n".encode()
+                    + f"X-Name: {payload['x-name']}\r\n".encode()
+                    + f"X-Expire: {payload['x-expire']}\r\n".encode()
+                    + f"X-Days-Left: {payload['x-days-left']}\r\n".encode()
+                    + f"X-Premium: {payload['x-premium']}\r\n\r\n".encode()
+                )
+                sock.close()
+                return
             sock.sendall(
                 b"HTTP/1.1 101 Switching Protocols\r\n"
                 b"Upgrade: websocket\r\n"
                 b"Connection: Upgrade\r\n"
-                b"X-Status: OK\r\n\r\n"
+                + f"X-Status: {payload['x-status']}\r\n".encode()
+                + f"X-Name: {payload['x-name']}\r\n".encode()
+                + f"X-Expire: {payload['x-expire']}\r\n".encode()
+                + f"X-Days-Left: {payload['x-days-left']}\r\n".encode()
+                + f"X-Premium: {payload['x-premium']}\r\n\r\n".encode()
             )
             sock.settimeout(None)
             handle_tunnel(sock)

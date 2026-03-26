@@ -12,6 +12,7 @@ object TunnelPrefs {
     private const val KEY_SELECTED_SERVER = "selected_server"
     private const val KEY_HOTSPOT_PROXY = "hotspot_proxy"
     private const val KEY_BLOCK_NON_SELECTED = "block_non_selected"
+    private const val KEY_CLIENT_ID = "client_id"
 
     fun getMtu(ctx: Context): Int =
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_MTU, 1300)
@@ -83,6 +84,15 @@ object TunnelPrefs {
 
     fun setBlockNonSelectedEnabled(ctx: Context, enabled: Boolean) {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_BLOCK_NON_SELECTED, enabled).apply()
+    }
+
+    fun getOrCreateClientId(ctx: Context): String {
+        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val current = prefs.getString(KEY_CLIENT_ID, "").orEmpty().trim()
+        if (current.isNotEmpty()) return current
+        val generated = java.util.UUID.randomUUID().toString()
+        prefs.edit().putString(KEY_CLIENT_ID, generated).apply()
+        return generated
     }
 
 }

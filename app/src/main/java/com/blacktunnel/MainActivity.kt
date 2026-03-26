@@ -2,6 +2,8 @@ package com.blacktunnel
 
 import android.app.AlarmManager
 import android.app.PendingIntent
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.net.VpnService
@@ -35,6 +37,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var performanceContainer: LinearLayout
     private lateinit var appSearchInput: EditText
     private lateinit var appListView: ListView
+    private lateinit var clientIdValue: TextView
+    private lateinit var copyClientIdButton: MaterialButton
     private lateinit var hotspotSwitch: SwitchCompat
     private lateinit var blockNonSelectedSwitch: SwitchCompat
     private lateinit var hotspotInfo: TextView
@@ -71,6 +75,8 @@ class MainActivity : AppCompatActivity() {
         performanceContainer = findViewById(R.id.performanceContainer)
         appSearchInput = findViewById(R.id.appSearchInput)
         appListView = findViewById(R.id.appListView)
+        clientIdValue = findViewById(R.id.clientIdValue)
+        copyClientIdButton = findViewById(R.id.copyClientIdButton)
         hotspotSwitch = findViewById(R.id.hotspotSwitch)
         blockNonSelectedSwitch = findViewById(R.id.blockNonSelectedSwitch)
         hotspotInfo = findViewById(R.id.hotspotInfo)
@@ -108,6 +114,7 @@ class MainActivity : AppCompatActivity() {
         refreshServersButton.setOnClickListener { refreshServers(manual = true) }
         saveSettingsButton.setOnClickListener { saveSettings(showToast = true) }
         batteryButton.setOnClickListener { openBatterySettings() }
+        copyClientIdButton.setOnClickListener { copyClientId() }
         hotspotSwitch.setOnCheckedChangeListener { _, isChecked ->
             if (isChecked && getHotspotIp() == null) {
                 hotspotSwitch.isChecked = false
@@ -119,7 +126,20 @@ class MainActivity : AppCompatActivity() {
         }
 
         refreshServers(manual = false)
+        renderClientId()
         render(TunnelSessionStore.current())
+    }
+
+    private fun renderClientId() {
+        val clientId = TunnelPrefs.getOrCreateClientId(this)
+        clientIdValue.text = getString(R.string.client_id_label, clientId)
+    }
+
+    private fun copyClientId() {
+        val clientId = TunnelPrefs.getOrCreateClientId(this)
+        val clipboard = getSystemService(ClipboardManager::class.java)
+        clipboard?.setPrimaryClip(ClipData.newPlainText("BlackTunnel Client ID", clientId))
+        Toast.makeText(this, getString(R.string.client_id_copied), Toast.LENGTH_SHORT).show()
     }
 
     override fun onStart() {
