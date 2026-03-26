@@ -23,11 +23,9 @@ object BtProxy {
 
     @Volatile private var xrayProcess: Process? = null
     @Volatile private var running = false
-    @Volatile private var muxConcurrency: Int = 16
-    @Volatile private var xudpConcurrency: Int = 32
-    @Volatile private var logLevel: String = "warning"
-    @Volatile private var tunnelSlots = Semaphore(16)
-    @Volatile private var tunnelRetries: Int = 2
+    private val logLevel: String = "none"
+    private val tunnelSlots = Semaphore(120)
+    private val tunnelRetries: Int = 2
     @Volatile private var bridgeServerSocket: ServerSocket? = null
     @Volatile private var nextTunnelAttemptAtMs: Long = 0L
     private val tunnelPool = java.util.concurrent.LinkedBlockingQueue<Socket>(8)
@@ -44,8 +42,6 @@ object BtProxy {
 
     fun start(
         ctx: Context,
-        mux: Int,
-        profile: String,
         serverHost: String,
         protectSocket: (Socket) -> Unit,
         logger: (String) -> Unit
@@ -53,18 +49,17 @@ object BtProxy {
         running = true
         clientId = TunnelPrefs.getOrCreateClientId(ctx)
         selectedServerHost = serverHost.trim()
-        val isPerformance = profile.equals("performance", ignoreCase = true)
-        muxConcurrency = if (isPerformance) mux.coerceIn(48, 64) else mux.coerceIn(24, 42)
-        xudpConcurrency = if (isPerformance) 192 else 72
-        logLevel = if (isPerformance) "none" else "warning"
-        tunnelSlots = Semaphore(if (isPerformance) 120 else 56)
-        tunnelRetries = if (isPerformance) 3 else 2
         nextTunnelAttemptAtMs = 0L
-        logger("BtProxy.start() profile=$profile mux=$muxConcurrency xudp=$xudpConcurrency slots=${if (isPerformance) 120 else 56}")
+        logger("BtProxy.start()")
         TunnelSessionStore.setState("CONNECTING")
 
         thread(isDaemon = true, name = "btproxy-init") {
             startTunnelBridge(protectSocket, logger)
+            val deadline = System.currentTimeMillis() + 8000
+            while (System.currentTimeMillis() < deadline) {
+                if (TunnelSessionStore.current().state == "CONNECTED") break
+                Thread.sleep(100)
+            }
             startXray(ctx, logger)
         }
     }
