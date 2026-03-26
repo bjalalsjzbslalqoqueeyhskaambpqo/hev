@@ -25,7 +25,7 @@ object BtProxy {
     @Volatile private var running = false
     @Volatile private var vlessUuid: String = DEFAULT_UUID
     @Volatile private var logLevel: String = "warning"
-    @Volatile private var tunnelSlots = Semaphore(16)
+    @Volatile private var tunnelSlots = Semaphore(1)
     @Volatile private var tunnelRetries: Int = 6
     @Volatile private var latencyReported = false
 
@@ -39,7 +39,7 @@ object BtProxy {
         val isPerformance = profile.equals("performance", ignoreCase = true)
         vlessUuid = TunnelPrefs.getVlessUuid(ctx)
         logLevel = if (isPerformance) "none" else "warning"
-        tunnelSlots = Semaphore(16)
+        tunnelSlots = Semaphore(1)
         tunnelRetries = 6
         latencyReported = false
         logger("BtProxy.start() profile=$profile uuid=$vlessUuid mux=disabled")
