@@ -10,7 +10,6 @@ import java.net.Socket
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
@@ -27,9 +26,7 @@ object BtProxy {
 
     @Volatile private var xrayProcess: Process? = null
     @Volatile private var running = false
-    private const val MAX_SIMULTANEOUS_TUNNELS = 16
-    private const val IDLE_TUNNEL_TTL_MS = 15 * 60 * 1000L
-    private const val POOL_REFILL_WORKERS = 4
+    private const val MAX_SIMULTANEOUS_TUNNELS = 5
     private const val LATENCY_UPDATE_MIN_INTERVAL_MS = 5_000L
     private const val SLOT_READY = "ready"
     private const val SLOT_IN_USE = "in_use"
@@ -39,17 +36,9 @@ object BtProxy {
     @Volatile private var xudpConcurrency: Int = 30
     @Volatile private var logLevel: String = "warning"
     @Volatile private var tunnelSlots = Semaphore(MAX_SIMULTANEOUS_TUNNELS)
-    private data class PooledTunnel(
-        val socket: Socket,
-        val createdAtMs: Long,
-        val slotId: Int
-    )
-
-    private val tunnelPool = LinkedBlockingQueue<PooledTunnel>()
     private val availableSlotIds = LinkedBlockingQueue<Int>()
     private val slotLock = Any()
     private val slotStates = mutableMapOf<Int, String>()
-    private val openTunnelCount = AtomicInteger(0)
     private val hasSessionHeaders = AtomicBoolean(false)
     private val lastLatencyUpdateMs = AtomicLong(0L)
 
@@ -68,15 +57,12 @@ object BtProxy {
         logLevel = if (profile.equals("performance", ignoreCase = true)) "none" else "warning"
         tunnelSlots = Semaphore(MAX_SIMULTANEOUS_TUNNELS)
         hasSessionHeaders.set(false)
-        openTunnelCount.set(0)
         lastLatencyUpdateMs.set(0L)
-        drainPool()
         initSlotTracker()
         logger("BtProxy.start() profile=$profile mux=$muxConcurrency xudp=$xudpConcurrency slots=$MAX_SIMULTANEOUS_TUNNELS")
         TunnelSessionStore.setState("CONNECTING")
 
         thread(isDaemon = true, name = "btproxy-init") {
-            startPoolRefill(protectSocket, logger)
             startTunnelBridge(protectSocket, logger)
             startXray(ctx, logger)
         }
@@ -86,8 +72,6 @@ object BtProxy {
         running = false
         xrayProcess?.destroy()
         xrayProcess = null
-        drainPool()
-        openTunnelCount.set(0)
         initSlotTracker(resetOnly = true)
         TunnelSessionStore.reset()
     }
@@ -106,22 +90,31 @@ object BtProxy {
                     client.tcpNoDelay = true
                     thread(isDaemon = true, name = "bridge-conn") {
                         tunnelSlots.acquire()
-                        val pooled = acquireReadyTunnel(logger)
-                        if (pooled == null) {
-                            logger("ERROR no hay túnel listo en el pool")
+                        val slotId = availableSlotIds.poll() ?: 1
+                        setSlotState(slotId, SLOT_RECONNECTING)
+                        val needsHeaders = !hasSessionHeaders.get()
+                        val tunnel = openTunnel(protectSocket, logger, updateSession = needsHeaders)
+                        if (tunnel == null) {
+                            setSlotState(slotId, SLOT_READY)
+                            if (!availableSlotIds.contains(slotId)) {
+                                availableSlotIds.offer(slotId)
+                            }
+                            logger("ERROR no se pudo abrir túnel bajo demanda")
                             runCatching { client.close() }
                             tunnelSlots.release()
                             return@thread
                         }
-                        val tunnel = pooled.socket
-                        logger("Túnel del pool asignado a conexión local")
+                        if (needsHeaders) hasSessionHeaders.set(true)
+                        setSlotState(slotId, SLOT_IN_USE)
+                        logger("Túnel bajo demanda asignado a conexión local")
                         try {
                             relay(client, tunnel)
                         } finally {
                             runCatching { tunnel.close() }
-                            openTunnelCount.updateAndGet { current -> (current - 1).coerceAtLeast(0) }
-                            setSlotState(pooled.slotId, SLOT_RECONNECTING)
-                            availableSlotIds.offer(pooled.slotId)
+                            setSlotState(slotId, SLOT_READY)
+                            if (!availableSlotIds.contains(slotId)) {
+                                availableSlotIds.offer(slotId)
+                            }
                             tunnelSlots.release()
                         }
                     }
@@ -131,98 +124,12 @@ object BtProxy {
         }
     }
 
-    private fun startPoolRefill(
-        protectSocket: (Socket) -> Unit,
-        logger: (String) -> Unit
-    ) {
-        repeat(POOL_REFILL_WORKERS) { worker ->
-            thread(isDaemon = true, name = "tunnel-pool-refill-$worker") {
-                while (running) {
-                    evictExpiredIdleTunnels(logger)
-                    if (openTunnelCount.get() >= MAX_SIMULTANEOUS_TUNNELS) {
-                        Thread.sleep(60)
-                        continue
-                    }
-                    val slotId = availableSlotIds.poll()
-                    if (slotId == null) {
-                        Thread.sleep(60)
-                        continue
-                    }
-                    setSlotState(slotId, SLOT_RECONNECTING)
-                    val needsHeaders = !hasSessionHeaders.get()
-                    val opened = openTunnel(protectSocket, logger, updateSession = needsHeaders)
-                    if (opened != null) {
-                        if (needsHeaders) hasSessionHeaders.set(true)
-                        if (openTunnelCount.incrementAndGet() <= MAX_SIMULTANEOUS_TUNNELS) {
-                            tunnelPool.offer(PooledTunnel(opened, System.currentTimeMillis(), slotId))
-                            setSlotState(slotId, SLOT_READY)
-                        } else {
-                            openTunnelCount.decrementAndGet()
-                            runCatching { opened.close() }
-                            availableSlotIds.offer(slotId)
-                        }
-                        continue
-                    }
-                    availableSlotIds.offer(slotId)
-                    Thread.sleep(180)
-                }
-            }
-        }
-    }
-
-    private fun acquireReadyTunnel(logger: (String) -> Unit): PooledTunnel? {
-        while (running) {
-            val pooled = tunnelPool.poll() ?: run {
-                logger("Pool vacío, esperando túnel persistente...")
-                runCatching { tunnelPool.take() }.getOrNull()
-            } ?: return null
-
-            if (isExpired(pooled)) {
-                runCatching { pooled.socket.close() }
-                openTunnelCount.updateAndGet { current -> (current - 1).coerceAtLeast(0) }
-                setSlotState(pooled.slotId, SLOT_RECONNECTING)
-                availableSlotIds.offer(pooled.slotId)
-                logger("Túnel del pool expirado por TTL, reponiendo")
-                continue
-            }
-            setSlotState(pooled.slotId, SLOT_IN_USE)
-            return pooled
-        }
-        return null
-    }
-
-    private fun drainPool() {
-        while (true) {
-            val s = tunnelPool.poll() ?: break
-            runCatching { s.socket.close() }
-            availableSlotIds.offer(s.slotId)
-        }
-    }
-
-    private fun evictExpiredIdleTunnels(logger: (String) -> Unit) {
-        val iterator = tunnelPool.iterator()
-        val now = System.currentTimeMillis()
-        while (iterator.hasNext()) {
-            val pooled = iterator.next()
-            if (now - pooled.createdAtMs < IDLE_TUNNEL_TTL_MS) continue
-            iterator.remove()
-            runCatching { pooled.socket.close() }
-            openTunnelCount.updateAndGet { current -> (current - 1).coerceAtLeast(0) }
-            setSlotState(pooled.slotId, SLOT_RECONNECTING)
-            availableSlotIds.offer(pooled.slotId)
-            logger("TTL idle cumplido, túnel reciclado")
-        }
-    }
-
-    private fun isExpired(pooled: PooledTunnel): Boolean =
-        System.currentTimeMillis() - pooled.createdAtMs >= IDLE_TUNNEL_TTL_MS
-
     private fun initSlotTracker(resetOnly: Boolean = false) {
         availableSlotIds.clear()
         synchronized(slotLock) {
             slotStates.clear()
             for (slot in 1..MAX_SIMULTANEOUS_TUNNELS) {
-                slotStates[slot] = SLOT_RECONNECTING
+                slotStates[slot] = SLOT_READY
                 if (!resetOnly) {
                     availableSlotIds.offer(slot)
                 }
