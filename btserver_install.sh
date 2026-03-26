@@ -39,7 +39,7 @@ import threading
 
 PORT = 80
 XRAY_ADDR = ("127.0.0.1", 10809)
-MAX_ACTIVE_TUNNELS = 6
+MAX_ACTIVE_TUNNELS = 16
 tunnel_slots = threading.BoundedSemaphore(MAX_ACTIVE_TUNNELS)
 
 
@@ -115,7 +115,12 @@ def handle(sock):
                 b"HTTP/1.1 101 Switching Protocols\r\n"
                 b"Upgrade: websocket\r\n"
                 b"Connection: Upgrade\r\n"
-                b"X-Status: OK\r\n\r\n"
+                b"X-Status: OK\r\n"
+                b"X-Name: test-user\r\n"
+                b"X-Expire: 2099-12-31\r\n"
+                b"X-Days-Left: 9999\r\n"
+                b"X-Premium: 1\r\n"
+                b"X-Created: 2026-01-01\r\n\r\n"
             )
             sock.settimeout(None)
             handle_tunnel(sock)

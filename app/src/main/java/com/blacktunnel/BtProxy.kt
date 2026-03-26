@@ -7,7 +7,11 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.Semaphore
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
 object BtProxy {
@@ -23,13 +27,15 @@ object BtProxy {
 
     @Volatile private var xrayProcess: Process? = null
     @Volatile private var running = false
-    private const val MAX_SIMULTANEOUS_TUNNELS = 6
+    private const val MAX_SIMULTANEOUS_TUNNELS = 16
 
     @Volatile private var muxConcurrency: Int = 1024
     @Volatile private var xudpConcurrency: Int = 1024
     @Volatile private var logLevel: String = "warning"
     @Volatile private var tunnelSlots = Semaphore(MAX_SIMULTANEOUS_TUNNELS)
-    @Volatile private var tunnelRetries: Int = 2
+    private val tunnelPool = LinkedBlockingQueue<Socket>()
+    private val openTunnelCount = AtomicInteger(0)
+    private val hasSessionHeaders = AtomicBoolean(false)
 
     fun start(
         ctx: Context,
@@ -45,11 +51,14 @@ object BtProxy {
         xudpConcurrency = 1024
         logLevel = if (profile.equals("performance", ignoreCase = true)) "none" else "warning"
         tunnelSlots = Semaphore(MAX_SIMULTANEOUS_TUNNELS)
-        tunnelRetries = 3
+        hasSessionHeaders.set(false)
+        openTunnelCount.set(0)
+        drainPool()
         logger("BtProxy.start() profile=$profile mux=$muxConcurrency xudp=$xudpConcurrency slots=$MAX_SIMULTANEOUS_TUNNELS")
         TunnelSessionStore.setState("CONNECTING")
 
         thread(isDaemon = true, name = "btproxy-init") {
+            startPoolRefill(protectSocket, logger)
             startTunnelBridge(protectSocket, logger)
             startXray(ctx, logger)
         }
@@ -59,6 +68,8 @@ object BtProxy {
         running = false
         xrayProcess?.destroy()
         xrayProcess = null
+        drainPool()
+        openTunnelCount.set(0)
         TunnelSessionStore.reset()
     }
 
@@ -76,20 +87,66 @@ object BtProxy {
                     client.tcpNoDelay = true
                     thread(isDaemon = true, name = "bridge-conn") {
                         tunnelSlots.acquire()
-                        val tunnel = openTunnelWithRetry(protectSocket, logger)
+                        val tunnel = acquireReadyTunnel(logger)
                         if (tunnel == null) {
-                            logger("ERROR no se pudo abrir túnel para conexión local")
+                            logger("ERROR no hay túnel listo en el pool")
                             runCatching { client.close() }
                             tunnelSlots.release()
                             return@thread
                         }
-                        logger("Túnel TCP abierto para bridge")
-                        relay(client, tunnel)
-                        tunnelSlots.release()
+                        logger("Túnel del pool asignado a conexión local")
+                        try {
+                            relay(client, tunnel)
+                        } finally {
+                            runCatching { tunnel.close() }
+                            openTunnelCount.updateAndGet { current -> (current - 1).coerceAtLeast(0) }
+                            tunnelSlots.release()
+                        }
                     }
                 }
             } catch (_: Exception) {
             }
+        }
+    }
+
+    private fun startPoolRefill(
+        protectSocket: (Socket) -> Unit,
+        logger: (String) -> Unit
+    ) {
+        thread(isDaemon = true, name = "tunnel-pool-refill") {
+            while (running) {
+                if (openTunnelCount.get() >= MAX_SIMULTANEOUS_TUNNELS) {
+                    Thread.sleep(60)
+                    continue
+                }
+                val needsHeaders = !hasSessionHeaders.get()
+                val opened = openTunnel(protectSocket, logger, updateSession = needsHeaders)
+                if (opened != null) {
+                    if (needsHeaders) hasSessionHeaders.set(true)
+                    if (openTunnelCount.incrementAndGet() <= MAX_SIMULTANEOUS_TUNNELS) {
+                        tunnelPool.offer(opened)
+                    } else {
+                        openTunnelCount.decrementAndGet()
+                        runCatching { opened.close() }
+                    }
+                    continue
+                }
+                Thread.sleep(180)
+            }
+        }
+    }
+
+    private fun acquireReadyTunnel(logger: (String) -> Unit): Socket? {
+        val direct = tunnelPool.poll()
+        if (direct != null) return direct
+        logger("Pool vacío, esperando túnel listo...")
+        return tunnelPool.poll(8, TimeUnit.SECONDS)
+    }
+
+    private fun drainPool() {
+        while (true) {
+            val s = tunnelPool.poll() ?: break
+            runCatching { s.close() }
         }
     }
 
@@ -270,7 +327,8 @@ object BtProxy {
 
     private fun openTunnel(
         protectSocket: (Socket) -> Unit,
-        logger: (String) -> Unit
+        logger: (String) -> Unit,
+        updateSession: Boolean
     ): Socket? {
         return try {
             val startMs = System.currentTimeMillis()
@@ -314,15 +372,17 @@ object BtProxy {
                 headersForUi["x-status"] = if (handshake?.statusCode == 101) "OK" else "OPEN"
             }
             logger("Handshake tolerante code=${handshake?.statusCode ?: -1} x-status=${headersForUi["x-status"]}")
-            TunnelSessionStore.updateFromHeaders(
-                mapOf(
-                    "X-Status" to (headersForUi["x-status"] ?: "-"),
-                    "X-Name" to (headersForUi["x-name"] ?: "-"),
-                    "X-Expire" to (headersForUi["x-expire"] ?: "-"),
-                    "X-Days-Left" to (headersForUi["x-days-left"] ?: "-"),
-                    "X-Premium" to (headersForUi["x-premium"] ?: "-")
+            if (updateSession) {
+                TunnelSessionStore.updateFromHeaders(
+                    mapOf(
+                        "X-Status" to (headersForUi["x-status"] ?: "-"),
+                        "X-Name" to (headersForUi["x-name"] ?: "-"),
+                        "X-Expire" to (headersForUi["x-expire"] ?: "-"),
+                        "X-Days-Left" to (headersForUi["x-days-left"] ?: "-"),
+                        "X-Premium" to (headersForUi["x-premium"] ?: "-")
+                    )
                 )
-            )
+            }
 
             sock.soTimeout = 0
             TunnelSessionStore.setLatency(System.currentTimeMillis() - startMs)
@@ -334,23 +394,6 @@ object BtProxy {
             TunnelSessionStore.setState("ERROR")
             null
         }
-    }
-
-    private fun openTunnelWithRetry(
-        protectSocket: (Socket) -> Unit,
-        logger: (String) -> Unit
-    ): Socket? {
-        repeat(tunnelRetries) { attempt ->
-            val tunnel = openTunnel(protectSocket, logger)
-            if (tunnel != null) return tunnel
-            if (attempt < tunnelRetries - 1) {
-                val backoff = (250L * (attempt + 1)).coerceAtMost(1200L)
-                logger("Reintentando túnel (${attempt + 2}/$tunnelRetries) en ${backoff}ms")
-                Thread.sleep(backoff)
-            }
-        }
-        logger("ERROR túnel no disponible tras $tunnelRetries intentos")
-        return null
     }
 
 
