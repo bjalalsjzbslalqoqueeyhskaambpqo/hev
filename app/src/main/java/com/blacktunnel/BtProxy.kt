@@ -20,15 +20,12 @@ object BtProxy {
     private const val XRAY_SOCKS5_PORT = 10808
     private const val TUNNEL_LOCAL_PORT = 10809
     private const val DEFAULT_UUID = "a3482e88-686a-4a58-8126-99c9df64b7bf"
-    private const val MAX_MUX = 1024
 
     @Volatile private var xrayProcess: Process? = null
     @Volatile private var running = false
     @Volatile private var vlessUuid: String = DEFAULT_UUID
-    @Volatile private var muxConcurrency: Int = MAX_MUX
-    @Volatile private var xudpConcurrency: Int = MAX_MUX
     @Volatile private var logLevel: String = "warning"
-    @Volatile private var tunnelSlots = Semaphore(1)
+    @Volatile private var tunnelSlots = Semaphore(16)
     @Volatile private var tunnelRetries: Int = 6
     @Volatile private var latencyReported = false
 
@@ -41,13 +38,11 @@ object BtProxy {
         running = true
         val isPerformance = profile.equals("performance", ignoreCase = true)
         vlessUuid = TunnelPrefs.getVlessUuid(ctx)
-        muxConcurrency = MAX_MUX
-        xudpConcurrency = MAX_MUX
         logLevel = if (isPerformance) "none" else "warning"
-        tunnelSlots = Semaphore(1)
+        tunnelSlots = Semaphore(16)
         tunnelRetries = 6
         latencyReported = false
-        logger("BtProxy.start() profile=$profile uuid=$vlessUuid mux=$muxConcurrency xudp=$xudpConcurrency")
+        logger("BtProxy.start() profile=$profile uuid=$vlessUuid mux=disabled")
         TunnelSessionStore.setState("CONNECTING")
 
         thread(isDaemon = true, name = "btproxy-init") {
@@ -218,12 +213,7 @@ object BtProxy {
                     "network": "tcp",
                     "security": "none"
                   },
-                  "mux": {
-                    "enabled": true,
-                    "concurrency": $muxConcurrency,
-                    "xudpConcurrency": $xudpConcurrency,
-                    "xudpProxyUDP443": "allow"
-                  }
+                  "mux": { "enabled": false }
                 }
               ]
             }

@@ -1,7 +1,5 @@
 package com.blacktunnel
 
-import android.app.AlarmManager
-import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.net.VpnService
@@ -18,7 +16,6 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import com.google.android.material.button.MaterialButton
-import kotlin.system.exitProcess
 
 class MainActivity : AppCompatActivity() {
     private lateinit var toggleButton: MaterialButton
@@ -202,7 +199,8 @@ class MainActivity : AppCompatActivity() {
     private fun onToggle() {
         val current = TunnelSessionStore.current()
         if (current.state == "CONNECTING" || current.state == "CONNECTED") {
-            forceRestartAfterStop()
+            startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
+            TunnelSessionStore.setState("DISCONNECTED")
             return
         }
 
@@ -242,28 +240,6 @@ class MainActivity : AppCompatActivity() {
 
         val opened = intents.firstOrNull { runCatching { startActivity(it); true }.getOrDefault(false) }
         if (opened == null) Toast.makeText(this, getString(R.string.battery_settings_failed), Toast.LENGTH_SHORT).show()
-    }
-
-    private fun forceRestartAfterStop() {
-        stopService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
-        startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
-        TunnelSessionStore.reset()
-
-        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-        if (launchIntent != null) {
-            val pendingIntent = PendingIntent.getActivity(
-                this,
-                1122,
-                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK),
-                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
-            )
-            val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
-            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC, System.currentTimeMillis() + 350, pendingIntent)
-        }
-
-        finishAffinity()
-        android.os.Process.killProcess(android.os.Process.myPid())
-        exitProcess(0)
     }
 
     private fun getHotspotIp(): String? {
