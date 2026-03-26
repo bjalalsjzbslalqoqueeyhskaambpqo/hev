@@ -25,11 +25,7 @@ object BtProxy {
     @Volatile private var running = false
     private val logLevel: String = "none"
     private val tunnelSlots = Semaphore(120)
-    private val tunnelRetries: Int = 2
     @Volatile private var bridgeServerSocket: ServerSocket? = null
-    @Volatile private var nextTunnelAttemptAtMs: Long = 0L
-    private val tunnelPool = java.util.concurrent.LinkedBlockingQueue<Socket>(8)
-    private val poolLock = Any()
     @Volatile private var clientId: String = ""
     @Volatile private var selectedServerHost: String = ""
     private val terminalStatuses = setOf("INVALID", "EXPIRED", "DENIED", "CENTRAL_OFFLINE", "BANNED")
@@ -49,7 +45,6 @@ object BtProxy {
         running = true
         clientId = TunnelPrefs.getOrCreateClientId(ctx)
         selectedServerHost = serverHost.trim()
-        nextTunnelAttemptAtMs = 0L
         logger("BtProxy.start()")
         TunnelSessionStore.setState("CONNECTING")
 
@@ -117,13 +112,8 @@ object BtProxy {
 
     fun stop() {
         running = false
-        nextTunnelAttemptAtMs = 0L
         runCatching { bridgeServerSocket?.close() }
         bridgeServerSocket = null
-        synchronized(poolLock) {
-            tunnelPool.forEach { runCatching { it.close() } }
-            tunnelPool.clear()
-        }
         val proc = xrayProcess
         runCatching { proc?.destroy() }
         runCatching {
@@ -144,30 +134,10 @@ object BtProxy {
         protectSocket: (Socket) -> Unit,
         logger: (String) -> Unit
     ) {
-        synchronized(poolLock) {
-            tunnelPool.forEach { runCatching { it.close() } }
-            tunnelPool.clear()
-        }
         runCatching { bridgeServerSocket?.close() }
         val srv = ServerSocket(TUNNEL_LOCAL_PORT, 128, InetAddress.getByName("127.0.0.1"))
         bridgeServerSocket = srv
         logger("Bridge escuchando en 127.0.0.1:$TUNNEL_LOCAL_PORT")
-
-        thread(isDaemon = true, name = "tunnel-pool-filler") {
-            while (running) {
-                if (tunnelPool.size < 4) {
-                    val tunnel = openTunnelWithRetry(protectSocket, logger)
-                    if (tunnel != null) {
-                        tunnelPool.offer(tunnel)
-                        logger("Pool: túnel listo, pool.size=${tunnelPool.size}")
-                    } else {
-                        Thread.sleep(500)
-                    }
-                } else {
-                    Thread.sleep(200)
-                }
-            }
-        }
 
         thread(isDaemon = true, name = "bridge-accept") {
             try {
@@ -176,15 +146,14 @@ object BtProxy {
                     client.tcpNoDelay = true
                     thread(isDaemon = true, name = "bridge-conn") {
                         tunnelSlots.acquire()
-                        val tunnel = tunnelPool.poll(3, java.util.concurrent.TimeUnit.SECONDS)
-                            ?: openTunnelWithRetry(protectSocket, logger)
+                        val tunnel = openTunnel(protectSocket, logger)
                         if (tunnel == null) {
-                            logger("ERROR no hay túnel disponible")
+                            logger("ERROR no se pudo abrir túnel para conexión local")
                             runCatching { client.close() }
                             tunnelSlots.release()
                             return@thread
                         }
-                        logger("Túnel TCP tomado para bridge")
+                        logger("Túnel TCP abierto para bridge")
                         relay(client, tunnel)
                         tunnelSlots.release()
                     }
@@ -377,43 +346,41 @@ object BtProxy {
         logger: (String) -> Unit
     ): Socket? {
         return try {
-            val startMs = System.currentTimeMillis()
-            val response = runHandshakeRequest(action = "tunnel", protectSocket = protectSocket, logger = logger)
-                ?: return null
-            val sock = response.socket
-            val resp = response.data
-            val handshake = pickHandshakeWithHeaders(resp)
-            val headersForUi = handshake.headers.toMutableMap()
-            val status = (headersForUi["x-status"] ?: "UNKNOWN").uppercase()
-            logger("Handshake tolerante code=${handshake.statusCode} x-status=$status")
-            TunnelSessionStore.updateFromHeaders(
-                mapOf(
-                    "X-Status" to status,
-                    "X-Name" to (headersForUi["x-name"] ?: "-"),
-                    "X-Expire" to (headersForUi["x-expire"] ?: "-"),
-                    "X-Days-Left" to (headersForUi["x-days-left"] ?: "-"),
-                    "X-Premium" to (headersForUi["x-premium"] ?: "-")
-                )
+            val response = runHandshakeRequest(
+                action = "tunnel",
+                protectSocket = protectSocket,
+                logger = logger
             )
-            val isIncomplete = status == "-" || status.isBlank() || status == "UNKNOWN" || status == "OPEN"
-            val isRejected = !isIncomplete && status != "OK"
-            if (isIncomplete) {
-                logger("Handshake incompleto status=$status, se reintentará")
-                nextTunnelAttemptAtMs = System.currentTimeMillis() + 900L
-                runCatching { sock.close() }
-                return null
-            }
-            if (isRejected) {
-                logger("Handshake rechazado status=$status")
+                ?: return null
+
+            val sock = response.socket
+            val handshake = pickHandshakeWithHeaders(response.data)
+            val status = (handshake.headers["x-status"] ?: "").uppercase().trim()
+
+            if (handshake.statusCode != 101) {
+                logger("Túnel rechazado code=${handshake.statusCode}")
                 runCatching { sock.close() }
                 return null
             }
 
+            if (status in terminalStatuses) {
+                logger("Túnel rechazado status=$status")
+                runCatching { sock.close() }
+                return null
+            }
+
+            TunnelSessionStore.updateFromHeaders(
+                mapOf(
+                    "X-Status" to status.ifBlank { "OK" },
+                    "X-Name" to (handshake.headers["x-name"] ?: "-"),
+                    "X-Expire" to (handshake.headers["x-expire"] ?: "-"),
+                    "X-Days-Left" to (handshake.headers["x-days-left"] ?: "-"),
+                    "X-Premium" to (handshake.headers["x-premium"] ?: "-")
+                )
+            )
             sock.soTimeout = 0
-            nextTunnelAttemptAtMs = 0L
-            TunnelSessionStore.setLatency(System.currentTimeMillis() - startMs)
             TunnelSessionStore.setState("CONNECTED")
-            logger("Túnel abierto (modo tolerante) via ${sock.inetAddress.hostAddress}")
+            logger("Túnel abierto code=101 status=$status")
             sock
         } catch (e: Exception) {
             logger("ERROR abriendo túnel: ${e.message}")
@@ -472,35 +439,6 @@ object BtProxy {
             null
         }
     }
-
-    private fun openTunnelWithRetry(
-        protectSocket: (Socket) -> Unit,
-        logger: (String) -> Unit
-    ): Socket? {
-        repeat(tunnelRetries) { attempt ->
-            if (!running) return null
-            val now = System.currentTimeMillis()
-            val waitMs = (nextTunnelAttemptAtMs - now).coerceAtLeast(0L)
-            if (waitMs > 0L) {
-                Thread.sleep(waitMs.coerceAtMost(1200L))
-            }
-            val tunnel = openTunnel(protectSocket, logger)
-            if (tunnel != null) return tunnel
-            val currentStatus = TunnelSessionStore.current().status.uppercase()
-            if (currentStatus in terminalStatuses) {
-                logger("Cancelando reintentos por estado terminal=$currentStatus")
-                return null
-            }
-            if (attempt < tunnelRetries - 1) {
-                val backoff = (700L * (attempt + 1)).coerceAtMost(2200L)
-                logger("Reintentando túnel (${attempt + 2}/$tunnelRetries) en ${backoff}ms")
-                Thread.sleep(backoff)
-            }
-        }
-        logger("WARN túnel no disponible tras $tunnelRetries intentos")
-        return null
-    }
-
 
     private fun openProxySocket(
         protectSocket: (Socket) -> Unit,
