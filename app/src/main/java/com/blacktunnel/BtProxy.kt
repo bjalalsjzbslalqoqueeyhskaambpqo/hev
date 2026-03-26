@@ -3,7 +3,6 @@ package com.blacktunnel
 import android.content.Context
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -216,9 +215,7 @@ object BtProxy {
         logger: (String) -> Unit
     ): Socket? {
         return try {
-            val sock = Socket()
-            protectSocket(sock)
-            sock.connect(InetSocketAddress(Inet6Address.getByName(PROXY_IPV6), PROXY_PORT), 10_000)
+            val sock = openProxySocket(protectSocket, logger) ?: return null
             sock.tcpNoDelay = true
             val out = sock.getOutputStream()
             val inp = sock.getInputStream()
@@ -277,13 +274,47 @@ object BtProxy {
 
             sock.soTimeout = 0
             TunnelSessionStore.setState("CONNECTED")
-            logger("Túnel OK via IPv6 $PROXY_IPV6")
+            logger("Túnel OK via ${sock.inetAddress.hostAddress}")
             sock
         } catch (e: Exception) {
             logger("ERROR abriendo túnel: ${e.message}")
             TunnelSessionStore.setState("ERROR")
             null
         }
+    }
+
+
+    private fun openProxySocket(
+        protectSocket: (Socket) -> Unit,
+        logger: (String) -> Unit
+    ): Socket? {
+        val candidates = linkedSetOf<InetAddress>()
+        runCatching { candidates += InetAddress.getByName(PROXY_IPV6) }
+            .onFailure { logger("WARN IPv6 preferido inválido: ${it.message}") }
+        runCatching { candidates += InetAddress.getAllByName(PROXY_HOST).toList() }
+            .onFailure { logger("WARN resolución DNS de proxy falló: ${it.message}") }
+
+        if (candidates.isEmpty()) {
+            logger("ERROR no hay direcciones para proxy host=$PROXY_HOST")
+            TunnelSessionStore.setState("ERROR")
+            return null
+        }
+
+        candidates.forEach { address ->
+            runCatching {
+                val socket = Socket()
+                protectSocket(socket)
+                socket.connect(InetSocketAddress(address, PROXY_PORT), 10_000)
+                logger("Proxy conectado por ${if (address is java.net.Inet6Address) "IPv6" else "IPv4"} ${address.hostAddress}")
+                return socket
+            }.onFailure {
+                logger("WARN fallo conexión proxy ${address.hostAddress}: ${it.message}")
+            }
+        }
+
+        logger("ERROR no se pudo conectar al proxy por IPv4/IPv6")
+        TunnelSessionStore.setState("ERROR")
+        return null
     }
 
     private data class HandshakeResult(
