@@ -102,6 +102,7 @@ class MainActivity : AppCompatActivity() {
         refreshServersButton.setOnClickListener { refreshServers(manual = true) }
         saveSettingsButton.setOnClickListener { saveSettings(showToast = true) }
         batteryButton.setOnClickListener { openBatterySettings() }
+        hotspotSwitch.setOnCheckedChangeListener { _, _ -> render(TunnelSessionStore.current()) }
 
         refreshServers(manual = false)
         render(TunnelSessionStore.current())
@@ -300,19 +301,22 @@ class MainActivity : AppCompatActivity() {
     private fun getHotspotIp(): String? {
         return runCatching {
             val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+            val candidates = mutableListOf<Pair<String, String>>()
             while (interfaces.hasMoreElements()) {
                 val intf = interfaces.nextElement()
                 val name = intf.name.lowercase()
-                if (!name.contains("ap") && !name.contains("wlan") && !name.contains("swlan")) continue
                 val addrs = intf.inetAddresses
                 while (addrs.hasMoreElements()) {
                     val addr = addrs.nextElement()
                     if (addr is java.net.Inet4Address && !addr.isLoopbackAddress) {
-                        return@runCatching addr.hostAddress
+                        candidates += name to addr.hostAddress
                     }
                 }
             }
-            null
+            candidates.firstOrNull { (name, ip) ->
+                (name.contains("ap") || name.contains("swlan") || name.contains("rndis") || name.contains("wlan")) &&
+                    !ip.startsWith("127.")
+            }?.second ?: candidates.firstOrNull()?.second
         }.getOrNull()
     }
 

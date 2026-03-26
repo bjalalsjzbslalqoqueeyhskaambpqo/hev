@@ -78,9 +78,7 @@ object CentralServerDiscovery {
                 val parts = inside.split("|").map { it.trim() }
                 val region = parts.getOrNull(0).orEmpty()
                 val status = parts.getOrNull(1).orEmpty()
-                val cloudfrontRef = parts.getOrNull(2).orEmpty()
                 if (host.isBlank() || id.toIntOrNull() == null) return@mapNotNull null
-                if (cloudfrontRef.contains("cloudfront.net", ignoreCase = true)) return@mapNotNull null
                 CentralServer(id = id, host = host, region = region.ifBlank { "N/A" }, status = status.ifBlank { "unknown" })
             }
             .distinctBy { it.host }
