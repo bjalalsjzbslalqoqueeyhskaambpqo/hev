@@ -63,7 +63,7 @@ def handle_tunnel(client):
     upstream = None
     acquired = False
     try:
-        acquired = tunnel_slots.acquire(timeout=8)
+        acquired = tunnel_slots.acquire(timeout=30)
         if not acquired:
             return
         upstream = socket.create_connection(XRAY_ADDR, 5)
@@ -94,7 +94,7 @@ def handle_tunnel(client):
 
 def handle(sock):
     try:
-        sock.settimeout(10)
+        sock.settimeout(60)
         raw = b""
         while b"\r\n\r\n" not in raw:
             c = sock.recv(4096)

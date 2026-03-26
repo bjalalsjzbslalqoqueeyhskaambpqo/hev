@@ -29,8 +29,8 @@ object BtProxy {
     @Volatile private var running = false
     private const val MAX_SIMULTANEOUS_TUNNELS = 16
 
-    @Volatile private var muxConcurrency: Int = 1024
-    @Volatile private var xudpConcurrency: Int = 1024
+    @Volatile private var muxConcurrency: Int = 2048
+    @Volatile private var xudpConcurrency: Int = 2048
     @Volatile private var logLevel: String = "warning"
     @Volatile private var tunnelSlots = Semaphore(MAX_SIMULTANEOUS_TUNNELS)
     private val tunnelPool = LinkedBlockingQueue<Socket>()
@@ -47,8 +47,8 @@ object BtProxy {
         @Suppress("UNUSED_VARIABLE")
         val ignoredMuxInput = mux
         running = true
-        muxConcurrency = 1024
-        xudpConcurrency = 1024
+        muxConcurrency = 2048
+        xudpConcurrency = 2048
         logLevel = if (profile.equals("performance", ignoreCase = true)) "none" else "warning"
         tunnelSlots = Semaphore(MAX_SIMULTANEOUS_TUNNELS)
         hasSessionHeaders.set(false)
@@ -236,12 +236,12 @@ object BtProxy {
         return """
             {
               "log": { "loglevel": "$logLevel" },
-              "policy": {
+                  "policy": {
                 "system": {
                   "udpTimeout": 600,
                   "connIdle": 600,
-                  "downlinkOnly": 10,
-                  "uplinkOnly": 10
+                  "downlinkOnly": 60,
+                  "uplinkOnly": 60
                 }
               },
               "inbounds": [
