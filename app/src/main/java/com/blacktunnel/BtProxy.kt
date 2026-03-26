@@ -29,6 +29,7 @@ object BtProxy {
     @Volatile private var tunnelSlots = Semaphore(16)
     @Volatile private var tunnelRetries: Int = 2
     @Volatile private var bridgeServerSocket: ServerSocket? = null
+    @Volatile private var nextTunnelAttemptAtMs: Long = 0L
     @Volatile private var clientId: String = ""
     @Volatile private var selectedServerHost: String = ""
     private val terminalStatuses = setOf("INVALID", "EXPIRED", "DENIED", "CENTRAL_OFFLINE", "BANNED")
@@ -55,7 +56,8 @@ object BtProxy {
         xudpConcurrency = if (isPerformance) 192 else 72
         logLevel = if (isPerformance) "none" else "warning"
         tunnelSlots = Semaphore(if (isPerformance) 120 else 56)
-        tunnelRetries = if (isPerformance) 2 else 1
+        tunnelRetries = if (isPerformance) 3 else 2
+        nextTunnelAttemptAtMs = 0L
         logger("BtProxy.start() profile=$profile mux=$muxConcurrency xudp=$xudpConcurrency slots=${if (isPerformance) 120 else 56}")
         TunnelSessionStore.setState("CONNECTING")
 
@@ -118,6 +120,7 @@ object BtProxy {
 
     fun stop() {
         running = false
+        nextTunnelAttemptAtMs = 0L
         runCatching { bridgeServerSocket?.close() }
         bridgeServerSocket = null
         val proc = xrayProcess
@@ -374,6 +377,7 @@ object BtProxy {
             val isRejected = !isIncomplete && status != "OK"
             if (isIncomplete) {
                 logger("Handshake incompleto status=$status, se reintentará")
+                nextTunnelAttemptAtMs = System.currentTimeMillis() + 900L
                 runCatching { sock.close() }
                 return null
             }
@@ -384,6 +388,7 @@ object BtProxy {
             }
 
             sock.soTimeout = 0
+            nextTunnelAttemptAtMs = 0L
             TunnelSessionStore.setLatency(System.currentTimeMillis() - startMs)
             TunnelSessionStore.setState("CONNECTED")
             logger("Túnel abierto (modo tolerante) via ${sock.inetAddress.hostAddress}")
@@ -452,6 +457,11 @@ object BtProxy {
     ): Socket? {
         repeat(tunnelRetries) { attempt ->
             if (!running) return null
+            val now = System.currentTimeMillis()
+            val waitMs = (nextTunnelAttemptAtMs - now).coerceAtLeast(0L)
+            if (waitMs > 0L) {
+                Thread.sleep(waitMs.coerceAtMost(1200L))
+            }
             val tunnel = openTunnel(protectSocket, logger)
             if (tunnel != null) return tunnel
             val currentStatus = TunnelSessionStore.current().status.uppercase()
@@ -460,7 +470,7 @@ object BtProxy {
                 return null
             }
             if (attempt < tunnelRetries - 1) {
-                val backoff = (600L * (attempt + 1)).coerceAtMost(1800L)
+                val backoff = (700L * (attempt + 1)).coerceAtMost(2200L)
                 logger("Reintentando túnel (${attempt + 2}/$tunnelRetries) en ${backoff}ms")
                 Thread.sleep(backoff)
             }
