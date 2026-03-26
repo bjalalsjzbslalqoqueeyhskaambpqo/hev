@@ -104,6 +104,7 @@ class BtVpnService : VpnService() {
         }
 
         pfd = established
+        TunnelSessionStore.setState("CONNECTED")
         val rawFd = established.detachFd()
         LogStore.add("TUN established fd=$rawFd")
 
@@ -115,6 +116,9 @@ class BtVpnService : VpnService() {
                 -1
             }
             LogStore.add("HEV terminó con code=$result")
+            if (result != 0) {
+                TunnelSessionStore.setState("ERROR")
+            }
         }
 
     }
@@ -141,6 +145,10 @@ class BtVpnService : VpnService() {
 
     private fun stopTunnel() {
         if (pfd == null) {
+            TunnelSessionStore.setState("DISCONNECTED")
+            BtProxy.stop()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
             return
         }
         LogStore.add("Stopping VPN/HEV")

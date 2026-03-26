@@ -252,14 +252,27 @@ object BtProxy {
 
             val resp = buf.toString()
             logger("RX $blocks bloques: ${resp.take(100)}")
-            val headers = parseHandshakeHeaders(resp)
-            TunnelSessionStore.updateFromHeaders(headers)
-            if (!headers["X-Status"].orEmpty().equals("OK", ignoreCase = true)) {
-                logger("ERROR túnel rechazado")
+            val handshake = parseHandshake(resp)
+            if (handshake.statusCode != 101) {
+                logger("ERROR túnel rechazado code=${handshake.statusCode}")
                 TunnelSessionStore.setState("ERROR")
                 sock.close()
                 return null
             }
+
+            val headersForUi = handshake.headers.toMutableMap()
+            if (headersForUi["x-status"].isNullOrBlank()) {
+                headersForUi["x-status"] = "OK"
+            }
+            TunnelSessionStore.updateFromHeaders(
+                mapOf(
+                    "X-Status" to (headersForUi["x-status"] ?: "-"),
+                    "X-Name" to (headersForUi["x-name"] ?: "-"),
+                    "X-Expire" to (headersForUi["x-expire"] ?: "-"),
+                    "X-Days-Left" to (headersForUi["x-days-left"] ?: "-"),
+                    "X-Premium" to (headersForUi["x-premium"] ?: "-")
+                )
+            )
 
             sock.soTimeout = 0
             TunnelSessionStore.setState("CONNECTED")
@@ -272,23 +285,36 @@ object BtProxy {
         }
     }
 
-    private fun parseHandshakeHeaders(response: String): Map<String, String> {
+    private data class HandshakeResult(
+        val statusCode: Int,
+        val headers: Map<String, String>
+    )
+
+    private fun parseHandshake(response: String): HandshakeResult {
         val headerBlock = response
             .split("\r\n\r\n")
-            .firstOrNull { it.startsWith("HTTP/1.1 101", ignoreCase = true) }
-            ?: return emptyMap()
+            .firstOrNull { it.startsWith("HTTP/1.1", ignoreCase = true) }
+            ?: return HandshakeResult(-1, emptyMap())
 
-        return headerBlock
-            .split("\r\n")
+        val lines = headerBlock.split("\r\n")
+        val statusCode = lines
+            .firstOrNull()
+            ?.split(" ")
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+            ?: -1
+
+        val headers = lines
             .drop(1)
             .mapNotNull { line ->
                 val separator = line.indexOf(':')
                 if (separator <= 0) return@mapNotNull null
-                val key = line.substring(0, separator).trim()
+                val key = line.substring(0, separator).trim().lowercase()
                 val value = line.substring(separator + 1).trim()
                 if (key.isEmpty()) null else key to value
             }
             .toMap()
-    }
 
+        return HandshakeResult(statusCode, headers)
+    }
 }
