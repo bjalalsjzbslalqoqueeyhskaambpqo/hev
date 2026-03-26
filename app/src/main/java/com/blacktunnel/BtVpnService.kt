@@ -15,6 +15,7 @@ import kotlin.concurrent.thread
 class BtVpnService : VpnService() {
 
     private var pfd: ParcelFileDescriptor? = null
+    @Volatile private var rawTunFd: Int = -1
     @Volatile private var isStarting = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -29,6 +30,12 @@ class BtVpnService : VpnService() {
     override fun onDestroy() {
         stopTunnel()
         super.onDestroy()
+    }
+
+    override fun onRevoke() {
+        LogStore.add("VPN revocado por el sistema")
+        stopTunnel()
+        super.onRevoke()
     }
 
     private fun installCrashHandler() {
@@ -155,6 +162,7 @@ class BtVpnService : VpnService() {
         pfd = established
         TunnelSessionStore.setState("CONNECTED")
         val rawFd = established.detachFd()
+        rawTunFd = rawFd
         LogStore.add("TUN established fd=$rawFd")
 
         val configFile = writeHevConfig()
@@ -164,6 +172,7 @@ class BtVpnService : VpnService() {
                 TunnelSessionStore.setState("ERROR")
                 -1
             }
+            rawTunFd = -1
             LogStore.add("HEV terminó con code=$result")
             if (result != 0) {
                 TunnelSessionStore.setState("ERROR")
@@ -193,7 +202,7 @@ class BtVpnService : VpnService() {
     }
 
     private fun stopTunnel() {
-        if (pfd == null) {
+        if (pfd == null && rawTunFd < 0) {
             TunnelSessionStore.setState("DISCONNECTED")
             BtProxy.stop()
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -202,6 +211,16 @@ class BtVpnService : VpnService() {
         }
         LogStore.add("Stopping VPN/HEV")
         runCatching { HevBridge.stop() }
+        if (rawTunFd >= 0) {
+            val fdToClose = rawTunFd
+            rawTunFd = -1
+            runCatching {
+                ParcelFileDescriptor.adoptFd(fdToClose).close()
+                LogStore.add("TUN fd cerrado manualmente fd=$fdToClose")
+            }.onFailure {
+                LogStore.add("WARN no se pudo cerrar fd TUN=$fdToClose: ${it.message}")
+            }
+        }
         runCatching { pfd?.close() }
         pfd = null
         TunnelSessionStore.setState("DISCONNECTED")
