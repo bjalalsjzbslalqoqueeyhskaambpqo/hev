@@ -28,6 +28,7 @@ object BtProxy {
     @Volatile private var logLevel: String = "warning"
     @Volatile private var tunnelSlots = Semaphore(16)
     @Volatile private var tunnelRetries: Int = 2
+    @Volatile private var bridgeServerSocket: ServerSocket? = null
     @Volatile private var clientId: String = ""
     @Volatile private var selectedServerHost: String = ""
     private val terminalStatuses = setOf("INVALID", "EXPIRED", "DENIED", "CENTRAL_OFFLINE", "BANNED")
@@ -54,7 +55,7 @@ object BtProxy {
         xudpConcurrency = if (isPerformance) 192 else 72
         logLevel = if (isPerformance) "none" else "warning"
         tunnelSlots = Semaphore(if (isPerformance) 120 else 56)
-        tunnelRetries = if (isPerformance) 6 else 3
+        tunnelRetries = if (isPerformance) 2 else 1
         logger("BtProxy.start() profile=$profile mux=$muxConcurrency xudp=$xudpConcurrency slots=${if (isPerformance) 120 else 56}")
         TunnelSessionStore.setState("CONNECTING")
 
@@ -117,7 +118,20 @@ object BtProxy {
 
     fun stop() {
         running = false
-        xrayProcess?.destroy()
+        runCatching { bridgeServerSocket?.close() }
+        bridgeServerSocket = null
+        val proc = xrayProcess
+        runCatching { proc?.destroy() }
+        runCatching {
+            if (proc != null && proc.isAlive) {
+                proc.waitFor(1200, java.util.concurrent.TimeUnit.MILLISECONDS)
+            }
+        }
+        runCatching {
+            if (proc != null && proc.isAlive) {
+                proc.destroyForcibly()
+            }
+        }
         xrayProcess = null
         TunnelSessionStore.reset()
     }
@@ -126,7 +140,9 @@ object BtProxy {
         protectSocket: (Socket) -> Unit,
         logger: (String) -> Unit
     ) {
+        runCatching { bridgeServerSocket?.close() }
         val srv = ServerSocket(TUNNEL_LOCAL_PORT, 128, InetAddress.getByName("127.0.0.1"))
+        bridgeServerSocket = srv
         logger("Bridge escuchando en 127.0.0.1:$TUNNEL_LOCAL_PORT")
 
         thread(isDaemon = true, name = "bridge-accept") {
@@ -149,6 +165,9 @@ object BtProxy {
                     }
                 }
             } catch (_: Exception) {
+            } finally {
+                runCatching { srv.close() }
+                if (bridgeServerSocket === srv) bridgeServerSocket = null
             }
         }
     }
@@ -432,6 +451,7 @@ object BtProxy {
         logger: (String) -> Unit
     ): Socket? {
         repeat(tunnelRetries) { attempt ->
+            if (!running) return null
             val tunnel = openTunnel(protectSocket, logger)
             if (tunnel != null) return tunnel
             val currentStatus = TunnelSessionStore.current().status.uppercase()
@@ -440,12 +460,12 @@ object BtProxy {
                 return null
             }
             if (attempt < tunnelRetries - 1) {
-                val backoff = (250L * (attempt + 1)).coerceAtMost(1200L)
+                val backoff = (600L * (attempt + 1)).coerceAtMost(1800L)
                 logger("Reintentando túnel (${attempt + 2}/$tunnelRetries) en ${backoff}ms")
                 Thread.sleep(backoff)
             }
         }
-        logger("ERROR túnel no disponible tras $tunnelRetries intentos")
+        logger("WARN túnel no disponible tras $tunnelRetries intentos")
         return null
     }
 
