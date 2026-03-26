@@ -2,7 +2,7 @@ name: Create Xray-Stable2 branch
 
 on:
   push:
-    branches: [ work ]
+    branches: [ codex/clone-commit-d03a66c ]
   workflow_dispatch:
     inputs:
       source_repository:
