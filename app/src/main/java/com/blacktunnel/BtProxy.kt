@@ -355,7 +355,7 @@ object BtProxy {
 
             val sock = response.socket
             val handshake = pickHandshakeWithHeaders(response.data)
-            val status = (handshake.headers["x-status"] ?: "").uppercase().trim()
+            val status = resolveStatusExhaustive(response.data, handshake.headers["x-status"])
 
             if (handshake.statusCode != 101) {
                 logger("Túnel rechazado code=${handshake.statusCode}")
@@ -369,9 +369,15 @@ object BtProxy {
                 return null
             }
 
+            if (status != "OK") {
+                logger("Túnel rechazado status no válido=$status")
+                runCatching { sock.close() }
+                return null
+            }
+
             TunnelSessionStore.updateFromHeaders(
                 mapOf(
-                    "X-Status" to status.ifBlank { "OK" },
+                    "X-Status" to status,
                     "X-Name" to (handshake.headers["x-name"] ?: "-"),
                     "X-Expire" to (handshake.headers["x-expire"] ?: "-"),
                     "X-Days-Left" to (handshake.headers["x-days-left"] ?: "-"),
@@ -386,6 +392,23 @@ object BtProxy {
             logger("ERROR abriendo túnel: ${e.message}")
             null
         }
+    }
+
+    private fun resolveStatusExhaustive(response: String, fallback: String?): String {
+        val normalizedFallback = fallback?.trim()?.uppercase().orEmpty()
+        if (normalizedFallback.isNotBlank() && normalizedFallback != "-") return normalizedFallback
+
+        val statuses = Regex("(?im)^x-status\\s*:\\s*([^\\r\\n]+)")
+            .findAll(response)
+            .map { it.groupValues.getOrNull(1).orEmpty().trim().uppercase() }
+            .filter { it.isNotBlank() }
+            .toList()
+
+        return statuses.firstOrNull { it in terminalStatuses }
+            ?: statuses.firstOrNull { it == "OK" }
+            ?: statuses.firstOrNull { it != "-" }
+            ?: statuses.firstOrNull()
+            ?: "UNKNOWN"
     }
 
     private data class HandshakeSocketResponse(val socket: Socket, val data: String)
