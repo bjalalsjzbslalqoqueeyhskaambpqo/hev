@@ -18,13 +18,11 @@
     <string name="profile_normal">Normal</string>
     <string name="profile_performance">Performance</string>
     <string name="search_apps_hint">Buscar app por nombre o paquete</string>
-    <string name="refresh_servers">Actualizar</string>
-    <string name="refreshing_servers">Actualizando…</string>
+    <string name="fixed_server_value">Servidor fijo: 7.brawlpass.com.ar (bridge único)</string>
+    <string name="uuid_hint">UUID VLESS del perfil</string>
     <string name="save_settings">Guardar ajustes</string>
     <string name="open_battery_settings">Quitar restricción de batería</string>
     <string name="settings_saved">Ajustes guardados</string>
-    <string name="no_servers">Sin servidores</string>
-    <string name="servers_updated">Servidores actualizados</string>
     <string name="battery_settings_failed">No se pudo abrir ajustes de batería</string>
     <string name="hotspot_proxy_toggle">Compartir Wi‑Fi por proxy</string>
     <string name="hotspot_requires_system">Primero activa \"Compartir Wi‑Fi\" del sistema y luego esta opción.</string>

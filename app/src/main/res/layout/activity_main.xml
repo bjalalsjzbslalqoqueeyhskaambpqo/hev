@@ -40,27 +40,13 @@
             android:textColor="@color/text_secondary"
             android:textSize="14sp" />
 
-
-        <LinearLayout
+        <TextView
+            android:id="@+id/fixedServerValue"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="horizontal">
-
-            <Spinner
-                android:id="@+id/serverSpinner"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/refreshServersButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:text="@string/refresh_servers"
-                android:textAllCaps="false" />
-        </LinearLayout>
+            android:layout_marginTop="10dp"
+            android:text="@string/fixed_server_value"
+            android:textColor="@color/text_secondary" />
         <com.google.android.material.button.MaterialButton
             android:id="@+id/toggleButton"
             android:layout_width="match_parent"
@@ -115,6 +101,17 @@
                         android:text="@string/profile_performance"
                         android:textColor="@color/text_primary" />
                 </RadioGroup>
+
+                <EditText
+                    android:id="@+id/uuidInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:hint="@string/uuid_hint"
+                    android:importantForAutofill="no"
+                    android:inputType="text"
+                    android:textColor="@color/text_primary"
+                    android:textColorHint="@color/text_secondary" />
 
                 <LinearLayout
                     android:id="@+id/performanceContainer"
