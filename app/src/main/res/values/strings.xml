@@ -1,0 +1,34 @@
+<resources>
+    <string name="app_name">XTunnel</string>
+    <string name="connect">Conectar</string>
+    <string name="disconnect">Desconectar</string>
+    <string name="state_disconnected">Desconectado</string>
+    <string name="state_connecting">Conectando…</string>
+    <string name="state_connected">Conectado</string>
+    <string name="state_error">Error</string>
+    <string name="session_info">Información de sesión</string>
+    <string name="session_status">Estado servidor</string>
+    <string name="latency_label">Latencia cliente-servidor</string>
+    <string name="session_name">Nombre</string>
+    <string name="session_expire">Expira</string>
+    <string name="session_days_left">Días restantes</string>
+    <string name="session_premium">Premium</string>
+
+    <string name="settings_title">Ajustes</string>
+    <string name="profile_normal">Normal</string>
+    <string name="profile_performance">Performance</string>
+    <string name="search_apps_hint">Buscar app por nombre o paquete</string>
+    <string name="refresh_servers">Actualizar</string>
+    <string name="refreshing_servers">Actualizando…</string>
+    <string name="save_settings">Guardar ajustes</string>
+    <string name="open_battery_settings">Quitar restricción de batería</string>
+    <string name="settings_saved">Ajustes guardados</string>
+    <string name="no_servers">Sin servidores</string>
+    <string name="servers_updated">Servidores actualizados</string>
+    <string name="battery_settings_failed">No se pudo abrir ajustes de batería</string>
+    <string name="hotspot_proxy_toggle">Compartir Wi‑Fi por proxy</string>
+    <string name="hotspot_requires_system">Primero activa \"Compartir Wi‑Fi\" del sistema y luego esta opción.</string>
+    <string name="block_non_selected_toggle">Bloquear apps no seleccionadas (requiere bloqueo VPN del sistema)</string>
+    <string name="hotspot_info">Host: %1$s  Puerto: %2$d</string>
+    <string name="hotspot_disabled">Hotspot proxy desactivado</string>
+</resources>
