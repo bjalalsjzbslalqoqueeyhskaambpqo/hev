@@ -6,6 +6,7 @@ import java.net.InetSocketAddress
 import java.net.Socket
 
 data class CentralServer(
+    val id: String,
     val host: String,
     val region: String,
     val status: String
@@ -57,7 +58,7 @@ object CentralServerDiscovery {
         }.onFailure { logger("Central vía Cloudflare IPv6 falló: ${it.message}") }
 
         val servers = parseServers(aggregate.toString())
-        logger("Central servers obtenidos=${servers.joinToString { "${it.host}:${it.region}" }}")
+        logger("Central servers obtenidos=${servers.joinToString { "#${it.id}:${it.region}" }}")
         return servers
     }
 
@@ -72,14 +73,15 @@ object CentralServerDiscovery {
             .map { it.trim() }
             .mapNotNull { entry ->
                 val host = entry.substringBefore("(").trim()
+                val id = host.substringBefore(".").trim()
                 val inside = entry.substringAfter("(", "").substringBefore(")")
                 val parts = inside.split("|").map { it.trim() }
                 val region = parts.getOrNull(0).orEmpty()
                 val status = parts.getOrNull(1).orEmpty()
                 val cloudfrontRef = parts.getOrNull(2).orEmpty()
-                if (host.isBlank()) return@mapNotNull null
+                if (host.isBlank() || id.toIntOrNull() == null) return@mapNotNull null
                 if (cloudfrontRef.contains("cloudfront.net", ignoreCase = true)) return@mapNotNull null
-                CentralServer(host = host, region = region.ifBlank { "N/A" }, status = status.ifBlank { "unknown" })
+                CentralServer(id = id, host = host, region = region.ifBlank { "N/A" }, status = status.ifBlank { "unknown" })
             }
             .distinctBy { it.host }
     }

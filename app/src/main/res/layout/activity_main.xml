@@ -139,6 +139,21 @@
                         android:choiceMode="multipleChoice" />
                 </LinearLayout>
 
+
+                <androidx.appcompat.widget.SwitchCompat
+                    android:id="@+id/hotspotSwitch"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="@string/hotspot_proxy_toggle"
+                    android:textColor="@color/text_primary" />
+
+                <TextView
+                    android:id="@+id/hotspotInfo"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:textColor="@color/text_secondary" />
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/saveSettingsButton"
                     android:layout_width="match_parent"

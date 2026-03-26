@@ -144,7 +144,7 @@ object BtProxy {
             }
 
             val config = File(ctx.filesDir, "xray-client.json")
-            config.writeText(buildClientConfig())
+            config.writeText(buildClientConfig(ctx))
 
             val cmd = listOf(
                 binary.absolutePath,
@@ -171,7 +171,7 @@ object BtProxy {
         }
     }
 
-    private fun buildClientConfig(): String {
+    private fun buildClientConfig(ctx: Context): String {
         return """
             {
               "log": { "loglevel": "$logLevel" },
@@ -189,7 +189,7 @@ object BtProxy {
                   "listen": "127.0.0.1",
                   "port": $XRAY_SOCKS5_PORT,
                   "settings": { "udp": true }
-                }
+                }${buildHotspotInbound(ctx)}
               ],
               "outbounds": [
                 {
@@ -222,6 +222,43 @@ object BtProxy {
               ]
             }
         """.trimIndent()
+    }
+
+
+    private fun buildHotspotInbound(ctx: Context): String {
+        if (!TunnelPrefs.isHotspotProxyEnabled(ctx)) return ""
+        val hotspotIp = getHotspotIp() ?: return ""
+        return "," +
+            """
+                {
+                  "protocol": "socks",
+                  "listen": "0.0.0.0",
+                  "port": 1080,
+                  "settings": {
+                    "udp": true,
+                    "ip": "$hotspotIp"
+                  }
+                }
+            """.trimIndent()
+    }
+
+    private fun getHotspotIp(): String? {
+        return runCatching {
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+            while (interfaces.hasMoreElements()) {
+                val intf = interfaces.nextElement()
+                val name = intf.name.lowercase()
+                if (!name.contains("ap") && !name.contains("wlan") && !name.contains("swlan")) continue
+                val addrs = intf.inetAddresses
+                while (addrs.hasMoreElements()) {
+                    val addr = addrs.nextElement()
+                    if (addr is java.net.Inet4Address && !addr.isLoopbackAddress) {
+                        return@runCatching addr.hostAddress
+                    }
+                }
+            }
+            null
+        }.getOrNull()
     }
 
     private fun openTunnel(

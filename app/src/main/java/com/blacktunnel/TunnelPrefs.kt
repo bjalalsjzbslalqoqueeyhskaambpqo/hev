@@ -10,6 +10,7 @@ object TunnelPrefs {
     private const val KEY_INCLUDED_APPS = "included_apps"
     private const val KEY_CENTRAL_SERVERS = "central_servers"
     private const val KEY_SELECTED_SERVER = "selected_server"
+    private const val KEY_HOTSPOT_PROXY = "hotspot_proxy"
 
     fun getMtu(ctx: Context): Int =
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_MTU, 1300)
@@ -49,7 +50,7 @@ object TunnelPrefs {
 
     fun getCentralServers(ctx: Context): List<String> {
         val raw = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString(KEY_CENTRAL_SERVERS, "7.brawlpass.com.ar")
+            .getString(KEY_CENTRAL_SERVERS, "")
             .orEmpty()
         return raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }.distinct()
     }
@@ -61,11 +62,19 @@ object TunnelPrefs {
 
     fun getSelectedServer(ctx: Context): String =
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString(KEY_SELECTED_SERVER, "7.brawlpass.com.ar")
-            ?: "7.brawlpass.com.ar"
+            .getString(KEY_SELECTED_SERVER, "")
+            ?: ""
 
     fun setSelectedServer(ctx: Context, server: String) {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_SELECTED_SERVER, server).apply()
+    }
+
+
+    fun isHotspotProxyEnabled(ctx: Context): Boolean =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_HOTSPOT_PROXY, false)
+
+    fun setHotspotProxyEnabled(ctx: Context, enabled: Boolean) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_HOTSPOT_PROXY, enabled).apply()
     }
 
 }

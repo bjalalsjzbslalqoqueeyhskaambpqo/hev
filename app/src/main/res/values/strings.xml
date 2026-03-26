@@ -23,4 +23,10 @@
     <string name="save_settings">Guardar ajustes</string>
     <string name="open_battery_settings">Quitar restricción de batería</string>
     <string name="settings_saved">Ajustes guardados</string>
+    <string name="no_servers">Sin servidores</string>
+    <string name="servers_updated">Servidores actualizados</string>
+    <string name="battery_settings_failed">No se pudo abrir ajustes de batería</string>
+    <string name="hotspot_proxy_toggle">Compartir internet por proxy SOCKS5</string>
+    <string name="hotspot_info">Host: %1$s  Puerto: %2$d</string>
+    <string name="hotspot_disabled">Hotspot proxy desactivado</string>
 </resources>
