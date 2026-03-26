@@ -27,12 +27,18 @@ object BtProxy {
     @Volatile private var xrayProcess: Process? = null
     @Volatile private var running = false
     private const val MAX_SIMULTANEOUS_TUNNELS = 16
+    private const val IDLE_TUNNEL_TTL_MS = 15 * 60 * 1000L
 
     @Volatile private var muxConcurrency: Int = 2048
     @Volatile private var xudpConcurrency: Int = 2048
     @Volatile private var logLevel: String = "warning"
     @Volatile private var tunnelSlots = Semaphore(MAX_SIMULTANEOUS_TUNNELS)
-    private val tunnelPool = LinkedBlockingQueue<Socket>()
+    private data class PooledTunnel(
+        val socket: Socket,
+        val createdAtMs: Long
+    )
+
+    private val tunnelPool = LinkedBlockingQueue<PooledTunnel>()
     private val openTunnelCount = AtomicInteger(0)
     private val hasSessionHeaders = AtomicBoolean(false)
 
@@ -114,19 +120,20 @@ object BtProxy {
     ) {
         thread(isDaemon = true, name = "tunnel-pool-refill") {
             while (running) {
-                if (openTunnelCount.get() >= MAX_SIMULTANEOUS_TUNNELS) {
-                    Thread.sleep(60)
-                    continue
-                }
+                    evictExpiredIdleTunnels(logger)
+                    if (openTunnelCount.get() >= MAX_SIMULTANEOUS_TUNNELS) {
+                        Thread.sleep(60)
+                        continue
+                    }
                 val needsHeaders = !hasSessionHeaders.get()
                 val opened = openTunnel(protectSocket, logger, updateSession = needsHeaders)
-                if (opened != null) {
-                    if (needsHeaders) hasSessionHeaders.set(true)
-                    if (openTunnelCount.incrementAndGet() <= MAX_SIMULTANEOUS_TUNNELS) {
-                        tunnelPool.offer(opened)
-                    } else {
-                        openTunnelCount.decrementAndGet()
-                        runCatching { opened.close() }
+                    if (opened != null) {
+                        if (needsHeaders) hasSessionHeaders.set(true)
+                        if (openTunnelCount.incrementAndGet() <= MAX_SIMULTANEOUS_TUNNELS) {
+                            tunnelPool.offer(PooledTunnel(opened, System.currentTimeMillis()))
+                        } else {
+                            openTunnelCount.decrementAndGet()
+                            runCatching { opened.close() }
                     }
                     continue
                 }
@@ -136,18 +143,45 @@ object BtProxy {
     }
 
     private fun acquireReadyTunnel(logger: (String) -> Unit): Socket? {
-        val direct = tunnelPool.poll()
-        if (direct != null) return direct
-        logger("Pool vacío, esperando túnel persistente...")
-        return runCatching { tunnelPool.take() }.getOrNull()
+        while (running) {
+            val pooled = tunnelPool.poll() ?: run {
+                logger("Pool vacío, esperando túnel persistente...")
+                runCatching { tunnelPool.take() }.getOrNull()
+            } ?: return null
+
+            if (isExpired(pooled)) {
+                runCatching { pooled.socket.close() }
+                openTunnelCount.updateAndGet { current -> (current - 1).coerceAtLeast(0) }
+                logger("Túnel del pool expirado por TTL, reponiendo")
+                continue
+            }
+            return pooled.socket
+        }
+        return null
     }
 
     private fun drainPool() {
         while (true) {
             val s = tunnelPool.poll() ?: break
-            runCatching { s.close() }
+            runCatching { s.socket.close() }
         }
     }
+
+    private fun evictExpiredIdleTunnels(logger: (String) -> Unit) {
+        val iterator = tunnelPool.iterator()
+        val now = System.currentTimeMillis()
+        while (iterator.hasNext()) {
+            val pooled = iterator.next()
+            if (now - pooled.createdAtMs < IDLE_TUNNEL_TTL_MS) continue
+            iterator.remove()
+            runCatching { pooled.socket.close() }
+            openTunnelCount.updateAndGet { current -> (current - 1).coerceAtLeast(0) }
+            logger("TTL idle cumplido, túnel reciclado")
+        }
+    }
+
+    private fun isExpired(pooled: PooledTunnel): Boolean =
+        System.currentTimeMillis() - pooled.createdAtMs >= IDLE_TUNNEL_TTL_MS
 
     private fun relay(client: Socket, tunnel: Socket) {
         val buf = ByteArray(65536)

@@ -36,16 +36,22 @@ EOF
 cat > /opt/btserver/btserver.py << 'PYEOF'
 import socket
 import threading
+import time
 
 PORT = 80
 XRAY_ADDR = ("127.0.0.1", 10809)
 MAX_ACTIVE_TUNNELS = 16
+TUNNEL_TTL_SECONDS = 15 * 60
 tunnel_slots = threading.BoundedSemaphore(MAX_ACTIVE_TUNNELS)
 
 
-def pipe(src, dst):
+def pipe(src, dst, deadline):
     try:
         while True:
+            if time.time() >= deadline:
+                break
+            remaining = max(0.2, deadline - time.time())
+            src.settimeout(min(5.0, remaining))
             data = src.recv(65536)
             if not data:
                 break
@@ -67,8 +73,9 @@ def handle_tunnel(client):
         if not acquired:
             return
         upstream = socket.create_connection(XRAY_ADDR, 5)
-        t1 = threading.Thread(target=pipe, args=(client, upstream), daemon=True)
-        t2 = threading.Thread(target=pipe, args=(upstream, client), daemon=True)
+        deadline = time.time() + TUNNEL_TTL_SECONDS
+        t1 = threading.Thread(target=pipe, args=(client, upstream, deadline), daemon=True)
+        t2 = threading.Thread(target=pipe, args=(upstream, client, deadline), daemon=True)
         t1.start()
         t2.start()
         t1.join()
@@ -120,7 +127,8 @@ def handle(sock):
                 b"X-Expire: 2099-12-31\r\n"
                 b"X-Days-Left: 9999\r\n"
                 b"X-Premium: 1\r\n"
-                b"X-Created: 2026-01-01\r\n\r\n"
+                b"X-Created: 2026-01-01\r\n"
+                b"X-Tunnel-TTL: 900\r\n\r\n"
             )
             sock.settimeout(None)
             handle_tunnel(sock)
