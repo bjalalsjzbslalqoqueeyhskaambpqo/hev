@@ -12,6 +12,8 @@ import kotlin.concurrent.thread
 
 object BtProxy {
 
+    private const val DECOY_IPV6  = "2606:4700::6812:16b7"
+    private const val DECOY_HOST  = "emailmarketing.personal.com.ar"
     private const val PROXY_PORT  = 80
 
     private const val XRAY_SOCKS5_PORT = 10808
@@ -278,10 +280,10 @@ object BtProxy {
             val out = sock.getOutputStream()
             val inp = sock.getInputStream()
 
-            val p1 = "GET / HTTP/1.1\r\nHost: $selectedServerHost\r\n\r\n"
+            val p1 = "GET / HTTP/1.1\r\nHost: $DECOY_HOST\r\n\r\n"
             out.write(p1.toByteArray())
             out.flush()
-            logger("TX p1 host=$selectedServerHost")
+            logger("TX p1 host=$DECOY_HOST")
             Thread.sleep(200)
 
             val p2 = "- / HTTP/1.1\r\nHost: $selectedServerHost\r\nUpgrade: websocket\r\nAction: tunnel\r\nAuth: $clientId\r\n\r\n"
@@ -363,11 +365,13 @@ object BtProxy {
             return null
         }
         val candidates = linkedSetOf<InetAddress>()
-        runCatching { candidates += InetAddress.getAllByName(selectedServerHost).toList() }
+        runCatching { candidates += InetAddress.getByName(DECOY_IPV6) }
+            .onFailure { logger("WARN IPv6 preferido inválido: ${it.message}") }
+        runCatching { candidates += InetAddress.getAllByName(DECOY_HOST).toList() }
             .onFailure { logger("WARN resolución DNS de proxy falló: ${it.message}") }
 
         if (candidates.isEmpty()) {
-            logger("ERROR no hay direcciones para proxy host=$selectedServerHost")
+            logger("ERROR no hay direcciones para proxy host=$DECOY_HOST")
             TunnelSessionStore.setState("ERROR")
             return null
         }
