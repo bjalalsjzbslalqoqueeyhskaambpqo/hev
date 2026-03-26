@@ -1,26 +1,28 @@
 package com.blacktunnel
 
-import android.app.AlarmManager
-import android.app.PendingIntent
 import android.content.Intent
 import android.net.VpnService
 import android.os.Bundle
-import android.os.Process
 import android.provider.Settings
+import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.RadioButton
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.button.MaterialButton
+import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
     private lateinit var toggleButton: MaterialButton
+    private lateinit var refreshServersButton: MaterialButton
     private lateinit var saveSettingsButton: MaterialButton
     private lateinit var batteryButton: MaterialButton
+    private lateinit var serverSpinner: Spinner
     private lateinit var profileNormal: RadioButton
     private lateinit var profilePerformance: RadioButton
     private lateinit var performanceContainer: LinearLayout
@@ -37,6 +39,7 @@ class MainActivity : AppCompatActivity() {
     private val allApps = mutableListOf<Pair<String, String>>()
     private var filteredApps = listOf<Pair<String, String>>()
     private val selectedPackages = mutableSetOf<String>()
+    private var servers = mutableListOf<String>()
 
     private val sessionListener: (TunnelSessionSnapshot) -> Unit = { snapshot ->
         runOnUiThread { render(snapshot) }
@@ -47,8 +50,10 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         toggleButton = findViewById(R.id.toggleButton)
+        refreshServersButton = findViewById(R.id.refreshServersButton)
         saveSettingsButton = findViewById(R.id.saveSettingsButton)
         batteryButton = findViewById(R.id.batteryButton)
+        serverSpinner = findViewById(R.id.serverSpinner)
         profileNormal = findViewById(R.id.profileNormal)
         profilePerformance = findViewById(R.id.profilePerformance)
         performanceContainer = findViewById(R.id.performanceContainer)
@@ -69,18 +74,25 @@ class MainActivity : AppCompatActivity() {
         profileNormal.setOnCheckedChangeListener { _, _ -> updatePerformanceVisibility() }
         profilePerformance.setOnCheckedChangeListener { _, _ -> updatePerformanceVisibility() }
 
-        appSearchInput.addTextChangedListener(SimpleTextWatcher {
-            filterAppList(it)
-        })
-
+        appSearchInput.addTextChangedListener(SimpleTextWatcher { filterAppList(it) })
         appListView.setOnItemClickListener { _, _, position, _ ->
             val pkg = filteredApps[position].second
             if (selectedPackages.contains(pkg)) selectedPackages.remove(pkg) else selectedPackages.add(pkg)
         }
 
+        serverSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                servers.getOrNull(position)?.let { TunnelPrefs.setSelectedServer(this@MainActivity, it) }
+            }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+        }
+
         toggleButton.setOnClickListener { onToggle() }
-        saveSettingsButton.setOnClickListener { saveSettings() }
+        refreshServersButton.setOnClickListener { refreshServers(manual = true) }
+        saveSettingsButton.setOnClickListener { saveSettings(showToast = true) }
         batteryButton.setOnClickListener { openBatterySettings() }
+
+        refreshServers(manual = false)
         render(TunnelSessionStore.current())
     }
 
@@ -104,19 +116,42 @@ class MainActivity : AppCompatActivity() {
         filterAppList("")
     }
 
+    private fun refreshServers(manual: Boolean) {
+        thread(isDaemon = true, name = "central-servers-fetch") {
+            val fetched = CentralServerDiscovery.fetchServers { LogStore.add(it) }
+            val merged = (fetched + TunnelPrefs.getCentralServers(this)).distinct().toMutableList()
+            if (merged.isEmpty()) {
+                merged += "7.brawlpass.com.ar"
+            }
+            TunnelPrefs.setCentralServers(this, merged)
+            runOnUiThread {
+                updateServerSpinner(merged)
+                if (manual) {
+                    Toast.makeText(this, "Servidores actualizados", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun updateServerSpinner(newServers: List<String>) {
+        servers = newServers.toMutableList()
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, servers)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        serverSpinner.adapter = adapter
+        val selected = TunnelPrefs.getSelectedServer(this)
+        val index = servers.indexOf(selected).takeIf { it >= 0 } ?: 0
+        serverSpinner.setSelection(index)
+    }
+
     private fun filterAppList(query: String) {
         filteredApps = if (query.isBlank()) {
             allApps
         } else {
-            allApps.filter {
-                it.first.contains(query, true) || it.second.contains(query, true)
-            }
+            allApps.filter { it.first.contains(query, true) || it.second.contains(query, true) }
         }
         val labels = filteredApps.map { "${it.first} (${it.second})" }
         appListView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_multiple_choice, labels)
-        filteredApps.forEachIndexed { index, pair ->
-            appListView.setItemChecked(index, selectedPackages.contains(pair.second))
-        }
+        filteredApps.forEachIndexed { index, pair -> appListView.setItemChecked(index, selectedPackages.contains(pair.second)) }
     }
 
     private fun loadSettings() {
@@ -125,22 +160,25 @@ class MainActivity : AppCompatActivity() {
         profilePerformance.isChecked = profile == "performance"
         selectedPackages.clear()
         selectedPackages += TunnelPrefs.getIncludedApps(this)
+        updateServerSpinner(TunnelPrefs.getCentralServers(this))
         filterAppList("")
         updatePerformanceVisibility()
     }
 
     private fun updatePerformanceVisibility() {
         val performance = profilePerformance.isChecked
-        performanceContainer.visibility = if (performance) LinearLayout.VISIBLE else LinearLayout.GONE
-        saveSettingsButton.visibility = if (performance) android.view.View.VISIBLE else android.view.View.GONE
+        performanceContainer.visibility = if (performance) View.VISIBLE else View.GONE
+        saveSettingsButton.visibility = if (performance) View.VISIBLE else View.GONE
     }
 
-    private fun saveSettings() {
+    private fun saveSettings(showToast: Boolean) {
         val profile = if (profilePerformance.isChecked) "performance" else "normal"
         TunnelPrefs.setProfile(this, profile)
         TunnelPrefs.setMux(this, if (profile == "performance") 36 else 24)
         TunnelPrefs.setIncludedApps(this, selectedPackages.toList())
-        Toast.makeText(this, getString(R.string.settings_saved), Toast.LENGTH_SHORT).show()
+        if (showToast) {
+            Toast.makeText(this, getString(R.string.settings_saved), Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun render(snapshot: TunnelSessionSnapshot) {
@@ -170,7 +208,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        saveSettings()
+        saveSettings(showToast = false)
         val prepareIntent = VpnService.prepare(this)
         if (prepareIntent != null) {
             startActivityForResult(prepareIntent, REQ_VPN_PREPARE)
@@ -182,9 +220,7 @@ class MainActivity : AppCompatActivity() {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQ_VPN_PREPARE && resultCode == RESULT_OK) {
-            startVpn()
-        }
+        if (requestCode == REQ_VPN_PREPARE && resultCode == RESULT_OK) startVpn()
     }
 
     private fun startVpn() {
@@ -192,20 +228,16 @@ class MainActivity : AppCompatActivity() {
         startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_START))
     }
 
-
     private fun openBatterySettings() {
         val intents = mutableListOf<Intent>()
         val manufacturer = android.os.Build.MANUFACTURER.lowercase()
 
         if (manufacturer.contains("xiaomi")) {
             intents += Intent().setClassName(
-                "com.miui.securitycenter",
-                "com.miui.permcenter.autostart.AutoStartManagementActivity"
-            )
-            intents += Intent("miui.intent.action.APP_PERM_EDITOR").apply {
-                setClassName("com.miui.securitycenter", "com.miui.permcenter.permissions.PermissionsEditorActivity")
-                putExtra("extra_pkgname", packageName)
-            }
+                "com.miui.powerkeeper",
+                "com.miui.powerkeeper.ui.HiddenAppsConfigActivity"
+            ).putExtra("package_name", packageName)
+                .putExtra("package_label", getString(R.string.app_name))
         }
 
         intents += Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
@@ -214,10 +246,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val opened = intents.firstOrNull {
-            runCatching {
-                startActivity(it)
-                true
-            }.getOrDefault(false)
+            runCatching { startActivity(it); true }.getOrDefault(false)
         }
         if (opened == null) {
             Toast.makeText(this, "No se pudo abrir ajustes de batería", Toast.LENGTH_SHORT).show()
@@ -229,20 +258,10 @@ class MainActivity : AppCompatActivity() {
         startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
         TunnelSessionStore.reset()
 
-        val restartIntent = packageManager.getLaunchIntentForPackage(packageName)
-        if (restartIntent != null) {
-            val pendingIntent = PendingIntent.getActivity(
-                this,
-                9911,
-                restartIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
-                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
-            )
-            val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
-            alarmManager.setExact(AlarmManager.RTC, System.currentTimeMillis() + 250, pendingIntent)
-        }
-
-        finishAffinity()
-        Process.killProcess(Process.myPid())
+        val restartIntent = Intent(this, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        startActivity(restartIntent)
+        finish()
     }
 
     companion object {
