@@ -196,6 +196,7 @@
                 <TextView android:id="@+id/expireValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textColor="@color/text_secondary" />
                 <TextView android:id="@+id/daysLeftValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textColor="@color/text_secondary" />
                 <TextView android:id="@+id/premiumValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textColor="@color/text_secondary" />
+                <TextView android:id="@+id/tunnelStatsValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textColor="@color/text_secondary" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 

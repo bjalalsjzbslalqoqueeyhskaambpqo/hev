@@ -40,6 +40,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var expireValue: TextView
     private lateinit var daysLeftValue: TextView
     private lateinit var premiumValue: TextView
+    private lateinit var tunnelStatsValue: TextView
 
     private val allApps = mutableListOf<Pair<String, String>>()
     private var filteredApps = listOf<Pair<String, String>>()
@@ -71,6 +72,7 @@ class MainActivity : AppCompatActivity() {
         expireValue = findViewById(R.id.expireValue)
         daysLeftValue = findViewById(R.id.daysLeftValue)
         premiumValue = findViewById(R.id.premiumValue)
+        tunnelStatsValue = findViewById(R.id.tunnelStatsValue)
 
         appListView.choiceMode = ListView.CHOICE_MODE_MULTIPLE
         loadInstalledApps()
@@ -189,6 +191,7 @@ class MainActivity : AppCompatActivity() {
         expireValue.text = getString(R.string.session_expire) + ": " + snapshot.expire
         daysLeftValue.text = getString(R.string.session_days_left) + ": " + snapshot.daysLeft
         premiumValue.text = getString(R.string.session_premium) + ": " + snapshot.premium
+        tunnelStatsValue.text = getString(R.string.session_tunnels) + ": " + snapshot.tunnelStats
         hotspotInfo.text = if (hotspotSwitch.isChecked) getString(R.string.hotspot_info, getHotspotIp() ?: "-", HOTSPOT_PORT) else getString(R.string.hotspot_disabled)
     }
 

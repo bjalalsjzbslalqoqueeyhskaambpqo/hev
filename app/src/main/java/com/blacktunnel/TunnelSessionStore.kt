@@ -7,7 +7,8 @@ data class TunnelSessionSnapshot(
     val expire: String = "-",
     val daysLeft: String = "-",
     val premium: String = "-",
-    val latencyMs: Long = -1L
+    val latencyMs: Long = -1L,
+    val tunnelStats: String = "-"
 )
 
 object TunnelSessionStore {
@@ -22,6 +23,11 @@ object TunnelSessionStore {
 
     fun setLatency(latencyMs: Long) {
         synchronized(lock) { snapshot = snapshot.copy(latencyMs = latencyMs) }
+        notifyListeners()
+    }
+
+    fun setTunnelStats(stats: String) {
+        synchronized(lock) { snapshot = snapshot.copy(tunnelStats = stats) }
         notifyListeners()
     }
 

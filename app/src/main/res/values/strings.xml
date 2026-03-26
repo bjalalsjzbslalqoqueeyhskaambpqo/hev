@@ -13,6 +13,7 @@
     <string name="session_expire">Expira</string>
     <string name="session_days_left">Días restantes</string>
     <string name="session_premium">Premium</string>
+    <string name="session_tunnels">Túneles</string>
 
     <string name="settings_title">Ajustes</string>
     <string name="profile_normal">Normal</string>
