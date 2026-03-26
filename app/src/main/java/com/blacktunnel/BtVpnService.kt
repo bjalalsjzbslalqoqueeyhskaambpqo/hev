@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.system.OsConstants
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import java.io.File
@@ -83,7 +84,15 @@ class BtVpnService : VpnService() {
             .addRoute("0.0.0.0", 0)
             .addRoute("::", 0)
             .addDnsServer("8.8.8.8")
+            .addDnsServer("1.1.1.1")
+            .addDnsServer("2001:4860:4860::8888")
+            .addDnsServer("2606:4700:4700::1111")
             .setMtu(mtu)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            builder.allowFamily(OsConstants.AF_INET)
+            builder.allowFamily(OsConstants.AF_INET6)
+        }
+
         runCatching { builder.addDisallowedApplication(packageName) }
             .onFailure { LogStore.add("ERROR addDisallowedApplication: ${it.message}") }
 
