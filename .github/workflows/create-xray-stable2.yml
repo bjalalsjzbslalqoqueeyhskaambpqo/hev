@@ -1,0 +1,57 @@
+name: Create Xray-Stable2 branch
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repository:
+        description: "Repository to copy from (owner/repo)"
+        required: true
+        default: "bjalalsjzbslalqoqueeyhskaambpqo/hev"
+      source_ref:
+        description: "Commit SHA, tag, or branch to copy"
+        required: true
+        default: "d03a66c1d200618e84b9da1390adcbbc2d5706c5"
+      target_branch:
+        description: "Destination branch in this repository"
+        required: true
+        default: "Xray-Stable2"
+
+permissions:
+  contents: write
+
+jobs:
+  recreate-branch:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          path: target
+
+      - name: Checkout source repository and ref
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.source_repository }}
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 1
+          path: source
+
+      - name: Recreate destination branch with source content
+        working-directory: target
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git checkout --orphan "${{ inputs.target_branch }}"
+          git reset --hard
+          git clean -fdx
+
+          rsync -a --delete --exclude='.git' ../source/ ./
+
+          git add -A
+          git commit -m "Create ${{ inputs.target_branch }} from ${{ inputs.source_repository }}@${{ inputs.source_ref }}"
+          git push origin "${{ inputs.target_branch }}" --force
