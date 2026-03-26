@@ -23,7 +23,6 @@ import androidx.appcompat.widget.SwitchCompat
 import androidx.drawerlayout.widget.DrawerLayout
 import com.google.android.material.button.MaterialButton
 import kotlin.concurrent.thread
-import kotlin.system.exitProcess
 
 class MainActivity : AppCompatActivity() {
     private lateinit var toggleButton: MaterialButton
@@ -309,7 +308,7 @@ class MainActivity : AppCompatActivity() {
     private fun onToggle() {
         val current = TunnelSessionStore.current()
         if (current.state == "CONNECTING" || current.state == "CONNECTED") {
-            forceRestartAfterStop()
+            stopVpnGracefully()
             return
         }
         if (getSelectedServerHost().isNullOrBlank()) {
@@ -355,11 +354,9 @@ class MainActivity : AppCompatActivity() {
         if (opened == null) Toast.makeText(this, getString(R.string.battery_settings_failed), Toast.LENGTH_SHORT).show()
     }
 
-    private fun forceRestartAfterStop() {
-        TunnelSessionStore.reset()
-        finishAffinity()
-        android.os.Process.killProcess(android.os.Process.myPid())
-        exitProcess(0)
+    private fun stopVpnGracefully() {
+        TunnelSessionStore.setState("DISCONNECTED")
+        startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
     }
 
     private fun getSelectedServerHost(): String? {

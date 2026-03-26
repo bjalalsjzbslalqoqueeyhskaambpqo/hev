@@ -360,7 +360,6 @@ object BtProxy {
             }
             if (isRejected) {
                 logger("Handshake rechazado status=$status")
-                TunnelSessionStore.setState("ERROR")
                 runCatching { sock.close() }
                 return null
             }
@@ -372,7 +371,6 @@ object BtProxy {
             sock
         } catch (e: Exception) {
             logger("ERROR abriendo túnel: ${e.message}")
-            TunnelSessionStore.setState("ERROR")
             null
         }
     }
