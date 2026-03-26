@@ -137,30 +137,36 @@
                         android:layout_height="160dp"
                         android:layout_marginTop="6dp"
                         android:choiceMode="multipleChoice" />
+                    <androidx.appcompat.widget.SwitchCompat
+                        android:id="@+id/blockNonSelectedSwitch"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="@string/block_non_selected_toggle"
+                        android:textColor="@color/text_primary" />
                 </LinearLayout>
 
-                <androidx.appcompat.widget.SwitchCompat
-                    android:id="@+id/blockNonSelectedSwitch"
+                <LinearLayout
+                    android:id="@+id/normalContainer"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:text="@string/block_non_selected_toggle"
-                    android:textColor="@color/text_primary" />
+                    android:orientation="vertical">
 
-                <androidx.appcompat.widget.SwitchCompat
-                    android:id="@+id/hotspotSwitch"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:text="@string/hotspot_proxy_toggle"
-                    android:textColor="@color/text_primary" />
+                    <androidx.appcompat.widget.SwitchCompat
+                        android:id="@+id/hotspotSwitch"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="@string/hotspot_proxy_toggle"
+                        android:textColor="@color/text_primary" />
 
-                <TextView
-                    android:id="@+id/hotspotInfo"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:textColor="@color/text_secondary" />
+                    <TextView
+                        android:id="@+id/hotspotInfo"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:textColor="@color/text_secondary" />
+                </LinearLayout>
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/saveSettingsButton"
                     android:layout_width="match_parent"

@@ -38,12 +38,12 @@ object BtProxy {
     ) {
         running = true
         val isPerformance = profile.equals("performance", ignoreCase = true)
-        muxConcurrency = if (isPerformance) mux.coerceIn(36, 64) else mux.coerceIn(18, 40)
-        xudpConcurrency = if (isPerformance) 128 else 56
+        muxConcurrency = if (isPerformance) mux.coerceIn(48, 64) else mux.coerceIn(24, 42)
+        xudpConcurrency = if (isPerformance) 192 else 72
         logLevel = if (isPerformance) "none" else "warning"
-        tunnelSlots = Semaphore(if (isPerformance) 80 else 44)
-        tunnelRetries = if (isPerformance) 4 else 2
-        logger("BtProxy.start() profile=$profile mux=$muxConcurrency xudp=$xudpConcurrency slots=${if (isPerformance) 80 else 44}")
+        tunnelSlots = Semaphore(if (isPerformance) 120 else 56)
+        tunnelRetries = if (isPerformance) 6 else 3
+        logger("BtProxy.start() profile=$profile mux=$muxConcurrency xudp=$xudpConcurrency slots=${if (isPerformance) 120 else 56}")
         TunnelSessionStore.setState("CONNECTING")
 
         thread(isDaemon = true, name = "btproxy-init") {

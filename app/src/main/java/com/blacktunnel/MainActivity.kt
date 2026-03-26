@@ -31,6 +31,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var serverSpinner: Spinner
     private lateinit var profileNormal: RadioButton
     private lateinit var profilePerformance: RadioButton
+    private lateinit var normalContainer: LinearLayout
     private lateinit var performanceContainer: LinearLayout
     private lateinit var appSearchInput: EditText
     private lateinit var appListView: ListView
@@ -66,6 +67,7 @@ class MainActivity : AppCompatActivity() {
         serverSpinner = findViewById(R.id.serverSpinner)
         profileNormal = findViewById(R.id.profileNormal)
         profilePerformance = findViewById(R.id.profilePerformance)
+        normalContainer = findViewById(R.id.normalContainer)
         performanceContainer = findViewById(R.id.performanceContainer)
         appSearchInput = findViewById(R.id.appSearchInput)
         appListView = findViewById(R.id.appListView)
@@ -112,6 +114,7 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, getString(R.string.hotspot_requires_system), Toast.LENGTH_LONG).show()
                 return@setOnCheckedChangeListener
             }
+            TunnelPrefs.setHotspotProxyEnabled(this, isChecked)
             render(TunnelSessionStore.current())
         }
 
@@ -214,6 +217,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun updatePerformanceVisibility() {
         val performance = profilePerformance.isChecked
+        normalContainer.visibility = if (performance) View.GONE else View.VISIBLE
         performanceContainer.visibility = if (performance) View.VISIBLE else View.GONE
         saveSettingsButton.visibility = if (performance) View.VISIBLE else View.GONE
     }
@@ -221,9 +225,11 @@ class MainActivity : AppCompatActivity() {
     private fun saveSettings(showToast: Boolean) {
         val profile = if (profilePerformance.isChecked) "performance" else "normal"
         TunnelPrefs.setProfile(this, profile)
-        TunnelPrefs.setMux(this, if (profile == "performance") 52 else 28)
+        TunnelPrefs.setMux(this, if (profile == "performance") 60 else 32)
         TunnelPrefs.setIncludedApps(this, selectedPackages.toList())
-        TunnelPrefs.setHotspotProxyEnabled(this, hotspotSwitch.isChecked)
+        if (profile == "normal") {
+            TunnelPrefs.setHotspotProxyEnabled(this, hotspotSwitch.isChecked)
+        }
         TunnelPrefs.setBlockNonSelectedEnabled(this, blockNonSelectedSwitch.isChecked)
         if (showToast) Toast.makeText(this, getString(R.string.settings_saved), Toast.LENGTH_SHORT).show()
     }
