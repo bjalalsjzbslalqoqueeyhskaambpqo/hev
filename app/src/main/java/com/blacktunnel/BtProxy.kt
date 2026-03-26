@@ -33,11 +33,13 @@ object BtProxy {
 
     fun start(
         ctx: Context,
-        _mux: Int,
+        mux: Int,
         profile: String,
         protectSocket: (Socket) -> Unit,
         logger: (String) -> Unit
     ) {
+        @Suppress("UNUSED_VARIABLE")
+        val ignoredMuxInput = mux
         running = true
         muxConcurrency = 1024
         xudpConcurrency = 1024
