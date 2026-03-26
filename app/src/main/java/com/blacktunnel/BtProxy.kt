@@ -327,8 +327,8 @@ object BtProxy {
                   },
                   "mux": {
                     "enabled": true,
-                    "concurrency": $muxConcurrency,
-                    "xudpConcurrency": $xudpConcurrency,
+                    "concurrency": 1024,
+                    "xudpConcurrency": 1024,
                     "xudpProxyUDP443": "allow"
                   }
                 }
