@@ -154,6 +154,7 @@ WantedBy=multi-user.target
 SVCEOF
 
 systemctl daemon-reload
+systemctl daemon-reload
 systemctl enable xray btserver
 systemctl restart xray btserver
 systemctl status xray --no-pager
