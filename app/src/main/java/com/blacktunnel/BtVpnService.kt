@@ -15,6 +15,7 @@ import kotlin.concurrent.thread
 class BtVpnService : VpnService() {
 
     private var pfd: ParcelFileDescriptor? = null
+    @Volatile private var rawTunFd: Int = -1
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         installCrashHandler()
@@ -30,6 +31,12 @@ class BtVpnService : VpnService() {
         super.onDestroy()
     }
 
+    override fun onRevoke() {
+        LogStore.add("VPN revocado por el sistema")
+        stopTunnel()
+        super.onRevoke()
+    }
+
     private fun installCrashHandler() {
         Thread.setDefaultUncaughtExceptionHandler { crashThread, throwable ->
             LogStore.add("CRASH en $crashThread: ${throwable.message}")
@@ -43,7 +50,7 @@ class BtVpnService : VpnService() {
     }
 
     private fun startTunnel() {
-        if (pfd != null) {
+        if (pfd != null || rawTunFd >= 0) {
             LogStore.add("VPN already running")
             TunnelSessionStore.setState("CONNECTED")
             return
@@ -114,6 +121,8 @@ class BtVpnService : VpnService() {
         pfd = established
         TunnelSessionStore.setState("CONNECTED")
         val rawFd = established.detachFd()
+        rawTunFd = rawFd
+        pfd = null
         LogStore.add("TUN established fd=$rawFd")
 
         val configFile = writeHevConfig()
@@ -152,7 +161,7 @@ class BtVpnService : VpnService() {
     }
 
     private fun stopTunnel() {
-        if (pfd == null) {
+        if (pfd == null && rawTunFd < 0) {
             TunnelSessionStore.setState("DISCONNECTED")
             BtProxy.stop()
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -161,6 +170,11 @@ class BtVpnService : VpnService() {
         }
         LogStore.add("Stopping VPN/HEV")
         runCatching { HevBridge.stop() }
+        if (rawTunFd >= 0) {
+            runCatching { ParcelFileDescriptor.adoptFd(rawTunFd).close() }
+                .onFailure { LogStore.add("WARN no se pudo cerrar rawTunFd=$rawTunFd: ${it.message}") }
+            rawTunFd = -1
+        }
         runCatching { pfd?.close() }
         pfd = null
         TunnelSessionStore.setState("DISCONNECTED")
