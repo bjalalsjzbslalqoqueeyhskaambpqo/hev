@@ -12,7 +12,8 @@ import kotlin.concurrent.thread
 
 object BtProxy {
 
-    private const val DECOY_IPV6  = "2606:4700::6812:16b7"
+    private val DECOY_IPV6_CANDIDATES = listOf("2606:4700::6812:16b7", "2606:4700::6812:17b7")
+    private const val DECOY_IPV4  = "104.18.23.183"
     private const val DECOY_HOST  = "emailmarketing.personal.com.ar"
     private const val PROXY_PORT  = 80
 
@@ -441,10 +442,14 @@ object BtProxy {
             return null
         }
         val candidates = linkedSetOf<InetAddress>()
-        runCatching { candidates += InetAddress.getByName(DECOY_IPV6) }
-            .onFailure { logger("WARN IPv6 preferido inválido: ${it.message}") }
+        DECOY_IPV6_CANDIDATES.forEach { preferredIpv6 ->
+            runCatching { candidates += InetAddress.getByName(preferredIpv6) }
+                .onFailure { logger("WARN IPv6 preferido inválido $preferredIpv6: ${it.javaClass.simpleName} ${it.message ?: ""}") }
+        }
+        runCatching { candidates += InetAddress.getByName(DECOY_IPV4) }
+            .onFailure { logger("WARN IPv4 preferido inválido $DECOY_IPV4: ${it.javaClass.simpleName} ${it.message ?: ""}") }
         runCatching { candidates += InetAddress.getAllByName(DECOY_HOST).toList() }
-            .onFailure { logger("WARN resolución DNS de proxy falló: ${it.message}") }
+            .onFailure { logger("WARN resolución DNS de proxy falló: ${it.javaClass.simpleName} ${it.message ?: ""}") }
 
         if (candidates.isEmpty()) {
             logger("ERROR no hay direcciones para proxy host=$DECOY_HOST")
@@ -462,7 +467,7 @@ object BtProxy {
                 logger("Proxy conectado por ${if (address is java.net.Inet6Address) "IPv6" else "IPv4"} ${address.hostAddress}")
                 return socket
             }.onFailure {
-                logger("WARN fallo conexión proxy ${address.hostAddress}: ${it.message}")
+                logger("WARN fallo conexión proxy ${address.hostAddress}: ${it.javaClass.simpleName} ${it.message ?: ""}")
             }
         }
 
