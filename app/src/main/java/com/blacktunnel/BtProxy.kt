@@ -351,7 +351,14 @@ object BtProxy {
                     "X-Premium" to (headersForUi["x-premium"] ?: "-")
                 )
             )
-            if (status != "OK") {
+            val isIncomplete = status == "-" || status.isBlank() || status == "UNKNOWN" || status == "OPEN"
+            val isRejected = !isIncomplete && status != "OK"
+            if (isIncomplete) {
+                logger("Handshake incompleto status=$status, se reintentará")
+                runCatching { sock.close() }
+                return null
+            }
+            if (isRejected) {
                 logger("Handshake rechazado status=$status")
                 TunnelSessionStore.setState("ERROR")
                 runCatching { sock.close() }
