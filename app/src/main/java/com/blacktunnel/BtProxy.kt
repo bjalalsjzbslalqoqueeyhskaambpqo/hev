@@ -72,9 +72,22 @@ object BtProxy {
         }
 
         val response = runHandshakeRequest(action = "auth", protectSocket = protectSocket, logger = logger) ?: return false
-        val handshake = pickHandshakeWithHeaders(response.data)
-        val headers = handshake.headers
-        val status = (headers["x-status"] ?: "UNKNOWN").uppercase()
+        var handshake = pickHandshakeWithHeaders(response.data)
+        var headers = handshake.headers
+        var status = (headers["x-status"] ?: "UNKNOWN").uppercase()
+        runCatching { response.socket.close() }
+
+        if (status == "-" || status == "UNKNOWN" || status == "OPEN") {
+            logger("Preflight AUTH vacío/incompleto, reintentando una vez")
+            Thread.sleep(180)
+            val retry = runHandshakeRequest(action = "auth", protectSocket = protectSocket, logger = logger)
+            if (retry != null) {
+                handshake = pickHandshakeWithHeaders(retry.data)
+                headers = handshake.headers
+                status = (headers["x-status"] ?: "UNKNOWN").uppercase()
+                runCatching { retry.socket.close() }
+            }
+        }
         TunnelSessionStore.updateFromHeaders(
             mapOf(
                 "X-Status" to status,
@@ -85,7 +98,6 @@ object BtProxy {
             )
         )
         logger("Preflight AUTH code=${handshake.statusCode} status=$status")
-        runCatching { response.socket.close() }
         return status == "OK"
     }
 
@@ -361,12 +373,14 @@ object BtProxy {
             out.write(p1.toByteArray())
             out.flush()
             logger("TX p1 host=$DECOY_HOST")
+            logger("RAW TX p1:\n$p1")
             Thread.sleep(200)
 
             val p2 = "GET / HTTP/1.1\r\nHost: $selectedServerHost\r\nAction: $action\r\nAuth: $clientId\r\n\r\n"
             out.write(p2.toByteArray())
             out.flush()
             logger("TX p2 host=$selectedServerHost action=$action auth=${clientId.take(8)}***")
+            logger("RAW TX p2:\n$p2")
 
             sock.soTimeout = 8000
             val buf = ByteArrayOutputStream()
@@ -385,6 +399,7 @@ object BtProxy {
             }
             val resp = buf.toString()
             logger("RX $blocks bloques: ${resp.take(120)}")
+            logger("RAW RX:\n$resp")
             HandshakeSocketResponse(sock, resp)
         } catch (e: Exception) {
             logger("ERROR handshake action=$action: ${e.message}")

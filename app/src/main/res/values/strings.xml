@@ -27,6 +27,12 @@
     <string name="client_id_label">ID de usuario: %1$s</string>
     <string name="copy_client_id">Copiar ID</string>
     <string name="client_id_copied">ID copiado</string>
+    <string name="open_logs">Ver logs internos</string>
+    <string name="logs_title">Logs del túnel</string>
+    <string name="copy_logs">Copiar</string>
+    <string name="clear_logs">Limpiar</string>
+    <string name="logs_copied">Logs copiados</string>
+    <string name="logs_cleared">Logs limpiados</string>
     <string name="no_servers">Sin servidores</string>
     <string name="servers_updated">Servidores actualizados</string>
     <string name="battery_settings_failed">No se pudo abrir ajustes de batería</string>

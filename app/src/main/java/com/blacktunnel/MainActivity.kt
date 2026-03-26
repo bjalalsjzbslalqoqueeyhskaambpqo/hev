@@ -8,6 +8,7 @@ import android.net.VpnService
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
+import android.view.Gravity
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.EditText
@@ -19,6 +20,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
+import androidx.drawerlayout.widget.DrawerLayout
 import com.google.android.material.button.MaterialButton
 import kotlin.concurrent.thread
 import kotlin.system.exitProcess
@@ -28,7 +30,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var refreshServersButton: MaterialButton
     private lateinit var saveSettingsButton: MaterialButton
     private lateinit var batteryButton: MaterialButton
+    private lateinit var openLogsButton: MaterialButton
+    private lateinit var copyLogsButton: MaterialButton
+    private lateinit var clearLogsButton: MaterialButton
     private lateinit var serverSpinner: Spinner
+    private lateinit var rootDrawer: DrawerLayout
     private lateinit var profileNormal: RadioButton
     private lateinit var profilePerformance: RadioButton
     private lateinit var normalContainer: LinearLayout
@@ -47,6 +53,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var expireValue: TextView
     private lateinit var daysLeftValue: TextView
     private lateinit var premiumValue: TextView
+    private lateinit var logsContent: TextView
 
     private val allApps = mutableListOf<Pair<String, String>>()
     private var filteredApps = listOf<Pair<String, String>>()
@@ -66,7 +73,11 @@ class MainActivity : AppCompatActivity() {
         refreshServersButton = findViewById(R.id.refreshServersButton)
         saveSettingsButton = findViewById(R.id.saveSettingsButton)
         batteryButton = findViewById(R.id.batteryButton)
+        openLogsButton = findViewById(R.id.openLogsButton)
+        copyLogsButton = findViewById(R.id.copyLogsButton)
+        clearLogsButton = findViewById(R.id.clearLogsButton)
         serverSpinner = findViewById(R.id.serverSpinner)
+        rootDrawer = findViewById(R.id.rootDrawer)
         profileNormal = findViewById(R.id.profileNormal)
         profilePerformance = findViewById(R.id.profilePerformance)
         normalContainer = findViewById(R.id.normalContainer)
@@ -85,6 +96,7 @@ class MainActivity : AppCompatActivity() {
         expireValue = findViewById(R.id.expireValue)
         daysLeftValue = findViewById(R.id.daysLeftValue)
         premiumValue = findViewById(R.id.premiumValue)
+        logsContent = findViewById(R.id.logsContent)
 
         appListView.choiceMode = ListView.CHOICE_MODE_MULTIPLE
         loadInstalledApps()
@@ -112,6 +124,9 @@ class MainActivity : AppCompatActivity() {
         refreshServersButton.setOnClickListener { refreshServers(manual = true) }
         saveSettingsButton.setOnClickListener { saveSettings(showToast = true) }
         batteryButton.setOnClickListener { openBatterySettings() }
+        openLogsButton.setOnClickListener { openLogsDrawer() }
+        copyLogsButton.setOnClickListener { copyLogs() }
+        clearLogsButton.setOnClickListener { clearLogs() }
         copyClientIdButton.setOnClickListener { copyClientId() }
         hotspotSwitch.setOnCheckedChangeListener { _, isChecked ->
             if (isChecked && getHotspotIp() == null) {
@@ -138,6 +153,24 @@ class MainActivity : AppCompatActivity() {
         val clipboard = getSystemService(ClipboardManager::class.java)
         clipboard?.setPrimaryClip(ClipData.newPlainText("BlackTunnel Client ID", clientId))
         Toast.makeText(this, getString(R.string.client_id_copied), Toast.LENGTH_SHORT).show()
+    }
+
+    private fun openLogsDrawer() {
+        logsContent.text = LogStore.dump()
+        rootDrawer.openDrawer(Gravity.END)
+    }
+
+    private fun copyLogs() {
+        val logs = LogStore.dump()
+        val clipboard = getSystemService(ClipboardManager::class.java)
+        clipboard?.setPrimaryClip(ClipData.newPlainText("BlackTunnel Logs", logs))
+        Toast.makeText(this, getString(R.string.logs_copied), Toast.LENGTH_SHORT).show()
+    }
+
+    private fun clearLogs() {
+        LogStore.clear()
+        logsContent.text = ""
+        Toast.makeText(this, getString(R.string.logs_cleared), Toast.LENGTH_SHORT).show()
     }
 
     override fun onStart() {

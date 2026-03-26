@@ -21,4 +21,8 @@ object LogStore {
     }
 
     fun dump(): String = synchronized(lock) { entries.joinToString("\n") }
+
+    fun clear() {
+        synchronized(lock) { entries.clear() }
+    }
 }
