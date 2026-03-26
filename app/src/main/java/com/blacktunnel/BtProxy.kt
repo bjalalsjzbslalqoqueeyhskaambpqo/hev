@@ -19,31 +19,33 @@ object BtProxy {
 
     private const val XRAY_SOCKS5_PORT = 10808
     private const val TUNNEL_LOCAL_PORT = 10809
-    private const val TEST_UUID = "a3482e88-686a-4a58-8126-99c9df64b7bf"
+    private const val DEFAULT_UUID = "a3482e88-686a-4a58-8126-99c9df64b7bf"
+    private const val MAX_MUX = 1024
 
     @Volatile private var xrayProcess: Process? = null
     @Volatile private var running = false
-    @Volatile private var muxConcurrency: Int = 16
-    @Volatile private var xudpConcurrency: Int = 32
+    @Volatile private var vlessUuid: String = DEFAULT_UUID
+    @Volatile private var muxConcurrency: Int = MAX_MUX
+    @Volatile private var xudpConcurrency: Int = MAX_MUX
     @Volatile private var logLevel: String = "warning"
-    @Volatile private var tunnelSlots = Semaphore(16)
-    @Volatile private var tunnelRetries: Int = 2
+    @Volatile private var tunnelSlots = Semaphore(256)
+    @Volatile private var tunnelRetries: Int = 6
 
     fun start(
         ctx: Context,
-        mux: Int,
         profile: String,
         protectSocket: (Socket) -> Unit,
         logger: (String) -> Unit
     ) {
         running = true
         val isPerformance = profile.equals("performance", ignoreCase = true)
-        muxConcurrency = if (isPerformance) mux.coerceIn(48, 64) else mux.coerceIn(24, 42)
-        xudpConcurrency = if (isPerformance) 192 else 72
+        vlessUuid = TunnelPrefs.getVlessUuid(ctx)
+        muxConcurrency = MAX_MUX
+        xudpConcurrency = MAX_MUX
         logLevel = if (isPerformance) "none" else "warning"
-        tunnelSlots = Semaphore(if (isPerformance) 120 else 56)
-        tunnelRetries = if (isPerformance) 6 else 3
-        logger("BtProxy.start() profile=$profile mux=$muxConcurrency xudp=$xudpConcurrency slots=${if (isPerformance) 120 else 56}")
+        tunnelSlots = Semaphore(256)
+        tunnelRetries = 6
+        logger("BtProxy.start() profile=$profile uuid=$vlessUuid mux=$muxConcurrency xudp=$xudpConcurrency")
         TunnelSessionStore.setState("CONNECTING")
 
         thread(isDaemon = true, name = "btproxy-init") {
@@ -202,7 +204,7 @@ object BtProxy {
                         "port": $TUNNEL_LOCAL_PORT,
                         "users": [
                           {
-                            "id": "$TEST_UUID",
+                            "id": "$vlessUuid",
                             "encryption": "none"
                           }
                         ]
@@ -282,7 +284,7 @@ object BtProxy {
             logger("TX p1 host=$PROXY_HOST")
             Thread.sleep(200)
 
-            val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\nAction: tunnel\r\n\r\n"
+            val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\nAction: tunnel\r\nX-UUID: $vlessUuid\r\n\r\n"
             out.write(p2.toByteArray())
             out.flush()
             logger("TX p2 host=$TUNNEL_HOST action=tunnel")

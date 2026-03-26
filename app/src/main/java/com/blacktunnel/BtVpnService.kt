@@ -52,11 +52,9 @@ class BtVpnService : VpnService() {
         TunnelSessionStore.setState("CONNECTING")
         startVpnForeground()
         val mtu = TunnelPrefs.getMtu(this).coerceIn(1200, 9000)
-        val mux = TunnelPrefs.getMux(this).coerceIn(1, 64)
         val profile = TunnelPrefs.getProfile(this)
         BtProxy.start(
             ctx = this,
-            mux = mux,
             profile = profile,
             protectSocket = { socket -> protect(socket) },
             logger = { LogStore.add(it) }
