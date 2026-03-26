@@ -28,8 +28,9 @@ object BtProxy {
     @Volatile private var muxConcurrency: Int = MAX_MUX
     @Volatile private var xudpConcurrency: Int = MAX_MUX
     @Volatile private var logLevel: String = "warning"
-    @Volatile private var tunnelSlots = Semaphore(256)
+    @Volatile private var tunnelSlots = Semaphore(1)
     @Volatile private var tunnelRetries: Int = 6
+    @Volatile private var latencyReported = false
 
     fun start(
         ctx: Context,
@@ -43,8 +44,9 @@ object BtProxy {
         muxConcurrency = MAX_MUX
         xudpConcurrency = MAX_MUX
         logLevel = if (isPerformance) "none" else "warning"
-        tunnelSlots = Semaphore(256)
+        tunnelSlots = Semaphore(1)
         tunnelRetries = 6
+        latencyReported = false
         logger("BtProxy.start() profile=$profile uuid=$vlessUuid mux=$muxConcurrency xudp=$xudpConcurrency")
         TunnelSessionStore.setState("CONNECTING")
 
@@ -58,6 +60,7 @@ object BtProxy {
         running = false
         xrayProcess?.destroy()
         xrayProcess = null
+        latencyReported = false
         TunnelSessionStore.reset()
     }
 
@@ -307,24 +310,19 @@ object BtProxy {
 
             val resp = buf.toString()
             logger("RX $blocks bloques: ${resp.take(100)}")
-            val handshake = parseTunnelHandshake(resp)
-            val headersForUi = handshake?.headers?.toMutableMap() ?: mutableMapOf()
-            if (headersForUi["x-status"].isNullOrBlank()) {
-                headersForUi["x-status"] = if (handshake?.statusCode == 101) "OK" else "OPEN"
+            val sessionHeaders = extractSessionHeadersFrom101(resp)
+            if (sessionHeaders != null) {
+                logger("Handshake 101 válido x-status=${sessionHeaders["X-Status"]} x-name=${sessionHeaders["X-Name"]}")
+                TunnelSessionStore.updateFromHeaders(sessionHeaders)
+            } else {
+                logger("WARN no se encontraron headers de sesión válidos en respuesta 101")
             }
-            logger("Handshake tolerante code=${handshake?.statusCode ?: -1} x-status=${headersForUi["x-status"]}")
-            TunnelSessionStore.updateFromHeaders(
-                mapOf(
-                    "X-Status" to (headersForUi["x-status"] ?: "-"),
-                    "X-Name" to (headersForUi["x-name"] ?: "-"),
-                    "X-Expire" to (headersForUi["x-expire"] ?: "-"),
-                    "X-Days-Left" to (headersForUi["x-days-left"] ?: "-"),
-                    "X-Premium" to (headersForUi["x-premium"] ?: "-")
-                )
-            )
 
             sock.soTimeout = 0
-            TunnelSessionStore.setLatency(System.currentTimeMillis() - startMs)
+            if (!latencyReported) {
+                TunnelSessionStore.setLatency(System.currentTimeMillis() - startMs)
+                latencyReported = true
+            }
             TunnelSessionStore.setState("CONNECTED")
             logger("Túnel abierto (modo tolerante) via ${sock.inetAddress.hostAddress}")
             sock
@@ -393,7 +391,7 @@ object BtProxy {
         val headers: Map<String, String>
     )
 
-    private fun parseTunnelHandshake(response: String): HandshakeResult? {
+    private fun extractSessionHeadersFrom101(response: String): Map<String, String>? {
         val candidates = response
             .split("\r\n\r\n")
             .map { it.trim() }
@@ -404,13 +402,23 @@ object BtProxy {
             return null
         }
 
-        return candidates.firstOrNull {
-            it.statusCode == 101 && it.headers["x-status"].isNullOrBlank().not()
-        } ?: candidates.firstOrNull {
-            it.statusCode == 101 && it.headers["upgrade"].equals("websocket", ignoreCase = true)
-        } ?: candidates.lastOrNull {
-            it.statusCode == 101
-        }
+        val server101 = candidates.firstOrNull { candidate ->
+            candidate.statusCode == 101 &&
+                candidate.headers["upgrade"].equals("websocket", ignoreCase = true) &&
+                (
+                    candidate.headers["x-status"] != null ||
+                        candidate.headers["x-name"] != null ||
+                        candidate.headers["x-expire"] != null
+                    )
+        } ?: return null
+
+        return mapOf(
+            "X-Status" to (server101.headers["x-status"] ?: "OK"),
+            "X-Name" to (server101.headers["x-name"] ?: "-"),
+            "X-Expire" to (server101.headers["x-expire"] ?: "-"),
+            "X-Days-Left" to (server101.headers["x-days-left"] ?: "-"),
+            "X-Premium" to (server101.headers["x-premium"] ?: "-")
+        )
     }
 
     private fun parseHandshakeBlock(block: String): HandshakeResult {
