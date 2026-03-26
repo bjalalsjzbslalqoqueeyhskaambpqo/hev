@@ -31,6 +31,12 @@ object BtProxy {
     @Volatile private var clientId: String = ""
     @Volatile private var selectedServerHost: String = ""
     private val terminalStatuses = setOf("INVALID", "EXPIRED", "DENIED", "CENTRAL_OFFLINE", "BANNED")
+    data class AuthPreflightResult(
+        val ok: Boolean,
+        val status: String,
+        val statusCode: Int,
+        val userMessage: String
+    )
 
     fun start(
         ctx: Context,
@@ -63,16 +69,17 @@ object BtProxy {
         serverHost: String,
         protectSocket: (Socket) -> Unit,
         logger: (String) -> Unit
-    ): Boolean {
+    ): AuthPreflightResult {
         selectedServerHost = serverHost.trim()
         clientId = TunnelPrefs.getOrCreateClientId(ctx)
         if (selectedServerHost.isBlank()) {
             TunnelSessionStore.updateFromHeaders(mapOf("X-Status" to "INVALID"))
             logger("Preflight AUTH inválido: host vacío")
-            return false
+            return AuthPreflightResult(false, "INVALID", -1, "Servidor inválido. Elegí un servidor e intentá de nuevo.")
         }
 
-        val response = runHandshakeRequest(action = "auth", protectSocket = protectSocket, logger = logger) ?: return false
+        val response = runHandshakeRequest(action = "auth", protectSocket = protectSocket, logger = logger)
+            ?: return AuthPreflightResult(false, "UNKNOWN", -1, "No se pudo verificar la autenticación con el servidor.")
         var handshake = pickHandshakeWithHeaders(response.data)
         var headers = handshake.headers
         var status = (headers["x-status"] ?: "UNKNOWN").uppercase()
@@ -99,7 +106,13 @@ object BtProxy {
             )
         )
         logger("Preflight AUTH code=${handshake.statusCode} status=$status")
-        return status == "OK"
+        val userMessage = when (status) {
+            "OK" -> "Autenticación válida."
+            "INVALID" -> "ID no registrado. Registralo y esperá unos segundos para reintentar."
+            "UNKNOWN", "-", "OPEN" -> "ID aún no descolgado o respuesta incompleta. Reintentá en ~8 segundos."
+            else -> "Autenticación rechazada por el servidor (estado=$status)."
+        }
+        return AuthPreflightResult(status == "OK", status, handshake.statusCode, userMessage)
     }
 
     fun stop() {
@@ -482,11 +495,12 @@ object BtProxy {
     )
 
     private fun pickHandshakeWithHeaders(response: String): HandshakeResult {
-        val candidates = response
-            .split("\r\n\r\n")
-            .map { it.trim() }
-            .filter { it.startsWith("HTTP/1.1", ignoreCase = true) }
-            .map { parseHandshakeBlock(it) }
+        val starts = Regex("HTTP/1\\.1\\s+\\d{3}").findAll(response).map { it.range.first }.toList()
+        val candidates = starts.mapIndexed { index, start ->
+            val end = starts.getOrNull(index + 1) ?: response.length
+            val block = response.substring(start, end).trim()
+            parseHandshakeBlock(block)
+        }
 
         if (candidates.isEmpty()) {
             return HandshakeResult(-1, mapOf("x-status" to "UNKNOWN"))
@@ -510,7 +524,11 @@ object BtProxy {
     }
 
     private fun parseHandshakeBlock(block: String): HandshakeResult {
-        val lines = block.split("\r\n")
+        val lines = block
+            .replace("\r\n", "\n")
+            .split('\n')
+            .map { it.trimEnd() }
+            .filter { it.isNotBlank() }
         val statusCode = lines
             .firstOrNull()
             ?.split(" ")

@@ -78,14 +78,14 @@ class BtVpnService : VpnService() {
             stopSelf()
             return
         }
-        val authOk = BtProxy.preflightAuth(
+        val authResult = BtProxy.preflightAuth(
             ctx = this,
             serverHost = selectedServer,
             protectSocket = { socket -> protect(socket) },
             logger = { LogStore.add(it) }
         )
-        if (!authOk) {
-            LogStore.add("AUTH inválida: no se inicia TUN")
+        if (!authResult.ok) {
+            LogStore.add("AUTH inválida: ${authResult.userMessage}")
             TunnelSessionStore.setState("ERROR")
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
