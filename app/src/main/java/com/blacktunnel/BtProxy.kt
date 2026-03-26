@@ -250,18 +250,11 @@ object BtProxy {
             val resp = buf.toString()
             logger("RX $blocks bloques: ${resp.take(100)}")
             val handshake = parseTunnelHandshake(resp)
-            if (handshake == null || handshake.statusCode != 101) {
-                logger("ERROR túnel rechazado code=${handshake?.statusCode ?: -1}")
-                TunnelSessionStore.setState("ERROR")
-                sock.close()
-                return null
-            }
-
-            val headersForUi = handshake.headers.toMutableMap()
+            val headersForUi = handshake?.headers?.toMutableMap() ?: mutableMapOf()
             if (headersForUi["x-status"].isNullOrBlank()) {
-                headersForUi["x-status"] = "OK"
+                headersForUi["x-status"] = if (handshake?.statusCode == 101) "OK" else "OPEN"
             }
-            logger("Handshake seleccionado code=${handshake.statusCode} x-status=${headersForUi["x-status"]}")
+            logger("Handshake tolerante code=${handshake?.statusCode ?: -1} x-status=${headersForUi["x-status"]}")
             TunnelSessionStore.updateFromHeaders(
                 mapOf(
                     "X-Status" to (headersForUi["x-status"] ?: "-"),
@@ -274,7 +267,7 @@ object BtProxy {
 
             sock.soTimeout = 0
             TunnelSessionStore.setState("CONNECTED")
-            logger("Túnel OK via ${sock.inetAddress.hostAddress}")
+            logger("Túnel abierto (modo tolerante) via ${sock.inetAddress.hostAddress}")
             sock
         } catch (e: Exception) {
             logger("ERROR abriendo túnel: ${e.message}")
