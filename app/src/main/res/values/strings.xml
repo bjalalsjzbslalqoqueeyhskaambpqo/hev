@@ -18,17 +18,26 @@
     <string name="profile_normal">Normal</string>
     <string name="profile_performance">Performance</string>
     <string name="search_apps_hint">Buscar app por nombre o paquete</string>
-    <string name="refresh_servers">Actualizar</string>
-    <string name="refreshing_servers">Actualizando…</string>
     <string name="save_settings">Guardar ajustes</string>
     <string name="open_battery_settings">Quitar restricción de batería</string>
     <string name="settings_saved">Ajustes guardados</string>
-    <string name="no_servers">Sin servidores</string>
-    <string name="servers_updated">Servidores actualizados</string>
     <string name="battery_settings_failed">No se pudo abrir ajustes de batería</string>
     <string name="hotspot_proxy_toggle">Compartir Wi‑Fi por proxy</string>
     <string name="hotspot_requires_system">Primero activa \"Compartir Wi‑Fi\" del sistema y luego esta opción.</string>
     <string name="block_non_selected_toggle">Bloquear apps no seleccionadas (requiere bloqueo VPN del sistema)</string>
     <string name="hotspot_info">Host: %1$s  Puerto: %2$d</string>
     <string name="hotspot_disabled">Hotspot proxy desactivado</string>
+
+    <string name="server_url_placeholder">Servidor fijo: -</string>
+    <string name="server_url_value">Servidor fijo: %1$s</string>
+    <string name="identifier_hint">Identificador del cliente</string>
+
+    <string name="admin_title">Administración del revendedor</string>
+    <string name="admin_identifier_hint">Identificador del cliente</string>
+    <string name="admin_name_hint">Nombre</string>
+    <string name="admin_days_hint">Días de validez</string>
+    <string name="admin_create_user">Crear usuario</string>
+    <string name="admin_add_days">Agregar días</string>
+    <string name="admin_delete_user">Eliminar usuario</string>
+    <string name="admin_list_users">Listar usuarios</string>
 </resources>

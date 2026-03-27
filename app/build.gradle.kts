@@ -1,7 +1,19 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
+val appConfig = Properties().apply {
+    val configFile = file("app-config.properties")
+    if (configFile.exists()) {
+        configFile.inputStream().use { load(it) }
+    }
+}
+
+fun prop(name: String, default: String): String =
+    (appConfig.getProperty(name) ?: System.getenv(name) ?: default).trim().ifEmpty { default }
 
 android {
     namespace = "com.blacktunnel"
@@ -14,6 +26,12 @@ android {
         versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
         versionName = "0.1.0"
 
+        buildConfigField("String", "SERVER_URL", "\"${prop("SERVER_URL", "https://example.com") }\"")
+        buildConfigField("String", "CLIENT_DEFAULT_IDENTIFIER", "\"${prop("CLIENT_DEFAULT_IDENTIFIER", "") }\"")
+        buildConfigField("String", "RESELLER_IDENTIFIER", "\"${prop("RESELLER_IDENTIFIER", "") }\"")
+        buildConfigField("String", "RESELLER_ADMIN_USER", "\"${prop("RESELLER_ADMIN_USER", "") }\"")
+        buildConfigField("String", "RESELLER_ADMIN_PASS", "\"${prop("RESELLER_ADMIN_PASS", "") }\"")
+
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
@@ -22,6 +40,22 @@ android {
             cmake {
                 cppFlags += "-std=c++17"
             }
+        }
+    }
+
+    flavorDimensions += "appType"
+    productFlavors {
+        create("client") {
+            dimension = "appType"
+            applicationIdSuffix = ".client"
+            versionNameSuffix = "-client"
+            buildConfigField("String", "APP_MODE", "\"client\"")
+        }
+        create("reseller") {
+            dimension = "appType"
+            applicationIdSuffix = ".reseller"
+            versionNameSuffix = "-reseller"
+            buildConfigField("String", "APP_MODE", "\"reseller\"")
         }
     }
 

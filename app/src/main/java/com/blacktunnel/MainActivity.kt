@@ -8,27 +8,26 @@ import android.net.VpnService
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
-import android.widget.AdapterView
-import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.RadioButton
-import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import com.google.android.material.button.MaterialButton
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.Base64
 import kotlin.concurrent.thread
 import kotlin.system.exitProcess
 
 class MainActivity : AppCompatActivity() {
     private lateinit var toggleButton: MaterialButton
-    private lateinit var refreshServersButton: MaterialButton
     private lateinit var saveSettingsButton: MaterialButton
     private lateinit var batteryButton: MaterialButton
-    private lateinit var serverSpinner: Spinner
     private lateinit var profileNormal: RadioButton
     private lateinit var profilePerformance: RadioButton
     private lateinit var normalContainer: LinearLayout
@@ -45,12 +44,22 @@ class MainActivity : AppCompatActivity() {
     private lateinit var expireValue: TextView
     private lateinit var daysLeftValue: TextView
     private lateinit var premiumValue: TextView
+    private lateinit var serverUrlValue: TextView
+    private lateinit var identifierContainer: LinearLayout
+    private lateinit var identifierInput: EditText
+    private lateinit var adminContainer: LinearLayout
+    private lateinit var adminIdentifierInput: EditText
+    private lateinit var adminNameInput: EditText
+    private lateinit var adminDaysInput: EditText
+    private lateinit var adminResultText: TextView
+    private lateinit var adminCreateButton: MaterialButton
+    private lateinit var adminAddDaysButton: MaterialButton
+    private lateinit var adminDeleteButton: MaterialButton
+    private lateinit var adminListButton: MaterialButton
 
     private val allApps = mutableListOf<Pair<String, String>>()
     private var filteredApps = listOf<Pair<String, String>>()
     private val selectedPackages = mutableSetOf<String>()
-    private var servers = mutableListOf<CentralServer>()
-    @Volatile private var isRefreshingServers = false
 
     private val sessionListener: (TunnelSessionSnapshot) -> Unit = { snapshot ->
         runOnUiThread { render(snapshot) }
@@ -61,10 +70,8 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         toggleButton = findViewById(R.id.toggleButton)
-        refreshServersButton = findViewById(R.id.refreshServersButton)
         saveSettingsButton = findViewById(R.id.saveSettingsButton)
         batteryButton = findViewById(R.id.batteryButton)
-        serverSpinner = findViewById(R.id.serverSpinner)
         profileNormal = findViewById(R.id.profileNormal)
         profilePerformance = findViewById(R.id.profilePerformance)
         normalContainer = findViewById(R.id.normalContainer)
@@ -81,10 +88,23 @@ class MainActivity : AppCompatActivity() {
         expireValue = findViewById(R.id.expireValue)
         daysLeftValue = findViewById(R.id.daysLeftValue)
         premiumValue = findViewById(R.id.premiumValue)
+        serverUrlValue = findViewById(R.id.serverUrlValue)
+        identifierContainer = findViewById(R.id.identifierContainer)
+        identifierInput = findViewById(R.id.identifierInput)
+        adminContainer = findViewById(R.id.adminContainer)
+        adminIdentifierInput = findViewById(R.id.adminIdentifierInput)
+        adminNameInput = findViewById(R.id.adminNameInput)
+        adminDaysInput = findViewById(R.id.adminDaysInput)
+        adminResultText = findViewById(R.id.adminResultText)
+        adminCreateButton = findViewById(R.id.adminCreateButton)
+        adminAddDaysButton = findViewById(R.id.adminAddDaysButton)
+        adminDeleteButton = findViewById(R.id.adminDeleteButton)
+        adminListButton = findViewById(R.id.adminListButton)
 
         appListView.choiceMode = ListView.CHOICE_MODE_MULTIPLE
         loadInstalledApps()
         loadSettings()
+        setupModeSections()
 
         profileNormal.setOnCheckedChangeListener { _, _ -> updatePerformanceVisibility() }
         profilePerformance.setOnCheckedChangeListener { _, _ -> updatePerformanceVisibility() }
@@ -96,16 +116,7 @@ class MainActivity : AppCompatActivity() {
             filterAppList(appSearchInput.text?.toString().orEmpty())
         }
 
-        serverSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (servers.isEmpty()) return
-                servers.getOrNull(position)?.let { TunnelPrefs.setSelectedServer(this@MainActivity, it.host) }
-            }
-            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-        }
-
         toggleButton.setOnClickListener { onToggle() }
-        refreshServersButton.setOnClickListener { refreshServers(manual = true) }
         saveSettingsButton.setOnClickListener { saveSettings(showToast = true) }
         batteryButton.setOnClickListener { openBatterySettings() }
         hotspotSwitch.setOnCheckedChangeListener { _, isChecked ->
@@ -118,7 +129,7 @@ class MainActivity : AppCompatActivity() {
             render(TunnelSessionStore.current())
         }
 
-        refreshServers(manual = false)
+        setupAdminActions()
         render(TunnelSessionStore.current())
     }
 
@@ -130,6 +141,77 @@ class MainActivity : AppCompatActivity() {
     override fun onStop() {
         TunnelSessionStore.removeListener(sessionListener)
         super.onStop()
+    }
+
+    private fun setupModeSections() {
+        val isReseller = BuildConfig.APP_MODE.equals("reseller", ignoreCase = true)
+        identifierContainer.visibility = if (isReseller) View.GONE else View.VISIBLE
+        adminContainer.visibility = if (isReseller) View.VISIBLE else View.GONE
+        serverUrlValue.text = getString(R.string.server_url_value, BuildConfig.SERVER_URL)
+        if (isReseller) {
+            identifierInput.setText(BuildConfig.RESELLER_IDENTIFIER)
+            identifierInput.isEnabled = false
+        }
+    }
+
+    private fun setupAdminActions() {
+        val isReseller = BuildConfig.APP_MODE.equals("reseller", ignoreCase = true)
+        if (!isReseller) return
+
+        adminCreateButton.setOnClickListener {
+            val body = JSONObject().apply {
+                put("identifier", adminIdentifierInput.text?.toString().orEmpty().trim())
+                put("name", adminNameInput.text?.toString().orEmpty().trim())
+                put("days", adminDaysInput.text?.toString().orEmpty().trim().toIntOrNull() ?: 0)
+            }
+            runAdminRequest("POST", "/admin/users", body)
+        }
+
+        adminAddDaysButton.setOnClickListener {
+            val body = JSONObject().apply {
+                put("identifier", adminIdentifierInput.text?.toString().orEmpty().trim())
+                put("days", adminDaysInput.text?.toString().orEmpty().trim().toIntOrNull() ?: 0)
+            }
+            runAdminRequest("POST", "/admin/users/add-days", body)
+        }
+
+        adminDeleteButton.setOnClickListener {
+            val id = adminIdentifierInput.text?.toString().orEmpty().trim()
+            runAdminRequest("DELETE", "/admin/users/$id", null)
+        }
+
+        adminListButton.setOnClickListener {
+            runAdminRequest("GET", "/admin/users", null)
+        }
+    }
+
+    private fun runAdminRequest(method: String, path: String, body: JSONObject?) {
+        thread(isDaemon = true) {
+            val result = runCatching {
+                val server = BuildConfig.SERVER_URL.trimEnd('/')
+                val conn = (URL(server + path).openConnection() as HttpURLConnection).apply {
+                    requestMethod = method
+                    connectTimeout = 10_000
+                    readTimeout = 15_000
+                    setRequestProperty("Accept", "application/json")
+                    val creds = "${BuildConfig.RESELLER_ADMIN_USER}:${BuildConfig.RESELLER_ADMIN_PASS}"
+                    val basic = Base64.getEncoder().encodeToString(creds.toByteArray())
+                    setRequestProperty("Authorization", "Basic $basic")
+                    if (body != null) {
+                        doOutput = true
+                        setRequestProperty("Content-Type", "application/json")
+                        outputStream.use { it.write(body.toString().toByteArray()) }
+                    }
+                }
+                val code = conn.responseCode
+                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                val text = stream?.bufferedReader()?.readText().orEmpty().ifBlank { "HTTP $code" }
+                conn.disconnect()
+                "HTTP $code\n$text"
+            }.getOrElse { "Error: ${it.message}" }
+
+            runOnUiThread { adminResultText.text = result }
+        }
     }
 
     private fun loadInstalledApps() {
@@ -145,47 +227,6 @@ class MainActivity : AppCompatActivity() {
         filterAppList("")
     }
 
-    private fun refreshServers(manual: Boolean) {
-        if (isRefreshingServers) return
-        isRefreshingServers = true
-        refreshServersButton.isEnabled = false
-        refreshServersButton.text = getString(R.string.refreshing_servers)
-
-        thread(isDaemon = true, name = "central-servers-fetch") {
-            val fetched = CentralServerDiscovery.fetchServers { LogStore.add(it) }
-            val cached = TunnelPrefs.getCentralServers(this).mapNotNull { decodeServer(it) }
-            val mergedMap = linkedMapOf<String, CentralServer>()
-            (fetched + cached).forEach { mergedMap[it.host] = it }
-            val merged = mergedMap.values.toList()
-            TunnelPrefs.setCentralServers(this, merged.map { encodeServer(it) })
-
-            runOnUiThread {
-                updateServerSpinner(merged)
-                refreshServersButton.isEnabled = true
-                refreshServersButton.text = getString(R.string.refresh_servers)
-                isRefreshingServers = false
-                if (manual) Toast.makeText(this, getString(R.string.servers_updated), Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
-    private fun updateServerSpinner(newServers: List<CentralServer>) {
-        servers = newServers.toMutableList()
-        val labels = if (servers.isEmpty()) {
-            listOf(getString(R.string.no_servers))
-        } else {
-            servers.map { "Server #${it.id} • ${it.region} • ${it.status}" }
-        }
-        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, labels)
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        serverSpinner.adapter = adapter
-        serverSpinner.isEnabled = servers.isNotEmpty()
-
-        val selected = TunnelPrefs.getSelectedServer(this)
-        val index = servers.indexOfFirst { it.host == selected }.takeIf { it >= 0 } ?: 0
-        serverSpinner.setSelection(index)
-    }
-
     private fun filterAppList(query: String) {
         val baseList = if (query.isBlank()) allApps else allApps.filter {
             it.first.contains(query, true) || it.second.contains(query, true)
@@ -196,7 +237,7 @@ class MainActivity : AppCompatActivity() {
                 .thenBy { it.second.lowercase() }
         )
         val labels = filteredApps.map { "${it.first} (${it.second})" }
-        appListView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_multiple_choice, labels)
+        appListView.adapter = android.widget.ArrayAdapter(this, android.R.layout.simple_list_item_multiple_choice, labels)
         filteredApps.forEachIndexed { index, pair -> appListView.setItemChecked(index, selectedPackages.contains(pair.second)) }
     }
 
@@ -209,8 +250,7 @@ class MainActivity : AppCompatActivity() {
 
         selectedPackages.clear()
         selectedPackages += TunnelPrefs.getIncludedApps(this)
-        val cached = TunnelPrefs.getCentralServers(this).mapNotNull { decodeServer(it) }
-        updateServerSpinner(cached)
+        identifierInput.setText(TunnelPrefs.getClientIdentifier(this))
         filterAppList("")
         updatePerformanceVisibility()
     }
@@ -227,6 +267,7 @@ class MainActivity : AppCompatActivity() {
         TunnelPrefs.setProfile(this, profile)
         TunnelPrefs.setMux(this, if (profile == "performance") 60 else 32)
         TunnelPrefs.setIncludedApps(this, selectedPackages.toList())
+        TunnelPrefs.setClientIdentifier(this, identifierInput.text?.toString().orEmpty())
         if (profile == "normal") {
             TunnelPrefs.setHotspotProxyEnabled(this, hotspotSwitch.isChecked)
         }
@@ -342,25 +383,6 @@ class MainActivity : AppCompatActivity() {
                     !ip.startsWith("127.")
             }?.second ?: candidates.firstOrNull()?.second
         }.getOrNull()
-    }
-
-    private fun encodeServer(server: CentralServer): String =
-        listOf(server.id, server.host, server.region, server.status).joinToString("|")
-
-    private fun decodeServer(raw: String): CentralServer? {
-        val parts = raw.split("|")
-        return when {
-            parts.size >= 4 -> {
-                val id = parts[0].trim().ifBlank { "?" }
-                val host = parts[1].trim()
-                if (host.isBlank()) null else CentralServer(id, host, parts[2].trim().ifBlank { "N/A" }, parts[3].trim().ifBlank { "unknown" })
-            }
-            parts.size == 1 -> {
-                val host = parts[0].trim()
-                if (host.isBlank()) null else CentralServer(host.substringBefore('.').ifBlank { "?" }, host, "N/A", "unknown")
-            }
-            else -> null
-        }
     }
 
     companion object {

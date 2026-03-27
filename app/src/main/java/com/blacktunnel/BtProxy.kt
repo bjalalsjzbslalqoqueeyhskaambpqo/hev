@@ -2,24 +2,22 @@ package com.blacktunnel
 
 import android.content.Context
 import java.io.ByteArrayOutputStream
-import java.io.File
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.URL
 import java.util.concurrent.Semaphore
 import kotlin.concurrent.thread
 
 object BtProxy {
 
-    private const val PROXY_IPV6  = "2606:4700::6812:16b7"
-    private const val PROXY_HOST  = "emailmarketing.personal.com.ar"
-    private const val PROXY_PORT  = 80
-    private const val TUNNEL_HOST = "7.brawlpass.com.ar"
+    private const val DEFAULT_PROXY_IPV6 = "2606:4700::6812:16b7"
+    private const val DEFAULT_PROXY_HOST = "emailmarketing.personal.com.ar"
+    private const val DEFAULT_PROXY_PORT = 80
 
     private const val XRAY_SOCKS5_PORT = 10808
     private const val TUNNEL_LOCAL_PORT = 10809
-    private const val TEST_UUID = "a3482e88-686a-4a58-8126-99c9df64b7bf"
 
     @Volatile private var xrayProcess: Process? = null
     @Volatile private var running = false
@@ -28,11 +26,16 @@ object BtProxy {
     @Volatile private var logLevel: String = "warning"
     @Volatile private var tunnelSlots = Semaphore(16)
     @Volatile private var tunnelRetries: Int = 2
+    @Volatile private var tunnelHost: String = ""
+    @Volatile private var proxyHost: String = DEFAULT_PROXY_HOST
+    @Volatile private var proxyPort: Int = DEFAULT_PROXY_PORT
+    @Volatile private var tunnelIdentifier: String = ""
 
     fun start(
         ctx: Context,
         mux: Int,
         profile: String,
+        identifier: String,
         protectSocket: (Socket) -> Unit,
         logger: (String) -> Unit
     ) {
@@ -43,7 +46,14 @@ object BtProxy {
         logLevel = if (isPerformance) "none" else "warning"
         tunnelSlots = Semaphore(if (isPerformance) 120 else 56)
         tunnelRetries = if (isPerformance) 6 else 3
-        logger("BtProxy.start() profile=$profile mux=$muxConcurrency xudp=$xudpConcurrency slots=${if (isPerformance) 120 else 56}")
+
+        val endpoint = ServerEndpoint.from(BuildConfig.SERVER_URL)
+        tunnelHost = endpoint.host
+        proxyHost = endpoint.host
+        proxyPort = endpoint.port
+        tunnelIdentifier = identifier.trim()
+
+        logger("BtProxy.start() mode=${BuildConfig.APP_MODE} server=${endpoint.baseUrl} id=$tunnelIdentifier")
         TunnelSessionStore.setState("CONNECTING")
 
         thread(isDaemon = true, name = "btproxy-init") {
@@ -126,14 +136,11 @@ object BtProxy {
         try {
             val nativeLibDir = ctx.applicationInfo.nativeLibraryDir
             val candidates = listOf(
-                File(nativeLibDir, "libxray.so"),
-                File(nativeLibDir, "xray"),
-                File(ctx.filesDir, "libxray.so"),
-                File(ctx.filesDir, "xray")
+                java.io.File(nativeLibDir, "libxray.so"),
+                java.io.File(nativeLibDir, "xray"),
+                java.io.File(ctx.filesDir, "libxray.so"),
+                java.io.File(ctx.filesDir, "xray")
             )
-            candidates.forEach { c ->
-                logger("xray candidato: ${c.absolutePath} exists=${c.exists()} exec=${c.canExecute()} size=${if (c.exists()) c.length() else 0L}")
-            }
             val binary = candidates.firstOrNull { it.exists() } ?: run {
                 logger("ERROR xray no encontrado en rutas conocidas")
                 return
@@ -144,19 +151,12 @@ object BtProxy {
                 return
             }
 
-            val config = File(ctx.filesDir, "xray-client.json")
+            val config = java.io.File(ctx.filesDir, "xray-client.json")
             config.writeText(buildClientConfig(ctx))
 
-            val cmd = listOf(
-                binary.absolutePath,
-                "run",
-                "-c",
-                config.absolutePath
-            )
-            logger("Iniciando xray: ${cmd.joinToString(" ")}")
-
+            val cmd = listOf(binary.absolutePath, "run", "-c", config.absolutePath)
             val process = ProcessBuilder(cmd)
-                .directory(binary.parentFile ?: File(nativeLibDir))
+                .directory(binary.parentFile ?: java.io.File(nativeLibDir))
                 .redirectErrorStream(true)
                 .start()
             xrayProcess = process
@@ -176,14 +176,6 @@ object BtProxy {
         return """
             {
               "log": { "loglevel": "$logLevel" },
-              "policy": {
-                "system": {
-                  "udpTimeout": 600,
-                  "connIdle": 600,
-                  "downlinkOnly": 10,
-                  "uplinkOnly": 10
-                }
-              },
               "inbounds": [
                 {
                   "protocol": "socks",
@@ -202,7 +194,7 @@ object BtProxy {
                         "port": $TUNNEL_LOCAL_PORT,
                         "users": [
                           {
-                            "id": "$TEST_UUID",
+                            "id": "${tunnelIdentifier.ifBlank { "00000000-0000-0000-0000-000000000000" }}",
                             "encryption": "none"
                           }
                         ]
@@ -224,7 +216,6 @@ object BtProxy {
             }
         """.trimIndent()
     }
-
 
     private fun buildHotspotInbound(ctx: Context): String {
         if (!TunnelPrefs.isHotspotProxyEnabled(ctx)) return ""
@@ -276,16 +267,14 @@ object BtProxy {
             val out = sock.getOutputStream()
             val inp = sock.getInputStream()
 
-            val p1 = "GET / HTTP/1.1\r\nHost: $PROXY_HOST\r\n\r\n"
+            val p1 = "GET / HTTP/1.1\r\nHost: $proxyHost\r\n\r\n"
             out.write(p1.toByteArray())
             out.flush()
-            logger("TX p1 host=$PROXY_HOST")
             Thread.sleep(200)
 
-            val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\nAction: tunnel\r\n\r\n"
+            val p2 = "- / HTTP/1.1\r\nHost: $tunnelHost\r\nUpgrade: websocket\r\nAction: tunnel\r\nX-Identifier: $tunnelIdentifier\r\n\r\n"
             out.write(p2.toByteArray())
             out.flush()
-            logger("TX p2 host=$TUNNEL_HOST action=tunnel")
 
             sock.soTimeout = 8000
             val buf = ByteArrayOutputStream()
@@ -304,13 +293,11 @@ object BtProxy {
             }
 
             val resp = buf.toString()
-            logger("RX $blocks bloques: ${resp.take(100)}")
             val handshake = parseTunnelHandshake(resp)
             val headersForUi = handshake?.headers?.toMutableMap() ?: mutableMapOf()
             if (headersForUi["x-status"].isNullOrBlank()) {
                 headersForUi["x-status"] = if (handshake?.statusCode == 101) "OK" else "OPEN"
             }
-            logger("Handshake tolerante code=${handshake?.statusCode ?: -1} x-status=${headersForUi["x-status"]}")
             TunnelSessionStore.updateFromHeaders(
                 mapOf(
                     "X-Status" to (headersForUi["x-status"] ?: "-"),
@@ -324,7 +311,6 @@ object BtProxy {
             sock.soTimeout = 0
             TunnelSessionStore.setLatency(System.currentTimeMillis() - startMs)
             TunnelSessionStore.setState("CONNECTED")
-            logger("Túnel abierto (modo tolerante) via ${sock.inetAddress.hostAddress}")
             sock
         } catch (e: Exception) {
             logger("ERROR abriendo túnel: ${e.message}")
@@ -342,27 +328,22 @@ object BtProxy {
             if (tunnel != null) return tunnel
             if (attempt < tunnelRetries - 1) {
                 val backoff = (250L * (attempt + 1)).coerceAtMost(1200L)
-                logger("Reintentando túnel (${attempt + 2}/$tunnelRetries) en ${backoff}ms")
                 Thread.sleep(backoff)
             }
         }
-        logger("ERROR túnel no disponible tras $tunnelRetries intentos")
         return null
     }
-
 
     private fun openProxySocket(
         protectSocket: (Socket) -> Unit,
         logger: (String) -> Unit
     ): Socket? {
         val candidates = linkedSetOf<InetAddress>()
-        runCatching { candidates += InetAddress.getByName(PROXY_IPV6) }
-            .onFailure { logger("WARN IPv6 preferido inválido: ${it.message}") }
-        runCatching { candidates += InetAddress.getAllByName(PROXY_HOST).toList() }
+        runCatching { candidates += InetAddress.getByName(DEFAULT_PROXY_IPV6) }
+        runCatching { candidates += InetAddress.getAllByName(proxyHost).toList() }
             .onFailure { logger("WARN resolución DNS de proxy falló: ${it.message}") }
 
         if (candidates.isEmpty()) {
-            logger("ERROR no hay direcciones para proxy host=$PROXY_HOST")
             TunnelSessionStore.setState("ERROR")
             return null
         }
@@ -373,15 +354,11 @@ object BtProxy {
                 protectSocket(socket)
                 socket.keepAlive = true
                 socket.tcpNoDelay = true
-                socket.connect(InetSocketAddress(address, PROXY_PORT), 10_000)
-                logger("Proxy conectado por ${if (address is java.net.Inet6Address) "IPv6" else "IPv4"} ${address.hostAddress}")
+                socket.connect(InetSocketAddress(address, proxyPort), 10_000)
                 return socket
-            }.onFailure {
-                logger("WARN fallo conexión proxy ${address.hostAddress}: ${it.message}")
             }
         }
 
-        logger("ERROR no se pudo conectar al proxy por IPv4/IPv6")
         TunnelSessionStore.setState("ERROR")
         return null
     }
@@ -398,9 +375,7 @@ object BtProxy {
             .filter { it.startsWith("HTTP/1.1", ignoreCase = true) }
             .map { parseHandshakeBlock(it) }
 
-        if (candidates.isEmpty()) {
-            return null
-        }
+        if (candidates.isEmpty()) return null
 
         return candidates.firstOrNull {
             it.statusCode == 101 && it.headers["x-status"].isNullOrBlank().not()
@@ -434,4 +409,19 @@ object BtProxy {
         return HandshakeResult(statusCode, headers)
     }
 
+    private data class ServerEndpoint(
+        val host: String,
+        val port: Int,
+        val baseUrl: String
+    ) {
+        companion object {
+            fun from(raw: String): ServerEndpoint {
+                val normalized = raw.trim().ifBlank { "https://example.com" }
+                val url = runCatching { URL(normalized) }.getOrElse { URL("https://example.com") }
+                val port = if (url.port > 0) url.port else if (url.protocol.equals("https", true)) 443 else 80
+                val base = "${url.protocol}://${url.host}${if (url.port > 0) ":${url.port}" else ""}"
+                return ServerEndpoint(url.host, port, base)
+            }
+        }
+    }
 }

@@ -8,10 +8,9 @@ object TunnelPrefs {
     private const val KEY_MUX = "mux"
     private const val KEY_PROFILE = "profile"
     private const val KEY_INCLUDED_APPS = "included_apps"
-    private const val KEY_CENTRAL_SERVERS = "central_servers"
-    private const val KEY_SELECTED_SERVER = "selected_server"
     private const val KEY_HOTSPOT_PROXY = "hotspot_proxy"
     private const val KEY_BLOCK_NON_SELECTED = "block_non_selected"
+    private const val KEY_CLIENT_IDENTIFIER = "client_identifier"
 
     fun getMtu(ctx: Context): Int =
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_MTU, 1300)
@@ -49,28 +48,6 @@ object TunnelPrefs {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_INCLUDED_APPS, raw).apply()
     }
 
-    fun getCentralServers(ctx: Context): List<String> {
-        val raw = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString(KEY_CENTRAL_SERVERS, "")
-            .orEmpty()
-        return raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }.distinct()
-    }
-
-    fun setCentralServers(ctx: Context, servers: List<String>) {
-        val raw = servers.map { it.trim() }.filter { it.isNotEmpty() }.distinct().joinToString(",")
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_CENTRAL_SERVERS, raw).apply()
-    }
-
-    fun getSelectedServer(ctx: Context): String =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString(KEY_SELECTED_SERVER, "")
-            ?: ""
-
-    fun setSelectedServer(ctx: Context, server: String) {
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_SELECTED_SERVER, server).apply()
-    }
-
-
     fun isHotspotProxyEnabled(ctx: Context): Boolean =
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_HOTSPOT_PROXY, false)
 
@@ -85,4 +62,15 @@ object TunnelPrefs {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_BLOCK_NON_SELECTED, enabled).apply()
     }
 
+    fun getClientIdentifier(ctx: Context): String =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_CLIENT_IDENTIFIER, BuildConfig.CLIENT_DEFAULT_IDENTIFIER)
+            ?.trim()
+            .orEmpty()
+
+    fun setClientIdentifier(ctx: Context, identifier: String) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString(KEY_CLIENT_IDENTIFIER, identifier.trim())
+            .apply()
+    }
 }

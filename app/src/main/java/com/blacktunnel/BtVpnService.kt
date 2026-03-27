@@ -54,10 +54,16 @@ class BtVpnService : VpnService() {
         val mtu = TunnelPrefs.getMtu(this).coerceIn(1200, 9000)
         val mux = TunnelPrefs.getMux(this).coerceIn(1, 64)
         val profile = TunnelPrefs.getProfile(this)
+        val identifier = if (BuildConfig.APP_MODE.equals("reseller", ignoreCase = true)) {
+            BuildConfig.RESELLER_IDENTIFIER
+        } else {
+            TunnelPrefs.getClientIdentifier(this)
+        }
         BtProxy.start(
             ctx = this,
             mux = mux,
             profile = profile,
+            identifier = identifier,
             protectSocket = { socket -> protect(socket) },
             logger = { LogStore.add(it) }
         )
