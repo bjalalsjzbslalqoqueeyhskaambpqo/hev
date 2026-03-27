@@ -365,6 +365,97 @@ if __name__ == "__main__":
 PYEOF
 chmod +x /opt/btserver/panel.py
 
+cat > /opt/btserver/menu.sh << 'SH'
+#!/bin/bash
+set -euo pipefail
+
+show_menu() {
+  echo "==============================="
+  echo "   BlackTunnel Admin Menu"
+  echo "==============================="
+  echo "1) Agregar días a un client_id"
+  echo "2) Listar client_id"
+  echo "3) Ver estado servicios"
+  echo "4) Abrir panel web (URL)"
+  echo "0) Salir"
+  echo -n "Opción: "
+}
+
+while true; do
+  show_menu
+  read -r opt
+  case "${opt}" in
+    1)
+      echo -n "Client ID: "
+      read -r client_id
+      echo -n "Días a agregar: "
+      read -r days
+      /usr/bin/python3 /opt/btserver/manage_client.py add "${client_id}" "${days}"
+      ;;
+    2)
+      /usr/bin/python3 /opt/btserver/manage_client.py list
+      ;;
+    3)
+      systemctl --no-pager status xray btserver btpanel || true
+      ;;
+    4)
+      ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+      if [[ -z "${ip:-}" ]]; then ip="TU_IP_SERVIDOR"; fi
+      echo "Panel web: http://${ip}:8090"
+      ;;
+    0)
+      exit 0
+      ;;
+    *)
+      echo "Opción inválida"
+      ;;
+  esac
+  echo ""
+done
+SH
+chmod +x /opt/btserver/menu.sh
+
+cat > /usr/local/bin/btpanel << 'SH'
+#!/bin/bash
+set -euo pipefail
+
+cmd="${1:-menu}"
+case "$cmd" in
+  menu)
+    exec /opt/btserver/menu.sh
+    ;;
+  add)
+    shift
+    exec /usr/bin/python3 /opt/btserver/manage_client.py add "$@"
+    ;;
+  list)
+    exec /usr/bin/python3 /opt/btserver/manage_client.py list
+    ;;
+  web)
+    ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    if [[ -z "${ip:-}" ]]; then ip="TU_IP_SERVIDOR"; fi
+    echo "http://${ip}:8090"
+    ;;
+  restart)
+    exec systemctl restart btserver btpanel
+    ;;
+  status)
+    exec systemctl --no-pager status xray btserver btpanel
+    ;;
+  *)
+    echo "Uso:"
+    echo "  btpanel menu           # menú interactivo"
+    echo "  btpanel add <id> <d>   # agregar días"
+    echo "  btpanel list           # listar IDs"
+    echo "  btpanel web            # mostrar URL panel web"
+    echo "  btpanel restart        # reiniciar servicios"
+    echo "  btpanel status         # estado servicios"
+    exit 1
+    ;;
+esac
+SH
+chmod +x /usr/local/bin/btpanel
+
 cat > /etc/systemd/system/btserver.service << 'SVCEOF'
 [Unit]
 Description=BlackTunnel Server
@@ -400,3 +491,11 @@ systemctl restart xray btserver btpanel
 systemctl status xray --no-pager
 systemctl status btserver --no-pager
 systemctl status btpanel --no-pager
+
+echo ""
+echo "Listo. Puedes gestionar con el comando global: btpanel"
+echo "Ejemplos:"
+echo "  btpanel menu"
+echo "  btpanel add <client_id> <dias>"
+echo "  btpanel list"
+echo "  btpanel web"
