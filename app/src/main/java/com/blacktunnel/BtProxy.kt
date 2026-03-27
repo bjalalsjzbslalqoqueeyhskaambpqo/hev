@@ -19,6 +19,7 @@ object BtProxy {
     private const val XRAY_SOCKS5_PORT = 10808
     private const val TUNNEL_LOCAL_PORT = 10809
     private const val TEST_UUID = "a3482e88-686a-4a58-8126-99c9df64b7bf"
+    private val HTTP_STATUS_REGEX = Regex("HTTP/1\\.1\\s+\\d{3}")
 
     @Volatile private var xrayProcess: Process? = null
     @Volatile private var running = false
@@ -90,8 +91,10 @@ object BtProxy {
                     val n = inp.read(tmp)
                     if (n <= 0) break
                     raw.write(tmp, 0, n)
-                    blocks = raw.toString().split("\r\n\r\n").size - 1
-                    if (blocks >= 2) break
+                    val rawText = raw.toString()
+                    blocks = rawText.split("\r\n\r\n").size - 1
+                    val httpBlocks = HTTP_STATUS_REGEX.findAll(rawText).count()
+                    if (blocks >= 2 || (httpBlocks >= 2 && rawText.contains("X-Auth-State", ignoreCase = true))) break
                 } catch (_: java.net.SocketTimeoutException) {
                     break
                 }
@@ -438,11 +441,7 @@ object BtProxy {
     )
 
     private fun parseTunnelHandshake(response: String): HandshakeResult? {
-        val candidates = response
-            .split("\r\n\r\n")
-            .map { it.trim() }
-            .filter { it.startsWith("HTTP/1.1", ignoreCase = true) }
-            .map { parseHandshakeBlock(it) }
+        val candidates = extractHttpBlocks(response).map { parseHandshakeBlock(it) }
 
         if (candidates.isEmpty()) {
             return null
@@ -457,6 +456,24 @@ object BtProxy {
         } ?: candidates.lastOrNull {
             it.statusCode == 101
         } ?: candidates.lastOrNull()
+    }
+
+    private fun extractHttpBlocks(response: String): List<String> {
+        val normalized = response.replace("\u0000", "")
+        val regexBlocks = Regex("HTTP/1\\.1\\s+\\d{3}[\\s\\S]*?(?=HTTP/1\\.1\\s+\\d{3}|$)")
+            .findAll(normalized)
+            .map { it.value.trim() }
+            .filter { it.isNotBlank() }
+            .toList()
+
+        if (regexBlocks.isNotEmpty()) {
+            return regexBlocks
+        }
+
+        return normalized
+            .split("\r\n\r\n")
+            .map { it.trim() }
+            .filter { it.startsWith("HTTP/1.1", ignoreCase = true) }
     }
 
     private fun parseHandshakeBlock(block: String): HandshakeResult {
