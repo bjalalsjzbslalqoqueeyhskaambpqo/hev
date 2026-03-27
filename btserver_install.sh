@@ -61,18 +61,21 @@ def save_db(db):
 def ensure_client(db, client_id):
     current = db.get(client_id)
     now = int(time.time())
-    if current:
-        expires_at = int(current.get("expires_at", 0))
-        days_left = max(0, (expires_at - now + 86399) // 86400)
-        return days_left > 0, days_left, expires_at
-    return False, 0, 0
+    if not current:
+        return "UNKNOWN", 0, 0
+    expires_at = int(current.get("expires_at", 0))
+    days_left = max(0, (expires_at - now + 86399) // 86400)
+    if days_left <= 0:
+        return "EXPIRED", 0, expires_at
+    return "VALID", days_left, expires_at
 
 
 def reject(sock, status, message):
     payload = (
         f"HTTP/1.1 {status}\r\n"
         "Connection: close\r\n"
-        f"X-Status: {message}\r\n\r\n"
+        f"X-Auth-State: {message}\r\n"
+        "X-Days-Left: 0\r\n\r\n"
     ).encode()
     try:
         sock.sendall(payload)
@@ -145,13 +148,13 @@ def handle(sock):
                 client_id = line.split(":", 1)[1].strip()
 
         if not client_id:
-            reject(sock, "403 Forbidden", "MISSING_CLIENT_ID")
+            reject(sock, "403 Forbidden", "INVALID")
             return
 
         db = load_db()
-        is_valid, days_left, expires_at = ensure_client(db, client_id)
-        if not is_valid:
-            reject(sock, "403 Forbidden", "CLIENT_EXPIRED_OR_UNKNOWN")
+        auth_state, days_left, expires_at = ensure_client(db, client_id)
+        if auth_state != "VALID":
+            reject(sock, "403 Forbidden", auth_state)
             return
 
         if action in ("tunnel", "tunnel-fast"):
@@ -159,22 +162,18 @@ def handle(sock):
                 b"HTTP/1.1 101 Switching Protocols\r\n"
                 b"Upgrade: websocket\r\n"
                 b"Connection: Upgrade\r\n"
-                b"X-Status: OK\r\n"
-                b"X-Premium: 1\r\n\r\n"
+                b"X-Auth-State: VALID\r\n"
+                + f"X-Days-Left: {days_left}\r\n\r\n".encode()
             )
             sock.settimeout(None)
             handle_tunnel(sock)
         elif action == "auth":
-            expire_text = time.strftime("%Y-%m-%d", time.gmtime(expires_at))
             response = (
                 b"HTTP/1.1 101 Switching Protocols\r\n"
                 b"Upgrade: websocket\r\n"
                 b"Connection: Upgrade\r\n"
-                b"X-Status: OK\r\n"
-                + f"X-Name: {client_id[:8]}\r\n".encode()
-                + f"X-Expire: {expire_text}\r\n".encode()
-                + f"X-Days-Left: {days_left}\r\n".encode()
-                + b"X-Premium: 1\r\n\r\n"
+                b"X-Auth-State: VALID\r\n"
+                + f"X-Days-Left: {days_left}\r\n\r\n".encode()
             )
             sock.sendall(response)
             sock.close()
@@ -261,6 +260,111 @@ if __name__ == "__main__":
 PYEOF
 chmod +x /opt/btserver/manage_client.py
 
+cat > /opt/btserver/panel.py << 'PYEOF'
+#!/usr/bin/env python3
+import html
+import json
+import time
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+DB_PATH = Path("/opt/btserver/clients.json")
+PORT = 8090
+
+
+def load_db():
+    if not DB_PATH.exists():
+        DB_PATH.write_text("{}")
+    try:
+        return json.loads(DB_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def save_db(db):
+    DB_PATH.write_text(json.dumps(db, indent=2, sort_keys=True))
+
+
+def add_days(client_id: str, days: int):
+    db = load_db()
+    now = int(time.time())
+    current = db.get(client_id, {})
+    expires_at = int(current.get("expires_at", now))
+    base = expires_at if expires_at > now else now
+    db[client_id] = {"expires_at": base + max(days, 0) * 86400}
+    save_db(db)
+
+
+def list_rows():
+    db = load_db()
+    now = int(time.time())
+    rows = []
+    for client_id, data in sorted(db.items()):
+        exp = int(data.get("expires_at", 0))
+        days_left = max(0, (exp - now + 86399) // 86400)
+        rows.append((client_id, days_left, exp))
+    return rows
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        rows = list_rows()
+        table = "".join(
+            f"<tr><td>{html.escape(cid)}</td><td>{days}</td><td>{exp}</td></tr>"
+            for cid, days, exp in rows
+        )
+        body = f"""
+        <html><body style="font-family:sans-serif;max-width:760px;margin:24px auto;">
+        <h2>BT Server Panel</h2>
+        <form method="POST" action="/add">
+            <label>ID cliente:</label><br/>
+            <input name="client_id" style="width:100%;padding:8px"/><br/><br/>
+            <label>Días a agregar:</label><br/>
+            <input name="days" value="30" type="number" min="0" style="width:100%;padding:8px"/><br/><br/>
+            <button type="submit">Guardar</button>
+        </form>
+        <h3>Clientes</h3>
+        <table border="1" cellpadding="6" cellspacing="0">
+            <tr><th>Client ID</th><th>Días restantes</th><th>Expires At (unix)</th></tr>
+            {table}
+        </table>
+        </body></html>
+        """
+        encoded = body.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def do_POST(self):
+        if self.path != "/add":
+            self.send_response(404)
+            self.end_headers()
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length).decode()
+        data = urllib.parse.parse_qs(raw)
+        client_id = data.get("client_id", [""])[0].strip()
+        days_raw = data.get("days", ["0"])[0].strip()
+        try:
+            days = int(days_raw)
+        except Exception:
+            days = 0
+        if client_id:
+            add_days(client_id, days)
+        self.send_response(303)
+        self.send_header("Location", "/")
+        self.end_headers()
+
+
+if __name__ == "__main__":
+    print(f"panel escuchando en :{PORT}")
+    HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+PYEOF
+chmod +x /opt/btserver/panel.py
+
 cat > /etc/systemd/system/btserver.service << 'SVCEOF'
 [Unit]
 Description=BlackTunnel Server
@@ -275,9 +379,24 @@ RestartSec=2
 WantedBy=multi-user.target
 SVCEOF
 
+cat > /etc/systemd/system/btpanel.service << 'SVCEOF'
+[Unit]
+Description=BlackTunnel Server Panel
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/btserver/panel.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
 systemctl daemon-reload
 systemctl daemon-reload
-systemctl enable xray btserver
-systemctl restart xray btserver
+systemctl enable xray btserver btpanel
+systemctl restart xray btserver btpanel
 systemctl status xray --no-pager
 systemctl status btserver --no-pager
+systemctl status btpanel --no-pager

@@ -30,6 +30,12 @@ object BtProxy {
     @Volatile private var tunnelRetries: Int = 4
     @Volatile private var currentClientId: String = ""
 
+    data class AccessCheckResult(
+        val isValid: Boolean,
+        val state: String,
+        val daysLeft: String
+    )
+
     fun start(
         ctx: Context,
         mux: Int,
@@ -51,6 +57,56 @@ object BtProxy {
         thread(isDaemon = true, name = "btproxy-init") {
             startTunnelBridge(protectSocket, logger)
             startXray(ctx, logger)
+        }
+    }
+
+    fun checkAccess(
+        clientId: String,
+        protectSocket: (Socket) -> Unit,
+        logger: (String) -> Unit
+    ): AccessCheckResult {
+        currentClientId = clientId.trim()
+        val authSocket = openProxySocket(protectSocket, logger) ?: return AccessCheckResult(
+            isValid = false,
+            state = "UNREACHABLE",
+            daysLeft = "0"
+        )
+        return runCatching {
+            authSocket.tcpNoDelay = true
+            val out = authSocket.getOutputStream()
+            val inp = authSocket.getInputStream()
+
+            val p1 = "GET / HTTP/1.1\r\nHost: $PROXY_HOST\r\n\r\n"
+            out.write(p1.toByteArray())
+            out.flush()
+            Thread.sleep(120)
+
+            val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\nAction: auth\r\nX-Client-ID: $currentClientId\r\n\r\n"
+            out.write(p2.toByteArray())
+            out.flush()
+
+            authSocket.soTimeout = 7000
+            val raw = ByteArrayOutputStream()
+            val tmp = ByteArray(4096)
+            while (true) {
+                val n = inp.read(tmp)
+                if (n <= 0) break
+                raw.write(tmp, 0, n)
+                if (raw.toString().contains("\r\n\r\n")) break
+            }
+            val response = raw.toString()
+            val handshake = parseTunnelHandshake(response)
+            val headers = handshake?.headers ?: emptyMap()
+            val state = (headers["x-auth-state"] ?: headers["x-status"] ?: "INVALID").uppercase()
+            val daysLeft = headers["x-days-left"] ?: "0"
+            val valid = handshake?.statusCode == 101 && state == "VALID"
+            logger("Auth check result code=${handshake?.statusCode ?: -1} state=$state days=$daysLeft")
+            AccessCheckResult(isValid = valid, state = state, daysLeft = daysLeft)
+        }.getOrElse {
+            logger("ERROR auth check: ${it.message}")
+            AccessCheckResult(isValid = false, state = "UNREACHABLE", daysLeft = "0")
+        }.also {
+            runCatching { authSocket.close() }
         }
     }
 
@@ -309,8 +365,15 @@ object BtProxy {
             logger("RX $blocks bloques: ${resp.take(100)}")
             val handshake = parseTunnelHandshake(resp)
             val headersForUi = handshake?.headers?.toMutableMap() ?: mutableMapOf()
+            val authState = headersForUi["x-auth-state"] ?: headersForUi["x-status"]
             if (headersForUi["x-status"].isNullOrBlank()) {
-                headersForUi["x-status"] = if (handshake?.statusCode == 101) "OK" else "OPEN"
+                headersForUi["x-status"] = authState ?: if (handshake?.statusCode == 101) "VALID" else "INVALID"
+            }
+            if (!authState.isNullOrBlank() && !authState.equals("VALID", ignoreCase = true)) {
+                logger("ERROR tunnel rechazado por servidor auth-state=$authState")
+                runCatching { sock.close() }
+                TunnelSessionStore.setState("ERROR")
+                return null
             }
             logger("Handshake tolerante code=${handshake?.statusCode ?: -1} x-status=${headersForUi["x-status"]}")
             TunnelSessionStore.updateFromHeaders(
@@ -319,7 +382,7 @@ object BtProxy {
                     "X-Name" to (headersForUi["x-name"] ?: "-"),
                     "X-Expire" to (headersForUi["x-expire"] ?: "-"),
                     "X-Days-Left" to (headersForUi["x-days-left"] ?: "-"),
-                    "X-Premium" to (headersForUi["x-premium"] ?: "-")
+                    "X-Premium" to "1"
                 )
             )
 
@@ -410,7 +473,7 @@ object BtProxy {
             it.statusCode == 101 && it.headers["upgrade"].equals("websocket", ignoreCase = true)
         } ?: candidates.lastOrNull {
             it.statusCode == 101
-        }
+        } ?: candidates.lastOrNull()
     }
 
     private fun parseHandshakeBlock(block: String): HandshakeResult {

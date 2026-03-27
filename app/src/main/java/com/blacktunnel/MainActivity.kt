@@ -1,7 +1,5 @@
 package com.blacktunnel
 
-import android.app.AlarmManager
-import android.app.PendingIntent
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
@@ -20,7 +18,6 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import com.google.android.material.button.MaterialButton
-import kotlin.system.exitProcess
 
 class MainActivity : AppCompatActivity() {
     private lateinit var toggleButton: MaterialButton
@@ -196,8 +193,20 @@ class MainActivity : AppCompatActivity() {
             else -> getString(R.string.state_disconnected)
         }
 
-        val isConnected = snapshot.state == "CONNECTING" || snapshot.state == "CONNECTED"
-        toggleButton.text = if (isConnected) getString(R.string.disconnect) else getString(R.string.connect)
+        when (snapshot.state) {
+            "CONNECTING" -> {
+                toggleButton.text = getString(R.string.connecting)
+                toggleButton.isEnabled = true
+            }
+            "CONNECTED" -> {
+                toggleButton.text = getString(R.string.disconnect)
+                toggleButton.isEnabled = true
+            }
+            else -> {
+                toggleButton.text = getString(R.string.connect)
+                toggleButton.isEnabled = true
+            }
+        }
 
         statusValue.text = getString(R.string.session_status) + ": " + snapshot.status
         val correctedLatency = if (snapshot.latencyMs >= 0) (snapshot.latencyMs - LATENCY_OFFSET_MS).coerceAtLeast(0) else -1
@@ -212,7 +221,8 @@ class MainActivity : AppCompatActivity() {
     private fun onToggle() {
         val current = TunnelSessionStore.current()
         if (current.state == "CONNECTING" || current.state == "CONNECTED") {
-            forceRestartAfterStop()
+            stopService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
+            startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
             return
         }
 
@@ -252,28 +262,6 @@ class MainActivity : AppCompatActivity() {
 
         val opened = intents.firstOrNull { runCatching { startActivity(it); true }.getOrDefault(false) }
         if (opened == null) Toast.makeText(this, getString(R.string.battery_settings_failed), Toast.LENGTH_SHORT).show()
-    }
-
-    private fun forceRestartAfterStop() {
-        stopService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
-        startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
-        TunnelSessionStore.reset()
-
-        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-        if (launchIntent != null) {
-            val pendingIntent = PendingIntent.getActivity(
-                this,
-                1122,
-                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK),
-                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
-            )
-            val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
-            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC, System.currentTimeMillis() + 350, pendingIntent)
-        }
-
-        finishAffinity()
-        android.os.Process.killProcess(android.os.Process.myPid())
-        exitProcess(0)
     }
 
     private fun getHotspotIp(): String? {
