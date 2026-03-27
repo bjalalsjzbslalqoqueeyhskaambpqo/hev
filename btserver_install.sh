@@ -131,12 +131,23 @@ def handle(sock):
     try:
         sock.settimeout(10)
         raw = b""
-        while b"\r\n\r\n" not in raw:
-            c = sock.recv(4096)
-            if not c:
-                return
-            raw += c
-            if len(raw) > 65536:
+        header_complete_at = None
+        while True:
+            try:
+                c = sock.recv(4096)
+                if not c:
+                    return
+                raw += c
+                if len(raw) > 65536:
+                    return
+                if b"\r\n\r\n" in raw and header_complete_at is None:
+                    header_complete_at = time.time()
+                    sock.settimeout(0.2)
+                if header_complete_at is not None and (time.time() - header_complete_at) > 0.12:
+                    break
+            except socket.timeout:
+                if b"\r\n\r\n" in raw:
+                    break
                 return
 
         action = ""

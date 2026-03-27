@@ -83,11 +83,18 @@ object BtProxy {
             authSocket.soTimeout = 7000
             val raw = ByteArrayOutputStream()
             val tmp = ByteArray(4096)
-            while (true) {
-                val n = inp.read(tmp)
-                if (n <= 0) break
-                raw.write(tmp, 0, n)
-                if (raw.toString().contains("\r\n\r\n")) break
+            val deadline = System.currentTimeMillis() + 7000
+            var blocks = 0
+            while (System.currentTimeMillis() < deadline) {
+                try {
+                    val n = inp.read(tmp)
+                    if (n <= 0) break
+                    raw.write(tmp, 0, n)
+                    blocks = raw.toString().split("\r\n\r\n").size - 1
+                    if (blocks >= 2) break
+                } catch (_: java.net.SocketTimeoutException) {
+                    break
+                }
             }
             val response = raw.toString()
             val handshake = parseTunnelHandshake(response)
@@ -442,6 +449,8 @@ object BtProxy {
         }
 
         return candidates.firstOrNull {
+            it.statusCode == 101 && it.headers["x-auth-state"].equals("VALID", ignoreCase = true)
+        } ?: candidates.firstOrNull {
             it.statusCode == 101 && it.headers["x-status"].isNullOrBlank().not()
         } ?: candidates.firstOrNull {
             it.statusCode == 101 && it.headers["upgrade"].equals("websocket", ignoreCase = true)
