@@ -7,7 +7,6 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.util.concurrent.Semaphore
 import kotlin.concurrent.thread
 
 object BtProxy {
@@ -24,10 +23,8 @@ object BtProxy {
     @Volatile private var xrayProcess: Process? = null
     @Volatile private var running = false
     @Volatile private var muxConcurrency: Int = 16
-    @Volatile private var xudpConcurrency: Int = 128
+    @Volatile private var xudpConcurrency: Int = 32
     @Volatile private var logLevel: String = "warning"
-    @Volatile private var tunnelSlots = Semaphore(256)
-    @Volatile private var tunnelRetries: Int = 4
     @Volatile private var currentClientId: String = ""
 
     data class AccessCheckResult(
@@ -46,12 +43,10 @@ object BtProxy {
     ) {
         running = true
         currentClientId = clientId.trim()
-        muxConcurrency = mux.coerceIn(1, 128)
-        xudpConcurrency = (muxConcurrency * 4).coerceIn(64, 1024)
+        muxConcurrency = mux.coerceIn(1, 64)
+        xudpConcurrency = (muxConcurrency * 2).coerceIn(16, 128)
         logLevel = if (profile.equals("performance", ignoreCase = true)) "none" else "warning"
-        tunnelSlots = Semaphore(256)
-        tunnelRetries = 4
-        logger("BtProxy.start() profile=$profile mux=$muxConcurrency xudp=$xudpConcurrency clientId=${currentClientId.take(8)}…")
+        logger("BtProxy.start() profile=$profile mux=$muxConcurrency xudp=$xudpConcurrency")
         TunnelSessionStore.setState("CONNECTING")
 
         thread(isDaemon = true, name = "btproxy-init") {
@@ -130,17 +125,14 @@ object BtProxy {
                     val client = srv.accept()
                     client.tcpNoDelay = true
                     thread(isDaemon = true, name = "bridge-conn") {
-                        tunnelSlots.acquire()
-                        val tunnel = openTunnelWithRetry(protectSocket, logger)
+                        val tunnel = openTunnel(protectSocket, logger)
                         if (tunnel == null) {
                             logger("ERROR no se pudo abrir túnel para conexión local")
                             runCatching { client.close() }
-                            tunnelSlots.release()
                             return@thread
                         }
                         logger("Túnel TCP abierto para bridge")
                         relay(client, tunnel)
-                        tunnelSlots.release()
                     }
                 }
             } catch (_: Exception) {
@@ -397,24 +389,6 @@ object BtProxy {
             null
         }
     }
-
-    private fun openTunnelWithRetry(
-        protectSocket: (Socket) -> Unit,
-        logger: (String) -> Unit
-    ): Socket? {
-        repeat(tunnelRetries) { attempt ->
-            val tunnel = openTunnel(protectSocket, logger)
-            if (tunnel != null) return tunnel
-            if (attempt < tunnelRetries - 1) {
-                val backoff = (250L * (attempt + 1)).coerceAtMost(1200L)
-                logger("Reintentando túnel (${attempt + 2}/$tunnelRetries) en ${backoff}ms")
-                Thread.sleep(backoff)
-            }
-        }
-        logger("ERROR túnel no disponible tras $tunnelRetries intentos")
-        return null
-    }
-
 
     private fun openProxySocket(
         protectSocket: (Socket) -> Unit,
