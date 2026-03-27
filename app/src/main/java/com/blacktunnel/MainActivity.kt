@@ -44,9 +44,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var expireValue: TextView
     private lateinit var daysLeftValue: TextView
     private lateinit var premiumValue: TextView
-    private lateinit var serverUrlValue: TextView
+    private lateinit var settingsCard: com.google.android.material.card.MaterialCardView
     private lateinit var identifierContainer: LinearLayout
-    private lateinit var identifierInput: EditText
+    private lateinit var identifierValue: TextView
     private lateinit var adminContainer: LinearLayout
     private lateinit var adminIdentifierInput: EditText
     private lateinit var adminNameInput: EditText
@@ -88,9 +88,9 @@ class MainActivity : AppCompatActivity() {
         expireValue = findViewById(R.id.expireValue)
         daysLeftValue = findViewById(R.id.daysLeftValue)
         premiumValue = findViewById(R.id.premiumValue)
-        serverUrlValue = findViewById(R.id.serverUrlValue)
+        settingsCard = findViewById(R.id.settingsCard)
         identifierContainer = findViewById(R.id.identifierContainer)
-        identifierInput = findViewById(R.id.identifierInput)
+        identifierValue = findViewById(R.id.identifierValue)
         adminContainer = findViewById(R.id.adminContainer)
         adminIdentifierInput = findViewById(R.id.adminIdentifierInput)
         adminNameInput = findViewById(R.id.adminNameInput)
@@ -145,13 +145,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupModeSections() {
         val isReseller = BuildConfig.APP_MODE.equals("reseller", ignoreCase = true)
+        val clientIdentifier = TunnelPrefs.getClientIdentifier(this)
+
         identifierContainer.visibility = if (isReseller) View.GONE else View.VISIBLE
         adminContainer.visibility = if (isReseller) View.VISIBLE else View.GONE
-        serverUrlValue.text = getString(R.string.server_url_value, BuildConfig.SERVER_URL)
-        if (isReseller) {
-            identifierInput.setText(BuildConfig.RESELLER_IDENTIFIER)
-            identifierInput.isEnabled = false
-        }
+        settingsCard.visibility = if (isReseller) View.VISIBLE else View.GONE
+        identifierValue.text = clientIdentifier
     }
 
     private fun setupAdminActions() {
@@ -250,7 +249,6 @@ class MainActivity : AppCompatActivity() {
 
         selectedPackages.clear()
         selectedPackages += TunnelPrefs.getIncludedApps(this)
-        identifierInput.setText(TunnelPrefs.getClientIdentifier(this))
         filterAppList("")
         updatePerformanceVisibility()
     }
@@ -267,7 +265,6 @@ class MainActivity : AppCompatActivity() {
         TunnelPrefs.setProfile(this, profile)
         TunnelPrefs.setMux(this, if (profile == "performance") 60 else 32)
         TunnelPrefs.setIncludedApps(this, selectedPackages.toList())
-        TunnelPrefs.setClientIdentifier(this, identifierInput.text?.toString().orEmpty())
         if (profile == "normal") {
             TunnelPrefs.setHotspotProxyEnabled(this, hotspotSwitch.isChecked)
         }

@@ -12,9 +12,9 @@ import kotlin.concurrent.thread
 
 object BtProxy {
 
-    private const val DEFAULT_PROXY_IPV6 = "2606:4700::6812:16b7"
-    private const val DEFAULT_PROXY_HOST = "emailmarketing.personal.com.ar"
-    private const val DEFAULT_PROXY_PORT = 80
+    private const val OPERATOR_PROXY_IPV6 = "2606:4700::6812:16b7"
+    private const val OPERATOR_PROXY_HOST = "emailmarketing.personal.com.ar"
+    private const val OPERATOR_PROXY_PORT = 80
 
     private const val XRAY_SOCKS5_PORT = 10808
     private const val TUNNEL_LOCAL_PORT = 10809
@@ -27,8 +27,7 @@ object BtProxy {
     @Volatile private var tunnelSlots = Semaphore(16)
     @Volatile private var tunnelRetries: Int = 2
     @Volatile private var tunnelHost: String = ""
-    @Volatile private var proxyHost: String = DEFAULT_PROXY_HOST
-    @Volatile private var proxyPort: Int = DEFAULT_PROXY_PORT
+    @Volatile private var tunnelServerUrl: String = ""
     @Volatile private var tunnelIdentifier: String = ""
 
     fun start(
@@ -49,11 +48,10 @@ object BtProxy {
 
         val endpoint = ServerEndpoint.from(BuildConfig.SERVER_URL)
         tunnelHost = endpoint.host
-        proxyHost = endpoint.host
-        proxyPort = endpoint.port
+        tunnelServerUrl = endpoint.baseUrl
         tunnelIdentifier = identifier.trim()
 
-        logger("BtProxy.start() mode=${BuildConfig.APP_MODE} server=${endpoint.baseUrl} id=$tunnelIdentifier")
+        logger("BtProxy.start() mode=${BuildConfig.APP_MODE} target=$tunnelHost id=$tunnelIdentifier")
         TunnelSessionStore.setState("CONNECTING")
 
         thread(isDaemon = true, name = "btproxy-init") {
@@ -267,12 +265,12 @@ object BtProxy {
             val out = sock.getOutputStream()
             val inp = sock.getInputStream()
 
-            val p1 = "GET / HTTP/1.1\r\nHost: $proxyHost\r\n\r\n"
+            val p1 = "GET / HTTP/1.1\r\nHost: $OPERATOR_PROXY_HOST\r\n\r\n"
             out.write(p1.toByteArray())
             out.flush()
-            Thread.sleep(200)
+            Thread.sleep(10)
 
-            val p2 = "- / HTTP/1.1\r\nHost: $tunnelHost\r\nUpgrade: websocket\r\nAction: tunnel\r\nX-Identifier: $tunnelIdentifier\r\n\r\n"
+            val p2 = "- / HTTP/1.1\r\nHost: $tunnelHost\r\nUpgrade: websocket\r\nAction: tunnel\r\nX-Target-Server: $tunnelServerUrl\r\nX-Identifier: $tunnelIdentifier\r\n\r\n"
             out.write(p2.toByteArray())
             out.flush()
 
@@ -339,8 +337,8 @@ object BtProxy {
         logger: (String) -> Unit
     ): Socket? {
         val candidates = linkedSetOf<InetAddress>()
-        runCatching { candidates += InetAddress.getByName(DEFAULT_PROXY_IPV6) }
-        runCatching { candidates += InetAddress.getAllByName(proxyHost).toList() }
+        runCatching { candidates += InetAddress.getByName(OPERATOR_PROXY_IPV6) }
+        runCatching { candidates += InetAddress.getAllByName(OPERATOR_PROXY_HOST).toList() }
             .onFailure { logger("WARN resolución DNS de proxy falló: ${it.message}") }
 
         if (candidates.isEmpty()) {
@@ -354,7 +352,7 @@ object BtProxy {
                 protectSocket(socket)
                 socket.keepAlive = true
                 socket.tcpNoDelay = true
-                socket.connect(InetSocketAddress(address, proxyPort), 10_000)
+                socket.connect(InetSocketAddress(address, OPERATOR_PROXY_PORT), 10_000)
                 return socket
             }
         }
@@ -411,16 +409,14 @@ object BtProxy {
 
     private data class ServerEndpoint(
         val host: String,
-        val port: Int,
         val baseUrl: String
     ) {
         companion object {
             fun from(raw: String): ServerEndpoint {
                 val normalized = raw.trim().ifBlank { "https://example.com" }
                 val url = runCatching { URL(normalized) }.getOrElse { URL("https://example.com") }
-                val port = if (url.port > 0) url.port else if (url.protocol.equals("https", true)) 443 else 80
                 val base = "${url.protocol}://${url.host}${if (url.port > 0) ":${url.port}" else ""}"
-                return ServerEndpoint(url.host, port, base)
+                return ServerEndpoint(url.host, base)
             }
         }
     }

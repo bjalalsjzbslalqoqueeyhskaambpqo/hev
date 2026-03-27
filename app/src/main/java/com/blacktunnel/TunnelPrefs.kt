@@ -62,15 +62,13 @@ object TunnelPrefs {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_BLOCK_NON_SELECTED, enabled).apply()
     }
 
-    fun getClientIdentifier(ctx: Context): String =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString(KEY_CLIENT_IDENTIFIER, BuildConfig.CLIENT_DEFAULT_IDENTIFIER)
-            ?.trim()
-            .orEmpty()
+    fun getClientIdentifier(ctx: Context): String {
+        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val existing = prefs.getString(KEY_CLIENT_IDENTIFIER, "")?.trim().orEmpty()
+        if (existing.isNotBlank()) return existing
 
-    fun setClientIdentifier(ctx: Context, identifier: String) {
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putString(KEY_CLIENT_IDENTIFIER, identifier.trim())
-            .apply()
+        val generated = java.util.UUID.randomUUID().toString()
+        prefs.edit().putString(KEY_CLIENT_IDENTIFIER, generated).apply()
+        return generated
     }
 }

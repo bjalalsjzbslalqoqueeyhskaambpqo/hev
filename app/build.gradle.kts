@@ -27,7 +27,6 @@ android {
         versionName = "0.1.0"
 
         buildConfigField("String", "SERVER_URL", "\"${prop("SERVER_URL", "https://example.com") }\"")
-        buildConfigField("String", "CLIENT_DEFAULT_IDENTIFIER", "\"${prop("CLIENT_DEFAULT_IDENTIFIER", "") }\"")
         buildConfigField("String", "RESELLER_IDENTIFIER", "\"${prop("RESELLER_IDENTIFIER", "") }\"")
         buildConfigField("String", "RESELLER_ADMIN_USER", "\"${prop("RESELLER_ADMIN_USER", "") }\"")
         buildConfigField("String", "RESELLER_ADMIN_PASS", "\"${prop("RESELLER_ADMIN_PASS", "") }\"")

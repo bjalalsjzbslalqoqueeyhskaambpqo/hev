@@ -28,9 +28,7 @@
     <string name="hotspot_info">Host: %1$s  Puerto: %2$d</string>
     <string name="hotspot_disabled">Hotspot proxy desactivado</string>
 
-    <string name="server_url_placeholder">Servidor fijo: -</string>
-    <string name="server_url_value">Servidor fijo: %1$s</string>
-    <string name="identifier_hint">Identificador del cliente</string>
+    <string name="identifier_label">Identificador</string>
 
     <string name="admin_title">Administración del revendedor</string>
     <string name="admin_identifier_hint">Identificador del cliente</string>
