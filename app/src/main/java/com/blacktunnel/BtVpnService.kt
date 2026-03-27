@@ -66,9 +66,9 @@ class BtVpnService : VpnService() {
                 mapOf(
                     "X-Status" to access.state,
                     "X-Days-Left" to access.daysLeft,
-                    "X-Name" to "-",
+                    "X-Name" to access.name,
                     "X-Expire" to "-",
-                    "X-Premium" to "1"
+                    "X-Premium" to "-"
                 )
             )
             if (!access.isValid) {

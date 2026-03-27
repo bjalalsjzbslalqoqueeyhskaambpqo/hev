@@ -62,12 +62,13 @@ def ensure_client(db, client_id):
     current = db.get(client_id)
     now = int(time.time())
     if not current:
-        return "UNKNOWN", 0, 0
+        return "UNKNOWN", 0, ""
     expires_at = int(current.get("expires_at", 0))
+    name = str(current.get("name", "")).strip() or "sin-nombre"
+    if now > expires_at:
+        return "EXPIRED", 0, name
     days_left = max(0, (expires_at - now + 86399) // 86400)
-    if days_left <= 0:
-        return "EXPIRED", 0, expires_at
-    return "VALID", days_left, expires_at
+    return "VALID", days_left, name
 
 
 def reject(sock, status, message):
@@ -163,7 +164,7 @@ def handle(sock):
             return
 
         db = load_db()
-        auth_state, days_left, expires_at = ensure_client(db, client_id)
+        auth_state, days_left, name = ensure_client(db, client_id)
         if auth_state != "VALID":
             reject(sock, "403 Forbidden", auth_state)
             return
@@ -174,6 +175,7 @@ def handle(sock):
                 b"Upgrade: websocket\r\n"
                 b"Connection: Upgrade\r\n"
                 b"X-Auth-State: VALID\r\n"
+                + f"X-Name: {name}\r\n".encode()
                 + f"X-Days-Left: {days_left}\r\n\r\n".encode()
             )
             sock.settimeout(None)
@@ -184,6 +186,7 @@ def handle(sock):
                 b"Upgrade: websocket\r\n"
                 b"Connection: Upgrade\r\n"
                 b"X-Auth-State: VALID\r\n"
+                + f"X-Name: {name}\r\n".encode()
                 + f"X-Days-Left: {days_left}\r\n\r\n".encode()
             )
             sock.sendall(response)
@@ -232,19 +235,61 @@ def save_db(db):
 
 def print_usage():
     print("Uso:")
-    print("  manage_client.py add <client_id> <days>")
+    print("  manage_client.py add <client_id> <days> [name]")
+    print("  manage_client.py name <client_id> <name>")
+    print("  manage_client.py rebind <name> <new_client_id>")
     print("  manage_client.py list")
 
 
-def add_days(client_id: str, days: int):
+def add_days(client_id: str, days: int, name: str = ""):
     db = load_db()
     now = int(time.time())
     current = db.get(client_id, {})
     expires_at = int(current.get("expires_at", now))
     base = expires_at if expires_at > now else now
-    db[client_id] = {"expires_at": base + days * 86400}
+    current_name = str(current.get("name", "")).strip()
+    target_name = name.strip() if name.strip() else (current_name or "sin-nombre")
+    db[client_id] = {"expires_at": base + days * 86400, "name": target_name}
     save_db(db)
-    print(f"OK client_id={client_id} days+={days} expires_at={db[client_id]['expires_at']}")
+    print(f"OK client_id={client_id} name={target_name} days+={days} expires_at={db[client_id]['expires_at']}")
+
+
+def set_name(client_id: str, name: str):
+    db = load_db()
+    current = db.get(client_id)
+    if not current:
+        print("ERROR client_id no existe")
+        raise SystemExit(1)
+    current["name"] = name.strip() or "sin-nombre"
+    db[client_id] = current
+    save_db(db)
+    print(f"OK client_id={client_id} name={db[client_id]['name']}")
+
+
+def rebind_by_name(name: str, new_client_id: str):
+    db = load_db()
+    target_name = name.strip()
+    if not target_name:
+        print("ERROR nombre vacío")
+        raise SystemExit(1)
+    source_id = None
+    source_data = None
+    for cid, data in db.items():
+        if str(data.get("name", "")).strip().lower() == target_name.lower():
+            source_id = cid
+            source_data = data
+            break
+    if source_data is None:
+        print("ERROR nombre no encontrado")
+        raise SystemExit(1)
+
+    db.pop(source_id, None)
+    db[new_client_id] = {
+        "expires_at": int(source_data.get("expires_at", int(time.time()))),
+        "name": str(source_data.get("name", "")).strip() or target_name,
+    }
+    save_db(db)
+    print(f"OK rebind name={target_name} old_id={source_id} new_id={new_client_id}")
 
 
 def list_clients():
@@ -253,7 +298,8 @@ def list_clients():
     for client_id, data in sorted(db.items()):
         exp = int(data.get("expires_at", 0))
         days_left = max(0, (exp - now + 86399) // 86400)
-        print(f"{client_id} days_left={days_left} expires_at={exp}")
+        name = str(data.get("name", "")).strip() or "sin-nombre"
+        print(f"{client_id} name={name} days_left={days_left} expires_at={exp}")
 
 
 if __name__ == "__main__":
@@ -261,8 +307,12 @@ if __name__ == "__main__":
         print_usage()
         raise SystemExit(1)
     cmd = sys.argv[1].lower()
-    if cmd == "add" and len(sys.argv) == 4:
-        add_days(sys.argv[2].strip(), int(sys.argv[3]))
+    if cmd == "add" and len(sys.argv) in (4, 5):
+        add_days(sys.argv[2].strip(), int(sys.argv[3]), sys.argv[4] if len(sys.argv) == 5 else "")
+    elif cmd == "name" and len(sys.argv) == 4:
+        set_name(sys.argv[2].strip(), sys.argv[3])
+    elif cmd == "rebind" and len(sys.argv) == 4:
+        rebind_by_name(sys.argv[2], sys.argv[3].strip())
     elif cmd == "list" and len(sys.argv) == 2:
         list_clients()
     else:
@@ -297,13 +347,15 @@ def save_db(db):
     DB_PATH.write_text(json.dumps(db, indent=2, sort_keys=True))
 
 
-def add_days(client_id: str, days: int):
+def add_days(client_id: str, days: int, name: str = ""):
     db = load_db()
     now = int(time.time())
     current = db.get(client_id, {})
     expires_at = int(current.get("expires_at", now))
     base = expires_at if expires_at > now else now
-    db[client_id] = {"expires_at": base + max(days, 0) * 86400}
+    current_name = str(current.get("name", "")).strip()
+    target_name = name.strip() if name.strip() else (current_name or "sin-nombre")
+    db[client_id] = {"expires_at": base + max(days, 0) * 86400, "name": target_name}
     save_db(db)
 
 
@@ -314,7 +366,8 @@ def list_rows():
     for client_id, data in sorted(db.items()):
         exp = int(data.get("expires_at", 0))
         days_left = max(0, (exp - now + 86399) // 86400)
-        rows.append((client_id, days_left, exp))
+        name = str(data.get("name", "")).strip() or "sin-nombre"
+        rows.append((client_id, name, days_left, exp))
     return rows
 
 
@@ -322,8 +375,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         rows = list_rows()
         table = "".join(
-            f"<tr><td>{html.escape(cid)}</td><td>{days}</td><td>{exp}</td></tr>"
-            for cid, days, exp in rows
+            f"<tr><td>{html.escape(cid)}</td><td>{html.escape(name)}</td><td>{days}</td><td>{exp}</td></tr>"
+            for cid, name, days, exp in rows
         )
         body = f"""
         <html><body style="font-family:sans-serif;max-width:760px;margin:24px auto;">
@@ -333,11 +386,13 @@ class Handler(BaseHTTPRequestHandler):
             <input name="client_id" style="width:100%;padding:8px"/><br/><br/>
             <label>Días a agregar:</label><br/>
             <input name="days" value="30" type="number" min="0" style="width:100%;padding:8px"/><br/><br/>
+            <label>Nombre:</label><br/>
+            <input name="name" placeholder="Juan" style="width:100%;padding:8px"/><br/><br/>
             <button type="submit">Guardar</button>
         </form>
         <h3>Clientes</h3>
         <table border="1" cellpadding="6" cellspacing="0">
-            <tr><th>Client ID</th><th>Días restantes</th><th>Expires At (unix)</th></tr>
+            <tr><th>Client ID</th><th>Nombre</th><th>Días restantes</th><th>Expires At (unix)</th></tr>
             {table}
         </table>
         </body></html>
@@ -359,12 +414,13 @@ class Handler(BaseHTTPRequestHandler):
         data = urllib.parse.parse_qs(raw)
         client_id = data.get("client_id", [""])[0].strip()
         days_raw = data.get("days", ["0"])[0].strip()
+        name = data.get("name", [""])[0].strip()
         try:
             days = int(days_raw)
         except Exception:
             days = 0
         if client_id:
-            add_days(client_id, days)
+            add_days(client_id, days, name)
         self.send_response(303)
         self.send_header("Location", "/")
         self.end_headers()
@@ -384,10 +440,12 @@ show_menu() {
   echo "==============================="
   echo "   BlackTunnel Admin Menu"
   echo "==============================="
-  echo "1) Agregar días a un client_id"
-  echo "2) Listar client_id"
-  echo "3) Ver estado servicios"
-  echo "4) Abrir panel web (URL)"
+  echo "1) Agregar días / crear client_id"
+  echo "2) Editar nombre de client_id"
+  echo "3) Reasignar por nombre (nuevo client_id)"
+  echo "4) Listar client_id"
+  echo "5) Ver estado servicios"
+  echo "6) Abrir panel web (URL)"
   echo "0) Salir"
   echo -n "Opción: "
 }
@@ -401,15 +459,31 @@ while true; do
       read -r client_id
       echo -n "Días a agregar: "
       read -r days
-      /usr/bin/python3 /opt/btserver/manage_client.py add "${client_id}" "${days}"
+      echo -n "Nombre (opcional): "
+      read -r name
+      /usr/bin/python3 /opt/btserver/manage_client.py add "${client_id}" "${days}" "${name}"
       ;;
     2)
-      /usr/bin/python3 /opt/btserver/manage_client.py list
+      echo -n "Client ID: "
+      read -r client_id
+      echo -n "Nuevo nombre: "
+      read -r name
+      /usr/bin/python3 /opt/btserver/manage_client.py name "${client_id}" "${name}"
       ;;
     3)
-      systemctl --no-pager status xray btserver btpanel || true
+      echo -n "Nombre actual: "
+      read -r name
+      echo -n "Nuevo Client ID: "
+      read -r client_id
+      /usr/bin/python3 /opt/btserver/manage_client.py rebind "${name}" "${client_id}"
       ;;
     4)
+      /usr/bin/python3 /opt/btserver/manage_client.py list
+      ;;
+    5)
+      systemctl --no-pager status xray btserver btpanel || true
+      ;;
+    6)
       ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
       if [[ -z "${ip:-}" ]]; then ip="TU_IP_SERVIDOR"; fi
       echo "Panel web: http://${ip}:8090"
@@ -439,6 +513,14 @@ case "$cmd" in
     shift
     exec /usr/bin/python3 /opt/btserver/manage_client.py add "$@"
     ;;
+  name)
+    shift
+    exec /usr/bin/python3 /opt/btserver/manage_client.py name "$@"
+    ;;
+  rebind)
+    shift
+    exec /usr/bin/python3 /opt/btserver/manage_client.py rebind "$@"
+    ;;
   list)
     exec /usr/bin/python3 /opt/btserver/manage_client.py list
     ;;
@@ -456,7 +538,9 @@ case "$cmd" in
   *)
     echo "Uso:"
     echo "  btpanel menu           # menú interactivo"
-    echo "  btpanel add <id> <d>   # agregar días"
+    echo "  btpanel add <id> <d> [nombre] # agregar días/crear"
+    echo "  btpanel name <id> <nombre>    # editar nombre"
+    echo "  btpanel rebind <nombre> <id>  # mover cuenta a nuevo id"
     echo "  btpanel list           # listar IDs"
     echo "  btpanel web            # mostrar URL panel web"
     echo "  btpanel restart        # reiniciar servicios"
@@ -507,6 +591,8 @@ echo ""
 echo "Listo. Puedes gestionar con el comando global: btpanel"
 echo "Ejemplos:"
 echo "  btpanel menu"
-echo "  btpanel add <client_id> <dias>"
+echo "  btpanel add <client_id> <dias> <nombre>"
+echo "  btpanel name <client_id> <nombre>"
+echo "  btpanel rebind <nombre> <nuevo_client_id>"
 echo "  btpanel list"
 echo "  btpanel web"

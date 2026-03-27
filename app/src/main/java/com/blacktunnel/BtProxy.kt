@@ -31,7 +31,8 @@ object BtProxy {
     data class AccessCheckResult(
         val isValid: Boolean,
         val state: String,
-        val daysLeft: String
+        val daysLeft: String,
+        val name: String
     )
 
     fun start(
@@ -65,7 +66,8 @@ object BtProxy {
         val authSocket = openProxySocket(protectSocket, logger) ?: return AccessCheckResult(
             isValid = false,
             state = "UNREACHABLE",
-            daysLeft = "0"
+            daysLeft = "0",
+            name = "-"
         )
         return runCatching {
             authSocket.tcpNoDelay = true
@@ -104,12 +106,13 @@ object BtProxy {
             val headers = handshake?.headers ?: emptyMap()
             val state = (headers["x-auth-state"] ?: headers["x-status"] ?: "INVALID").uppercase()
             val daysLeft = headers["x-days-left"] ?: "0"
+            val name = headers["x-name"] ?: "-"
             val valid = handshake?.statusCode == 101 && state == "VALID"
             logger("Auth check result code=${handshake?.statusCode ?: -1} state=$state days=$daysLeft")
-            AccessCheckResult(isValid = valid, state = state, daysLeft = daysLeft)
+            AccessCheckResult(isValid = valid, state = state, daysLeft = daysLeft, name = name)
         }.getOrElse {
             logger("ERROR auth check: ${it.message}")
-            AccessCheckResult(isValid = false, state = "UNREACHABLE", daysLeft = "0")
+            AccessCheckResult(isValid = false, state = "UNREACHABLE", daysLeft = "0", name = "-")
         }.also {
             runCatching { authSocket.close() }
         }

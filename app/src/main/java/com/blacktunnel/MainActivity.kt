@@ -38,9 +38,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusValue: TextView
     private lateinit var latencyValue: TextView
     private lateinit var nameValue: TextView
-    private lateinit var expireValue: TextView
     private lateinit var daysLeftValue: TextView
-    private lateinit var premiumValue: TextView
 
     private lateinit var clientId: String
     private val allApps = mutableListOf<Pair<String, String>>()
@@ -73,9 +71,7 @@ class MainActivity : AppCompatActivity() {
         statusValue = findViewById(R.id.statusValue)
         latencyValue = findViewById(R.id.latencyValue)
         nameValue = findViewById(R.id.nameValue)
-        expireValue = findViewById(R.id.expireValue)
         daysLeftValue = findViewById(R.id.daysLeftValue)
-        premiumValue = findViewById(R.id.premiumValue)
         clientId = TunnelPrefs.getOrCreateClientId(this)
         clientIdValue.text = clientId
 
@@ -212,9 +208,7 @@ class MainActivity : AppCompatActivity() {
         val correctedLatency = if (snapshot.latencyMs >= 0) (snapshot.latencyMs - LATENCY_OFFSET_MS).coerceAtLeast(0) else -1
         latencyValue.text = getString(R.string.latency_label) + ": " + if (correctedLatency >= 0) "${correctedLatency} ms" else "-"
         nameValue.text = getString(R.string.session_name) + ": " + snapshot.name
-        expireValue.text = getString(R.string.session_expire) + ": " + snapshot.expire
         daysLeftValue.text = getString(R.string.session_days_left) + ": " + snapshot.daysLeft
-        premiumValue.text = getString(R.string.session_premium) + ": " + snapshot.premium
         hotspotInfo.text = if (hotspotSwitch.isChecked) getString(R.string.hotspot_info, getHotspotIp() ?: "-", HOTSPOT_PORT) else getString(R.string.hotspot_disabled)
     }
 
