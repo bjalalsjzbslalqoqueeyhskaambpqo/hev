@@ -77,7 +77,7 @@ object BtProxy {
             val p1 = "GET / HTTP/1.1\r\nHost: $PROXY_HOST\r\n\r\n"
             out.write(p1.toByteArray())
             out.flush()
-            Thread.sleep(120)
+            Thread.sleep(5)
 
             val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\nAction: auth\r\nX-Client-ID: $currentClientId\r\n\r\n"
             out.write(p2.toByteArray())
@@ -243,8 +243,8 @@ object BtProxy {
                 "system": {
                   "udpTimeout": 600,
                   "connIdle": 600,
-                  "downlinkOnly": 10,
-                  "uplinkOnly": 10
+                  "downlinkOnly": 30,
+                  "uplinkOnly": 30
                 }
               },
               "inbounds": [
@@ -343,7 +343,7 @@ object BtProxy {
             out.write(p1.toByteArray())
             out.flush()
             logger("TX p1 host=$PROXY_HOST")
-            Thread.sleep(200)
+            Thread.sleep(5)
 
             val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\nAction: tunnel\r\nX-Client-ID: $currentClientId\r\n\r\n"
             out.write(p2.toByteArray())
