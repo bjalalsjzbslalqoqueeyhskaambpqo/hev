@@ -34,11 +34,54 @@ cat > /usr/local/etc/xray/config.json << 'EOF'
 EOF
 
 cat > /opt/btserver/btserver.py << 'PYEOF'
+import json
 import socket
 import threading
+import time
+from pathlib import Path
 
 PORT = 80
 XRAY_ADDR = ("127.0.0.1", 10809)
+DB_PATH = Path("/opt/btserver/clients.json")
+
+
+def load_db():
+    if not DB_PATH.exists():
+        DB_PATH.write_text("{}")
+    try:
+        return json.loads(DB_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def save_db(db):
+    DB_PATH.write_text(json.dumps(db, indent=2, sort_keys=True))
+
+
+def ensure_client(db, client_id):
+    current = db.get(client_id)
+    now = int(time.time())
+    if current:
+        expires_at = int(current.get("expires_at", 0))
+        days_left = max(0, (expires_at - now + 86399) // 86400)
+        return days_left > 0, days_left, expires_at
+    return False, 0, 0
+
+
+def reject(sock, status, message):
+    payload = (
+        f"HTTP/1.1 {status}\r\n"
+        "Connection: close\r\n"
+        f"X-Status: {message}\r\n\r\n"
+    ).encode()
+    try:
+        sock.sendall(payload)
+    except Exception:
+        pass
+    try:
+        sock.close()
+    except Exception:
+        pass
 
 
 def pipe(src, dst):
@@ -94,31 +137,46 @@ def handle(sock):
                 return
 
         action = ""
+        client_id = ""
         for line in raw.decode(errors="replace").splitlines():
             if line.lower().startswith("action:"):
                 action = line.split(":", 1)[1].strip().lower()
-                break
+            if line.lower().startswith("x-client-id:"):
+                client_id = line.split(":", 1)[1].strip()
+
+        if not client_id:
+            reject(sock, "403 Forbidden", "MISSING_CLIENT_ID")
+            return
+
+        db = load_db()
+        is_valid, days_left, expires_at = ensure_client(db, client_id)
+        if not is_valid:
+            reject(sock, "403 Forbidden", "CLIENT_EXPIRED_OR_UNKNOWN")
+            return
 
         if action in ("tunnel", "tunnel-fast"):
             sock.sendall(
                 b"HTTP/1.1 101 Switching Protocols\r\n"
                 b"Upgrade: websocket\r\n"
                 b"Connection: Upgrade\r\n"
-                b"X-Status: OK\r\n\r\n"
+                b"X-Status: OK\r\n"
+                b"X-Premium: 1\r\n\r\n"
             )
             sock.settimeout(None)
             handle_tunnel(sock)
         elif action == "auth":
-            sock.sendall(
+            expire_text = time.strftime("%Y-%m-%d", time.gmtime(expires_at))
+            response = (
                 b"HTTP/1.1 101 Switching Protocols\r\n"
                 b"Upgrade: websocket\r\n"
                 b"Connection: Upgrade\r\n"
                 b"X-Status: OK\r\n"
-                b"X-Name: test\r\n"
-                b"X-Expire: unlimited\r\n"
-                b"X-Days-Left: 0\r\n"
-                b"X-Premium: 1\r\n\r\n"
+                + f"X-Name: {client_id[:8]}\r\n".encode()
+                + f"X-Expire: {expire_text}\r\n".encode()
+                + f"X-Days-Left: {days_left}\r\n".encode()
+                + b"X-Premium: 1\r\n\r\n"
             )
+            sock.sendall(response)
             sock.close()
         else:
             sock.close()
@@ -138,6 +196,70 @@ while True:
     conn, _ = srv.accept()
     threading.Thread(target=handle, args=(conn,), daemon=True).start()
 PYEOF
+
+cat > /opt/btserver/manage_client.py << 'PYEOF'
+#!/usr/bin/env python3
+import json
+import sys
+import time
+from pathlib import Path
+
+DB_PATH = Path("/opt/btserver/clients.json")
+
+
+def load_db():
+    if not DB_PATH.exists():
+        DB_PATH.write_text("{}")
+    try:
+        return json.loads(DB_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def save_db(db):
+    DB_PATH.write_text(json.dumps(db, indent=2, sort_keys=True))
+
+
+def print_usage():
+    print("Uso:")
+    print("  manage_client.py add <client_id> <days>")
+    print("  manage_client.py list")
+
+
+def add_days(client_id: str, days: int):
+    db = load_db()
+    now = int(time.time())
+    current = db.get(client_id, {})
+    expires_at = int(current.get("expires_at", now))
+    base = expires_at if expires_at > now else now
+    db[client_id] = {"expires_at": base + days * 86400}
+    save_db(db)
+    print(f"OK client_id={client_id} days+={days} expires_at={db[client_id]['expires_at']}")
+
+
+def list_clients():
+    db = load_db()
+    now = int(time.time())
+    for client_id, data in sorted(db.items()):
+        exp = int(data.get("expires_at", 0))
+        days_left = max(0, (exp - now + 86399) // 86400)
+        print(f"{client_id} days_left={days_left} expires_at={exp}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print_usage()
+        raise SystemExit(1)
+    cmd = sys.argv[1].lower()
+    if cmd == "add" and len(sys.argv) == 4:
+        add_days(sys.argv[2].strip(), int(sys.argv[3]))
+    elif cmd == "list" and len(sys.argv) == 2:
+        list_clients()
+    else:
+        print_usage()
+        raise SystemExit(1)
+PYEOF
+chmod +x /opt/btserver/manage_client.py
 
 cat > /etc/systemd/system/btserver.service << 'SVCEOF'
 [Unit]

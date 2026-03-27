@@ -47,18 +47,27 @@
             android:layout_marginTop="8dp"
             android:orientation="horizontal">
 
-            <Spinner
-                android:id="@+id/serverSpinner"
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="8dp"
+                android:text="@string/client_id_label"
+                android:textColor="@color/text_secondary" />
+
+            <TextView
+                android:id="@+id/clientIdValue"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_weight="1" />
+                android:layout_weight="1"
+                android:textColor="@color/text_primary"
+                android:textIsSelectable="true" />
 
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/refreshServersButton"
+                android:id="@+id/copyClientIdButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
-                android:text="@string/refresh_servers"
+                android:text="@string/copy_client_id"
                 android:textAllCaps="false" />
         </LinearLayout>
         <com.google.android.material.button.MaterialButton

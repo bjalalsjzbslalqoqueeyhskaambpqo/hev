@@ -24,26 +24,28 @@ object BtProxy {
     @Volatile private var xrayProcess: Process? = null
     @Volatile private var running = false
     @Volatile private var muxConcurrency: Int = 16
-    @Volatile private var xudpConcurrency: Int = 32
+    @Volatile private var xudpConcurrency: Int = 128
     @Volatile private var logLevel: String = "warning"
-    @Volatile private var tunnelSlots = Semaphore(16)
-    @Volatile private var tunnelRetries: Int = 2
+    @Volatile private var tunnelSlots = Semaphore(256)
+    @Volatile private var tunnelRetries: Int = 4
+    @Volatile private var currentClientId: String = ""
 
     fun start(
         ctx: Context,
         mux: Int,
         profile: String,
+        clientId: String,
         protectSocket: (Socket) -> Unit,
         logger: (String) -> Unit
     ) {
         running = true
-        val isPerformance = profile.equals("performance", ignoreCase = true)
-        muxConcurrency = if (isPerformance) mux.coerceIn(48, 64) else mux.coerceIn(24, 42)
-        xudpConcurrency = if (isPerformance) 192 else 72
-        logLevel = if (isPerformance) "none" else "warning"
-        tunnelSlots = Semaphore(if (isPerformance) 120 else 56)
-        tunnelRetries = if (isPerformance) 6 else 3
-        logger("BtProxy.start() profile=$profile mux=$muxConcurrency xudp=$xudpConcurrency slots=${if (isPerformance) 120 else 56}")
+        currentClientId = clientId.trim()
+        muxConcurrency = mux.coerceIn(1, 128)
+        xudpConcurrency = (muxConcurrency * 4).coerceIn(64, 1024)
+        logLevel = if (profile.equals("performance", ignoreCase = true)) "none" else "warning"
+        tunnelSlots = Semaphore(256)
+        tunnelRetries = 4
+        logger("BtProxy.start() profile=$profile mux=$muxConcurrency xudp=$xudpConcurrency clientId=${currentClientId.take(8)}…")
         TunnelSessionStore.setState("CONNECTING")
 
         thread(isDaemon = true, name = "btproxy-init") {
@@ -282,10 +284,10 @@ object BtProxy {
             logger("TX p1 host=$PROXY_HOST")
             Thread.sleep(200)
 
-            val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\nAction: tunnel\r\n\r\n"
+            val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\nAction: tunnel\r\nX-Client-ID: $currentClientId\r\n\r\n"
             out.write(p2.toByteArray())
             out.flush()
-            logger("TX p2 host=$TUNNEL_HOST action=tunnel")
+            logger("TX p2 host=$TUNNEL_HOST action=tunnel client-id=${currentClientId.take(8)}…")
 
             sock.soTimeout = 8000
             val buf = ByteArrayOutputStream()
