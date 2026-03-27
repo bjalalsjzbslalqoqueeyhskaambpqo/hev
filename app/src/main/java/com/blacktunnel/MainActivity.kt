@@ -1,34 +1,30 @@
 package com.blacktunnel
 
-import android.app.AlarmManager
-import android.app.PendingIntent
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.net.VpnService
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
-import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.RadioButton
-import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import com.google.android.material.button.MaterialButton
-import kotlin.concurrent.thread
-import kotlin.system.exitProcess
 
 class MainActivity : AppCompatActivity() {
     private lateinit var toggleButton: MaterialButton
-    private lateinit var refreshServersButton: MaterialButton
+    private lateinit var copyClientIdButton: MaterialButton
     private lateinit var saveSettingsButton: MaterialButton
     private lateinit var batteryButton: MaterialButton
-    private lateinit var serverSpinner: Spinner
+    private lateinit var clientIdValue: TextView
     private lateinit var profileNormal: RadioButton
     private lateinit var profilePerformance: RadioButton
     private lateinit var normalContainer: LinearLayout
@@ -42,15 +38,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusValue: TextView
     private lateinit var latencyValue: TextView
     private lateinit var nameValue: TextView
-    private lateinit var expireValue: TextView
     private lateinit var daysLeftValue: TextView
-    private lateinit var premiumValue: TextView
 
+    private lateinit var clientId: String
     private val allApps = mutableListOf<Pair<String, String>>()
     private var filteredApps = listOf<Pair<String, String>>()
     private val selectedPackages = mutableSetOf<String>()
-    private var servers = mutableListOf<CentralServer>()
-    @Volatile private var isRefreshingServers = false
 
     private val sessionListener: (TunnelSessionSnapshot) -> Unit = { snapshot ->
         runOnUiThread { render(snapshot) }
@@ -61,10 +54,10 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         toggleButton = findViewById(R.id.toggleButton)
-        refreshServersButton = findViewById(R.id.refreshServersButton)
+        copyClientIdButton = findViewById(R.id.copyClientIdButton)
         saveSettingsButton = findViewById(R.id.saveSettingsButton)
         batteryButton = findViewById(R.id.batteryButton)
-        serverSpinner = findViewById(R.id.serverSpinner)
+        clientIdValue = findViewById(R.id.clientIdValue)
         profileNormal = findViewById(R.id.profileNormal)
         profilePerformance = findViewById(R.id.profilePerformance)
         normalContainer = findViewById(R.id.normalContainer)
@@ -78,9 +71,9 @@ class MainActivity : AppCompatActivity() {
         statusValue = findViewById(R.id.statusValue)
         latencyValue = findViewById(R.id.latencyValue)
         nameValue = findViewById(R.id.nameValue)
-        expireValue = findViewById(R.id.expireValue)
         daysLeftValue = findViewById(R.id.daysLeftValue)
-        premiumValue = findViewById(R.id.premiumValue)
+        clientId = TunnelPrefs.getOrCreateClientId(this)
+        clientIdValue.text = clientId
 
         appListView.choiceMode = ListView.CHOICE_MODE_MULTIPLE
         loadInstalledApps()
@@ -96,16 +89,8 @@ class MainActivity : AppCompatActivity() {
             filterAppList(appSearchInput.text?.toString().orEmpty())
         }
 
-        serverSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (servers.isEmpty()) return
-                servers.getOrNull(position)?.let { TunnelPrefs.setSelectedServer(this@MainActivity, it.host) }
-            }
-            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-        }
-
         toggleButton.setOnClickListener { onToggle() }
-        refreshServersButton.setOnClickListener { refreshServers(manual = true) }
+        copyClientIdButton.setOnClickListener { copyClientId() }
         saveSettingsButton.setOnClickListener { saveSettings(showToast = true) }
         batteryButton.setOnClickListener { openBatterySettings() }
         hotspotSwitch.setOnCheckedChangeListener { _, isChecked ->
@@ -118,7 +103,6 @@ class MainActivity : AppCompatActivity() {
             render(TunnelSessionStore.current())
         }
 
-        refreshServers(manual = false)
         render(TunnelSessionStore.current())
     }
 
@@ -145,47 +129,6 @@ class MainActivity : AppCompatActivity() {
         filterAppList("")
     }
 
-    private fun refreshServers(manual: Boolean) {
-        if (isRefreshingServers) return
-        isRefreshingServers = true
-        refreshServersButton.isEnabled = false
-        refreshServersButton.text = getString(R.string.refreshing_servers)
-
-        thread(isDaemon = true, name = "central-servers-fetch") {
-            val fetched = CentralServerDiscovery.fetchServers { LogStore.add(it) }
-            val cached = TunnelPrefs.getCentralServers(this).mapNotNull { decodeServer(it) }
-            val mergedMap = linkedMapOf<String, CentralServer>()
-            (fetched + cached).forEach { mergedMap[it.host] = it }
-            val merged = mergedMap.values.toList()
-            TunnelPrefs.setCentralServers(this, merged.map { encodeServer(it) })
-
-            runOnUiThread {
-                updateServerSpinner(merged)
-                refreshServersButton.isEnabled = true
-                refreshServersButton.text = getString(R.string.refresh_servers)
-                isRefreshingServers = false
-                if (manual) Toast.makeText(this, getString(R.string.servers_updated), Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
-    private fun updateServerSpinner(newServers: List<CentralServer>) {
-        servers = newServers.toMutableList()
-        val labels = if (servers.isEmpty()) {
-            listOf(getString(R.string.no_servers))
-        } else {
-            servers.map { "Server #${it.id} • ${it.region} • ${it.status}" }
-        }
-        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, labels)
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        serverSpinner.adapter = adapter
-        serverSpinner.isEnabled = servers.isNotEmpty()
-
-        val selected = TunnelPrefs.getSelectedServer(this)
-        val index = servers.indexOfFirst { it.host == selected }.takeIf { it >= 0 } ?: 0
-        serverSpinner.setSelection(index)
-    }
-
     private fun filterAppList(query: String) {
         val baseList = if (query.isBlank()) allApps else allApps.filter {
             it.first.contains(query, true) || it.second.contains(query, true)
@@ -209,10 +152,14 @@ class MainActivity : AppCompatActivity() {
 
         selectedPackages.clear()
         selectedPackages += TunnelPrefs.getIncludedApps(this)
-        val cached = TunnelPrefs.getCentralServers(this).mapNotNull { decodeServer(it) }
-        updateServerSpinner(cached)
         filterAppList("")
         updatePerformanceVisibility()
+    }
+
+    private fun copyClientId() {
+        val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("client_id", clientId))
+        Toast.makeText(this, getString(R.string.client_id_copied), Toast.LENGTH_SHORT).show()
     }
 
     private fun updatePerformanceVisibility() {
@@ -242,23 +189,34 @@ class MainActivity : AppCompatActivity() {
             else -> getString(R.string.state_disconnected)
         }
 
-        val isConnected = snapshot.state == "CONNECTING" || snapshot.state == "CONNECTED"
-        toggleButton.text = if (isConnected) getString(R.string.disconnect) else getString(R.string.connect)
+        when (snapshot.state) {
+            "CONNECTING" -> {
+                toggleButton.text = getString(R.string.connecting)
+                toggleButton.isEnabled = true
+            }
+            "CONNECTED" -> {
+                toggleButton.text = getString(R.string.disconnect)
+                toggleButton.isEnabled = true
+            }
+            else -> {
+                toggleButton.text = getString(R.string.connect)
+                toggleButton.isEnabled = true
+            }
+        }
 
         statusValue.text = getString(R.string.session_status) + ": " + snapshot.status
         val correctedLatency = if (snapshot.latencyMs >= 0) (snapshot.latencyMs - LATENCY_OFFSET_MS).coerceAtLeast(0) else -1
         latencyValue.text = getString(R.string.latency_label) + ": " + if (correctedLatency >= 0) "${correctedLatency} ms" else "-"
         nameValue.text = getString(R.string.session_name) + ": " + snapshot.name
-        expireValue.text = getString(R.string.session_expire) + ": " + snapshot.expire
         daysLeftValue.text = getString(R.string.session_days_left) + ": " + snapshot.daysLeft
-        premiumValue.text = getString(R.string.session_premium) + ": " + snapshot.premium
         hotspotInfo.text = if (hotspotSwitch.isChecked) getString(R.string.hotspot_info, getHotspotIp() ?: "-", HOTSPOT_PORT) else getString(R.string.hotspot_disabled)
     }
 
     private fun onToggle() {
         val current = TunnelSessionStore.current()
         if (current.state == "CONNECTING" || current.state == "CONNECTED") {
-            forceRestartAfterStop()
+            stopService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
+            startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
             return
         }
 
@@ -300,28 +258,6 @@ class MainActivity : AppCompatActivity() {
         if (opened == null) Toast.makeText(this, getString(R.string.battery_settings_failed), Toast.LENGTH_SHORT).show()
     }
 
-    private fun forceRestartAfterStop() {
-        stopService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
-        startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
-        TunnelSessionStore.reset()
-
-        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-        if (launchIntent != null) {
-            val pendingIntent = PendingIntent.getActivity(
-                this,
-                1122,
-                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK),
-                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
-            )
-            val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
-            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC, System.currentTimeMillis() + 350, pendingIntent)
-        }
-
-        finishAffinity()
-        android.os.Process.killProcess(android.os.Process.myPid())
-        exitProcess(0)
-    }
-
     private fun getHotspotIp(): String? {
         return runCatching {
             val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
@@ -342,25 +278,6 @@ class MainActivity : AppCompatActivity() {
                     !ip.startsWith("127.")
             }?.second ?: candidates.firstOrNull()?.second
         }.getOrNull()
-    }
-
-    private fun encodeServer(server: CentralServer): String =
-        listOf(server.id, server.host, server.region, server.status).joinToString("|")
-
-    private fun decodeServer(raw: String): CentralServer? {
-        val parts = raw.split("|")
-        return when {
-            parts.size >= 4 -> {
-                val id = parts[0].trim().ifBlank { "?" }
-                val host = parts[1].trim()
-                if (host.isBlank()) null else CentralServer(id, host, parts[2].trim().ifBlank { "N/A" }, parts[3].trim().ifBlank { "unknown" })
-            }
-            parts.size == 1 -> {
-                val host = parts[0].trim()
-                if (host.isBlank()) null else CentralServer(host.substringBefore('.').ifBlank { "?" }, host, "N/A", "unknown")
-            }
-            else -> null
-        }
     }
 
     companion object {

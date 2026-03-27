@@ -7,9 +7,7 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.system.OsConstants
-import android.util.Log
 import androidx.core.app.NotificationCompat
-import java.io.File
 import kotlin.concurrent.thread
 
 class BtVpnService : VpnService() {
@@ -31,106 +29,107 @@ class BtVpnService : VpnService() {
     }
 
     private fun installCrashHandler() {
-        Thread.setDefaultUncaughtExceptionHandler { crashThread, throwable ->
-            LogStore.add("CRASH en $crashThread: ${throwable.message}")
-            Log.e("BlackTunnel", "CRASH", throwable)
-            runCatching {
-                val dir = getExternalFilesDir(null) ?: return@runCatching
-                val logFile = File(dir, "crash.log")
-                logFile.appendText("${System.currentTimeMillis()} CRASH: ${throwable.stackTraceToString()}\n")
-            }
-        }
+        Thread.setDefaultUncaughtExceptionHandler { _, _ -> }
     }
 
     private fun startTunnel() {
         if (pfd != null) {
-            LogStore.add("VPN already running")
+            LogStore.add("VPN already running, ignoring duplicated start")
             TunnelSessionStore.setState("CONNECTED")
             return
         }
 
         TunnelSessionStore.setState("CONNECTING")
         startVpnForeground()
-        val mtu = TunnelPrefs.getMtu(this).coerceIn(1200, 9000)
-        val mux = TunnelPrefs.getMux(this).coerceIn(1, 64)
-        val profile = TunnelPrefs.getProfile(this)
-        BtProxy.start(
-            ctx = this,
-            mux = mux,
-            profile = profile,
-            protectSocket = { socket -> protect(socket) },
-            logger = { LogStore.add(it) }
-        )
-        thread(isDaemon = true, name = "proxy-ready-check") {
-            val deadline = System.currentTimeMillis() + 5000
-            var proxyReady = false
-            while (System.currentTimeMillis() < deadline) {
-                try {
-                    java.net.Socket("127.0.0.1", 10808).close()
-                    proxyReady = true
-                    LogStore.add("BtProxy listo en 10808")
-                    break
-                } catch (_: Exception) {
-                    Thread.sleep(100)
+        thread(isDaemon = true, name = "vpn-start-sequence") {
+            val mtu = 1300
+            val mux = TunnelPrefs.getMux(this).coerceIn(1, 64)
+            val profile = TunnelPrefs.getProfile(this)
+            val clientId = TunnelPrefs.getOrCreateClientId(this)
+
+            val access = BtProxy.checkAccess(
+                clientId = clientId,
+                protectSocket = { socket -> protect(socket) },
+                logger = { LogStore.add(it) }
+            )
+            TunnelSessionStore.updateFromHeaders(
+                mapOf(
+                    "X-Status" to access.state,
+                    "X-Days-Left" to access.daysLeft,
+                    "X-Name" to access.name,
+                    "X-Expire" to "-",
+                    "X-Premium" to "-"
+                )
+            )
+            if (!access.isValid) {
+                LogStore.add("Acceso no válido state=${access.state}")
+                TunnelSessionStore.setState("ERROR")
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return@thread
+            }
+
+            BtProxy.start(
+                ctx = this,
+                mux = mux,
+                profile = profile,
+                clientId = clientId,
+                protectSocket = { socket -> protect(socket) },
+                logger = { LogStore.add(it) }
+            )
+            val builder = Builder()
+                .setSession("BlackTunnel")
+                .addAddress("198.18.0.1", 30)
+                .addAddress("fc00::1", 126)
+                .addRoute("0.0.0.0", 0)
+                .addRoute("::", 0)
+                .addDnsServer("8.8.8.8")
+                .addDnsServer("1.1.1.1")
+                .addDnsServer("2001:4860:4860::8888")
+                .addDnsServer("2606:4700:4700::1111")
+                .setMtu(mtu)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                builder.allowFamily(OsConstants.AF_INET)
+                builder.allowFamily(OsConstants.AF_INET6)
+            }
+
+            configureAllowedApplications(builder)
+
+            val established = runCatching { builder.establish() }.getOrElse {
+                LogStore.add("VPN establish failed: ${it.message}")
+                TunnelSessionStore.setState("ERROR")
+                BtProxy.stop()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return@thread
+            }
+
+            if (established == null) {
+                LogStore.add("VPN establish returned null")
+                TunnelSessionStore.setState("ERROR")
+                BtProxy.stop()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return@thread
+            }
+
+            pfd = established
+            val rawFd = ParcelFileDescriptor.dup(established.fileDescriptor).detachFd()
+            LogStore.add("TUN established fd=$rawFd")
+
+            val configFile = writeHevConfig()
+            thread(isDaemon = true, name = "hev-main") {
+                val result = runCatching { HevBridge.start(configFile.absolutePath, rawFd) }.getOrElse {
+                    LogStore.add("HEV crashed: ${it.message}")
+                    TunnelSessionStore.setState("ERROR")
+                    -1
+                }
+                LogStore.add("HEV terminó con code=$result")
+                if (result != 0) {
+                    TunnelSessionStore.setState("ERROR")
                 }
             }
-            if (!proxyReady) {
-                LogStore.add("WARN BtProxy no respondió en 5s, continuando igual")
-            }
         }
-
-        val builder = Builder()
-            .setSession("BlackTunnel")
-            .addAddress("198.18.0.1", 30)
-            .addAddress("fc00::1", 126)
-            .addRoute("0.0.0.0", 0)
-            .addRoute("::", 0)
-            .addDnsServer("8.8.8.8")
-            .addDnsServer("1.1.1.1")
-            .addDnsServer("2001:4860:4860::8888")
-            .addDnsServer("2606:4700:4700::1111")
-            .setMtu(mtu)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            builder.allowFamily(OsConstants.AF_INET)
-            builder.allowFamily(OsConstants.AF_INET6)
-        }
-
-        configureAllowedApplications(builder)
-
-        val established = runCatching { builder.establish() }.getOrElse {
-            LogStore.add("VPN establish failed: ${it.message}")
-            TunnelSessionStore.setState("ERROR")
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-            return
-        }
-
-        if (established == null) {
-            LogStore.add("VPN establish returned null")
-            TunnelSessionStore.setState("ERROR")
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-            return
-        }
-
-        pfd = established
-        TunnelSessionStore.setState("CONNECTED")
-        val rawFd = established.detachFd()
-        LogStore.add("TUN established fd=$rawFd")
-
-        val configFile = writeHevConfig()
-        thread(isDaemon = true, name = "hev-main") {
-            val result = runCatching { HevBridge.start(configFile.absolutePath, rawFd) }.getOrElse {
-                LogStore.add("HEV crashed: ${it.message}")
-                TunnelSessionStore.setState("ERROR")
-                -1
-            }
-            LogStore.add("HEV terminó con code=$result")
-            if (result != 0) {
-                TunnelSessionStore.setState("ERROR")
-            }
-        }
-
     }
 
     private fun startVpnForeground() {
@@ -154,19 +153,18 @@ class BtVpnService : VpnService() {
     }
 
     private fun stopTunnel() {
+        runCatching { HevBridge.stop() }
+        BtProxy.stop()
         if (pfd == null) {
             TunnelSessionStore.setState("DISCONNECTED")
-            BtProxy.stop()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
         }
         LogStore.add("Stopping VPN/HEV")
-        runCatching { HevBridge.stop() }
         runCatching { pfd?.close() }
         pfd = null
         TunnelSessionStore.setState("DISCONNECTED")
-        BtProxy.stop()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -213,7 +211,7 @@ class BtVpnService : VpnService() {
         val yaml = """
             tunnel:
               name: trehev
-              mtu: ${TunnelPrefs.getMtu(this).coerceIn(1200, 9000)}
+              mtu: 1300
               ipv4: 198.18.0.1
               ipv6: fc00::1
             socks5:
