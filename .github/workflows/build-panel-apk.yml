@@ -1,0 +1,75 @@
+name: Build Panel APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'PANEL_CONFIG.txt'
+      - 'SELLER_CODE.txt'
+      - 'app/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+      - '.github/workflows/build-panel-apk.yml'
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Generate random release keystore
+        run: |
+          KEYSTORE_PATH="$RUNNER_TEMP/bt-release-keystore.jks"
+          STORE_PASS="$(openssl rand -hex 20)"
+          KEY_PASS="$STORE_PASS"
+          KEY_ALIAS="btrelease"
+
+          keytool -genkeypair \
+            -v \
+            -keystore "$KEYSTORE_PATH" \
+            -storepass "$STORE_PASS" \
+            -keypass "$KEY_PASS" \
+            -storetype JKS \
+            -alias "$KEY_ALIAS" \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=BlackTunnel, OU=Mobile, O=BlackTunnel, L=NA, ST=NA, C=US"
+
+          echo "SIGNING_STORE_FILE=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+          echo "SIGNING_STORE_PASSWORD=$STORE_PASS" >> "$GITHUB_ENV"
+          echo "SIGNING_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "SIGNING_KEY_PASSWORD=$KEY_PASS" >> "$GITHUB_ENV"
+
+      - name: Build signed release APK (arm64 only)
+        env:
+          SIGNING_STORE_FILE: ${{ env.SIGNING_STORE_FILE }}
+          SIGNING_STORE_PASSWORD: ${{ env.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ env.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ env.SIGNING_KEY_PASSWORD }}
+        run: gradle :app:assembleRelease
+
+      - name: Package artifact
+        run: |
+          mkdir -p release-artifact
+          cp app/build/outputs/apk/release/*.apk release-artifact/
+          cd release-artifact
+          zip -9 -r blacktunnel-panel-arm64-release.zip .
+
+      - name: Upload release APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: blacktunnel-panel-arm64-release
+          path: release-artifact/blacktunnel-panel-arm64-release.zip
