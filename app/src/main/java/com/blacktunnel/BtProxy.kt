@@ -97,7 +97,7 @@ object BtProxy {
                     "X-Premium" to "1"
                 )
             )
-            handshake.statusCode == 101 && status.equals("VALID", ignoreCase = true)
+            status.equals("VALID", ignoreCase = true)
         }.getOrDefault(false).also {
             releaseSocket(authSocket)
             runCatching { authSocket.close() }
@@ -426,7 +426,12 @@ object BtProxy {
         val block = blocks.firstOrNull { it.contains("HTTP/1.1 101") && it.contains("X-Auth-State", ignoreCase = true) }
             ?: blocks.firstOrNull { it.contains("101") }
             ?: return null
-        val normalizedBlock = block.substring(block.indexOf("HTTP/1.1"))
+        val status101Index = block.indexOf("HTTP/1.1 101")
+        val normalizedBlock = if (status101Index >= 0) {
+            block.substring(status101Index)
+        } else {
+            block.substring(block.indexOf("HTTP/1.1"))
+        }
         return parseHandshakeBlock(normalizedBlock)
     }
 
