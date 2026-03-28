@@ -1,0 +1,48 @@
+name: Build Panel APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'PANEL_CONFIG.txt'
+      - 'SELLER_CODE.txt'
+      - 'app/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+      - '.github/workflows/build-panel-apk.yml'
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build release APK (arm64 only)
+        run: gradle :app:assembleRelease
+
+      - name: Package artifact
+        run: |
+          mkdir -p release-artifact
+          cp app/build/outputs/apk/release/*.apk release-artifact/
+          cd release-artifact
+          zip -9 -r blacktunnel-panel-arm64-release.zip .
+
+      - name: Upload release APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: blacktunnel-panel-arm64-release
+          path: release-artifact/blacktunnel-panel-arm64-release.zip
