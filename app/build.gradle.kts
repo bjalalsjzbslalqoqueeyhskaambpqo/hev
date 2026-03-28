@@ -3,6 +3,10 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val sellerCodeFile = rootProject.file("SELLER_CODE.txt")
+val sellerCodeRaw = if (sellerCodeFile.exists()) sellerCodeFile.readText().trim() else "DEMO-CODE"
+val sellerCodeEscaped = sellerCodeRaw.replace("\\", "\\\\").replace("\"", "\\\"")
+
 android {
     namespace = "com.blacktunnel.panel"
     compileSdk = 34
@@ -11,10 +15,10 @@ android {
         applicationId = "com.blacktunnel.panel"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "SELLER_CODE", "\"$sellerCodeEscaped\"")
     }
 
     buildTypes {
@@ -25,6 +29,10 @@ android {
                 "proguard-rules.pro"
             )
         }
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     compileOptions {

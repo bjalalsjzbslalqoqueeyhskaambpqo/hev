@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">BlackTunnel Panel</string>
+    <string name="build_code_value">Build code: %1$s</string>
 </resources>

@@ -1,16 +1,20 @@
 package com.blacktunnel.panel
 
+import android.animation.ObjectAnimator
 import android.graphics.Color
 import android.os.Bundle
 import android.text.InputType
+import android.view.HapticFeedbackConstants
 import android.view.View
-import android.widget.Button
+import android.view.animation.OvershootInterpolator
 import android.widget.EditText
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.snackbar.Snackbar
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -30,7 +34,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var daysInput: EditText
     private lateinit var statusText: TextView
     private lateinit var resultText: TextView
+    private lateinit var buildCodeText: TextView
     private lateinit var progress: ProgressBar
+    private lateinit var rootView: View
 
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
 
@@ -38,6 +44,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        rootView = findViewById(R.id.rootLayout)
         baseUrlInput = findViewById(R.id.inputBaseUrl)
         tokenInput = findViewById(R.id.inputToken)
         clientIdInput = findViewById(R.id.inputClientId)
@@ -45,17 +52,42 @@ class MainActivity : AppCompatActivity() {
         daysInput = findViewById(R.id.inputDays)
         statusText = findViewById(R.id.textStatus)
         resultText = findViewById(R.id.textResult)
+        buildCodeText = findViewById(R.id.textBuildCode)
         progress = findViewById(R.id.progress)
 
-        findViewById<Button>(R.id.btnSaveConfig).setOnClickListener { saveConfig() }
-        findViewById<Button>(R.id.btnCheck).setOnClickListener { checkConnection() }
-        findViewById<Button>(R.id.btnList).setOnClickListener { listClients() }
-        findViewById<Button>(R.id.btnCreate).setOnClickListener { createClient() }
-        findViewById<Button>(R.id.btnAddDays).setOnClickListener { addDaysToClient() }
-        findViewById<Button>(R.id.btnDelete).setOnClickListener { deleteClient() }
-        findViewById<Button>(R.id.btnToggleToken).setOnClickListener { toggleTokenVisibility() }
+        bindAction(R.id.btnSaveConfig) { saveConfig() }
+        bindAction(R.id.btnCheck) { checkConnection() }
+        bindAction(R.id.btnList) { listClients() }
+        bindAction(R.id.btnCreate) { createClient() }
+        bindAction(R.id.btnAddDays) { addDaysToClient() }
+        bindAction(R.id.btnDelete) { deleteClient() }
+        bindAction(R.id.btnToggleToken) { toggleTokenVisibility() }
 
         loadConfig()
+        buildCodeText.text = getString(R.string.build_code_value, BuildConfig.SELLER_CODE)
+        animateHeader()
+    }
+
+    private fun bindAction(buttonId: Int, action: () -> Unit) {
+        val btn = findViewById<MaterialButton>(buttonId)
+        btn.setOnClickListener {
+            it.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            animatePress(it)
+            action()
+        }
+    }
+
+    private fun animatePress(view: View) {
+        view.animate().scaleX(0.96f).scaleY(0.96f).setDuration(70).withEndAction {
+            view.animate().scaleX(1f).scaleY(1f).setDuration(120).setInterpolator(OvershootInterpolator()).start()
+        }.start()
+    }
+
+    private fun animateHeader() {
+        ObjectAnimator.ofFloat(findViewById(R.id.headerCard), "alpha", 0f, 1f).apply {
+            duration = 500
+            start()
+        }
     }
 
     private fun prefs() = EncryptedSharedPreferences.create(
@@ -88,6 +120,7 @@ class MainActivity : AppCompatActivity() {
             InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
         tokenInput.setSelection(tokenInput.text.length)
+        showToast(if (hidden) "Token visible temporalmente" else "Token oculto")
     }
 
     private fun checkConnection() {
@@ -223,7 +256,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun showStatus(message: String, ok: Boolean) {
         statusText.text = message
-        statusText.setTextColor(if (ok) Color.parseColor("#0D7A30") else Color.parseColor("#B00020"))
+        statusText.setTextColor(if (ok) Color.parseColor("#2E7D32") else Color.parseColor("#C62828"))
+        showToast(message)
+    }
+
+    private fun showToast(message: String) {
+        val bar = Snackbar.make(rootView, message, Snackbar.LENGTH_SHORT)
+        bar.setBackgroundTint(Color.parseColor("#1B1B1F"))
+        bar.setTextColor(Color.WHITE)
+        bar.show()
     }
 
     private fun setLoading(loading: Boolean) {

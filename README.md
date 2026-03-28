@@ -1,43 +1,48 @@
-# BlackTunnel Panel APK (simple admin)
+# BlackTunnel Panel APK (admin visual)
 
-App Android súper simple para administrar tu `panel.py`:
+App Android para gestionar tu `panel.py` con mejor interfaz visual y flujo rápido de venta.
 
-- Guarda `BASE_URL` y `TOKEN` localmente (cifrado con `EncryptedSharedPreferences`).
-- No imprime ni expone el token en respuestas.
-- Menú admin básico con feedback visual:
+## Qué incluye
+
+- Configuración cifrada localmente (`BASE_URL` + `TOKEN`) con `EncryptedSharedPreferences`.
+- Token oculto por defecto (y toggle temporal para mostrar/ocultar).
+- Feedback visual de estado:
+  - Barra de carga.
+  - Snackbar de notificaciones.
+  - Botones con micro-animación.
+- Acciones directas:
   - Comprobar conexión.
   - Listar clientes.
-  - Crear/Reemplazar cliente.
+  - Crear/reemplazar cliente.
   - Agregar días.
   - Eliminar cliente.
 
-## Uso rápido
+## Archivo para “código de build”
 
-1. Instala tu servidor y copia estos datos del script:
-   - `BASE_URL = http://IP:8090`
-   - `TOKEN = <token_largo>`
-2. Abre la app.
-3. Pega URL + token.
-4. Pulsa **Guardar configuración** y luego **Comprobar conexión**.
+Se añadió el archivo raíz:
 
-## Endpoints usados
+- `SELLER_CODE.txt`
 
-La app consume exactamente estos endpoints del panel:
+Tú editas ese archivo (por ejemplo con un código de versión comercial), haces push, y el workflow vuelve a compilar APK automáticamente.
 
-- `GET /clients`
-- `POST /client/create`
-- `POST /client/update`
-- `POST /client/delete`
+Ese valor se inyecta al app en build time como `BuildConfig.SELLER_CODE` y se muestra en pantalla como referencia del build.
 
-Todos llevan header:
+## Build automático al detectar cambios
 
-- `X-Token: <token>`
+Workflow: `.github/workflows/build-panel-apk.yml`
 
-## Build APK en GitHub Actions
+Se dispara en `push` a `main` cuando cambia cualquiera de estos paths:
 
-Se agregó workflow `.github/workflows/build-panel-apk.yml`:
+- `SELLER_CODE.txt`
+- `app/**`
+- `build.gradle.kts`
+- `settings.gradle.kts`
+- `gradle.properties`
+- `.github/workflows/build-panel-apk.yml`
 
-- Trigger: push a `main` o manual `workflow_dispatch`.
-- Comando build: `gradle :app:assembleDebug`
-- Artifact: `blacktunnel-panel-debug-apk`
+Además puedes lanzarlo manualmente con `workflow_dispatch`.
+
+El artifact generado es:
+
+- `blacktunnel-panel-debug-apk`
 

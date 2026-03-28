@@ -5,6 +5,13 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'SELLER_CODE.txt'
+      - 'app/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+      - '.github/workflows/build-panel-apk.yml'
 
 jobs:
   build-apk:
