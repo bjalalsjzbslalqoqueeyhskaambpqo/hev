@@ -119,7 +119,6 @@ object BtProxy {
                 .directory(binary.parentFile ?: File(ctx.applicationInfo.nativeLibraryDir))
                 .redirectErrorStream(true)
                 .start()
-            // consumir output para no bloquear el proceso
             thread(isDaemon = true) {
                 runCatching { xrayProcess?.inputStream?.copyTo(java.io.OutputStream.nullOutputStream()) }
             }
@@ -215,7 +214,7 @@ object BtProxy {
             val out = socket.getOutputStream()
             val inp = socket.getInputStream()
 
-            // p1 señuelo — Personal AR lo consume
+            // p1 señuelo — Personal AR lo consume y responde
             val p1 = "GET / HTTP/1.1\r\nHost: $PROXY_HOST\r\n\r\n"
             // p2 túnel real — llega al servidor
             val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\n" +
@@ -227,20 +226,22 @@ object BtProxy {
             out.write(p2.toByteArray())
             out.flush()
 
-            // Leer hasta tener 2 bloques \r\n\r\n
+            // Leer todo lo que llega durante 8s buscando el bloque 101
             socket.soTimeout = 8000
-            val buf = StringBuilder()
-            while (buf.split("\r\n\r\n").size - 1 < 2) {
+            val raw = StringBuilder()
+            val deadline = System.currentTimeMillis() + 8000
+            while (System.currentTimeMillis() < deadline) {
                 try {
                     val tmp = ByteArray(4096)
                     val n = inp.read(tmp)
                     if (n < 0) break
-                    buf.append(String(tmp, 0, n))
+                    raw.append(String(tmp, 0, n))
+                    // Salir apenas tengamos el bloque 101 completo
+                    if (findHttpBlock(raw.toString(), 101) != null) break
                 } catch (_: java.net.SocketTimeoutException) { break }
             }
 
-            val response = buf.toString()
-            val handshake = parseTunnelHandshake(response)
+            val handshake = parseTunnelHandshake(raw.toString())
 
             if (handshake == null || handshake.statusCode != 101) {
                 runCatching { socket.close() }
@@ -297,18 +298,25 @@ object BtProxy {
         val headers: Map<String, String>
     )
 
-    private fun parseTunnelHandshake(response: String): HandshakeResult? {
-        val blocks = response.split("\r\n\r\n")
-            .filter { it.trimStart().startsWith("HTTP/1.1") }
-        val block = blocks.firstOrNull { it.contains("101") && it.contains("X-Auth-State", ignoreCase = true) }
-            ?: blocks.firstOrNull { it.contains("101") }
-            ?: return null
-        return parseHandshakeBlock(block)
+    // Encuentra el primer bloque HTTP con el statusCode dado dentro del raw
+    private fun findHttpBlock(raw: String, statusCode: Int): String? {
+        val marker = "HTTP/1.1 $statusCode"
+        val start = raw.indexOf(marker).takeIf { it >= 0 } ?: return null
+        // El bloque termina en \r\n\r\n
+        val end = raw.indexOf("\r\n\r\n", start).takeIf { it >= 0 } ?: return null
+        return raw.substring(start, end)
+    }
+
+    private fun parseTunnelHandshake(raw: String): HandshakeResult? {
+        // Buscar primero el bloque 101 con X-Auth-State
+        val block101 = findHttpBlock(raw, 101) ?: return null
+        return parseHandshakeBlock(block101)
     }
 
     private fun parseHandshakeBlock(block: String): HandshakeResult? {
         val lines = block.split("\r\n")
-        val statusCode = lines.firstOrNull()?.split(" ")?.getOrNull(1)?.toIntOrNull() ?: return null
+        val statusCode = lines.firstOrNull()
+            ?.split(" ")?.getOrNull(1)?.toIntOrNull() ?: return null
         val headers = lines.drop(1).mapNotNull { line ->
             val sep = line.indexOf(':')
             if (sep <= 0) return@mapNotNull null
