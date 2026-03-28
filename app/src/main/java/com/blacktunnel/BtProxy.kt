@@ -16,7 +16,7 @@ object BtProxy {
     private const val TUNNEL_HOST = "1.brawlpass.com.ar"
     private const val XRAY_SOCKS5_PORT = 10808
     private const val TUNNEL_LOCAL_PORT = 10809
-    private const val MUX_CONCURRENCY = 64
+    private const val MUX_CONCURRENCY = 8
     private const val XUDP_CONCURRENCY = 128
     private const val TEST_UUID = "a3482e88-686a-4a58-8126-99c9df64b7bf"
 
