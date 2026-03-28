@@ -1,34 +1,22 @@
 # ADM VPS (final)
 
-Aplicación Android de gestión (preconfigurable) con interfaz por secciones:
+Aplicación Android de gestión preconfigurada para usuarios finales.
 
-- Pestaña **Crear**: alta/edición rápida.
-- Pestaña **Listar**: buscador, filtros, orden, menú de acciones por cliente.
+## Sin configuración manual del usuario
 
-## Permisos y red
+- La app toma `BASE_URL` y `TOKEN` desde `PANEL_CONFIG.txt` en build.
+- El usuario final abre y usa el gestor directamente (crear/listar/gestionar).
 
-- Se habilitó tráfico HTTP claro para paneles sin TLS (`network_security_config` + `usesCleartextTraffic`).
-- Permisos de almacenamiento para exportar/importar JSON en Android compatible.
+## Interfaz
 
-## Configuración preinyectada
+- Pestaña **Crear**: crear cliente, sumar días, eliminar.
+- Pestaña **Listar**: buscar, filtrar, ordenar y menú de acciones por cliente.
 
-Edita `PANEL_CONFIG.txt`:
+## Red y permisos
 
-```txt
-<BASE_URL> <TOKEN>
-```
-
-La app arranca con esos datos inyectados en build.
-
-## Funciones
-
-- Buscar por ID/nombre.
-- Filtros: todos / vencen en 3 días / vencen en 7 días.
-- Orden por días.
-- Menú por cliente: editar, aumentar días, eliminar.
-- Importar / exportar JSON de clientes.
+- HTTP claro habilitado para panel sin TLS (`usesCleartextTraffic` + `network_security_config`).
+- Permiso de Internet activo.
 
 ## CI
 
-- Firma release en CI con keystore generado automáticamente.
-- Build release arm64 y artifact ZIP.
+- Build release arm64 firmado en CI.
