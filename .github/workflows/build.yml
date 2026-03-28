@@ -39,16 +39,11 @@ jobs:
           mkdir -p app/src/main/jniLibs/arm64-v8a
           curl -L "https://github.com/bjalalsjzbslalqoqueeyhskaambpqo/hev/raw/libs/jniLibs/arm64-v8a/libhev-socks5-tunnel.so" \
             -o app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so
-
       - name: Download Xray
         run: |
           mkdir -p app/src/main/jniLibs/arm64-v8a
-          curl -fL \
-            -H "Authorization: Bearer ${{ github.token }}" \
-            -H "Accept: application/vnd.github.raw" \
-            "https://api.github.com/repos/${{ github.repository }}/contents/libxray.so?ref=release-arm64" \
+          curl -L "https://github.com/bjalalsjzbslalqoqueeyhskaambpqo/hev/blob/release-arm64/libxray.so?raw=1" \
             -o app/src/main/jniLibs/arm64-v8a/libxray.so
-
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
@@ -59,8 +54,6 @@ jobs:
           cd app/..
           gradle wrapper --gradle-version 8.7
           chmod +x gradlew
-
-
       - name: Prepare signing credentials
         id: signing
         env:
@@ -68,23 +61,18 @@ jobs:
           RAW_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-
           STORE_PASSWORD="${RAW_STORE_PASSWORD:-}"
           KEY_PASSWORD="${RAW_KEY_PASSWORD:-}"
-
           if [ ${#STORE_PASSWORD} -lt 6 ]; then
             STORE_PASSWORD="xtunnel_store_2026"
             echo "ANDROID_KEYSTORE_PASSWORD is missing/short; using CI fallback password." >&2
           fi
-
           if [ ${#KEY_PASSWORD} -lt 6 ]; then
             KEY_PASSWORD="$STORE_PASSWORD"
             echo "ANDROID_KEY_PASSWORD is missing/short; using store password as key password." >&2
           fi
-
           echo "store_password=$STORE_PASSWORD" >> "$GITHUB_OUTPUT"
           echo "key_password=$KEY_PASSWORD" >> "$GITHUB_OUTPUT"
-
       - name: Restore release keystore cache
         id: release_keystore_cache
         uses: actions/cache@v4
@@ -107,7 +95,6 @@ jobs:
             -storepass "${{ steps.signing.outputs.store_password }}" \
             -keypass "${{ steps.signing.outputs.key_password }}" \
             -dname "CN=XTunnel,OU=Mobile,O=XTunnel,L=Internet,ST=Global,C=US"
-
       - name: Build signed release APK
         env:
           ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/.ci/release-keystore.jks
