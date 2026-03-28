@@ -15,6 +15,7 @@ object BtProxy {
     private const val PROXY_PORT = 80
     private const val TUNNEL_HOST = "1.brawlpass.com.ar"
     private const val ACTION_TUNNEL = "tunnel"
+    private const val ACTION_AUTH = "auth"
     private const val HANDSHAKE_END = "\r\n\r\n"
     private const val XRAY_SOCKS5_PORT = 10808
     private const val TUNNEL_LOCAL_PORT = 10809
@@ -26,6 +27,33 @@ object BtProxy {
     @Volatile private var xrayProcess: Process? = null
     @Volatile private var bridgeServer: ServerSocket? = null
 
+    data class AuthResult(
+        val isValid: Boolean,
+        val headers: Map<String, String> = emptyMap()
+    )
+
+    fun authenticate(clientId: String, protectSocket: (Socket) -> Unit): AuthResult {
+        val normalizedId = clientId.trim()
+        if (normalizedId.isEmpty()) return AuthResult(false)
+
+        val result = establishTunnelSocket(protectSocket, normalizedId, ACTION_AUTH) ?: return AuthResult(false)
+        val socket = result.first
+        val handshake = result.second
+        runCatching { socket.close() }
+
+        val authState = handshake.headers["x-auth-state"] ?: handshake.headers["x-status"]
+        val valid = handshake.statusCode == 101 && authState.equals("VALID", ignoreCase = true)
+
+        return AuthResult(
+            isValid = valid,
+            headers = mapOf(
+                "X-Status" to (authState ?: "-"),
+                "X-Name" to (handshake.headers["x-name"] ?: "-"),
+                "X-Days-Left" to (handshake.headers["x-days-left"] ?: "-")
+            )
+        )
+    }
+
     fun start(
         ctx: Context,
         clientId: String,
@@ -33,7 +61,6 @@ object BtProxy {
     ) {
         currentClientId = clientId.trim()
         running = true
-        TunnelSessionStore.setState("CONNECTING")
         thread(isDaemon = true, name = "btproxy-init") {
             startTunnelBridge(protectSocket)
             startXray(ctx)
@@ -91,6 +118,7 @@ object BtProxy {
             }
             runCatching { tunnel.shutdownOutput() }
         }
+
         val downstream = thread(isDaemon = true) {
             runCatching {
                 val tunnelIn = tunnel.getInputStream()
@@ -105,6 +133,7 @@ object BtProxy {
             runCatching { client.close() }
             runCatching { tunnel.close() }
         }
+
         upstream.join()
         downstream.join()
     }
@@ -116,11 +145,10 @@ object BtProxy {
             if (!binary.canExecute()) return
 
             val config = File(ctx.filesDir, "xray-client.json").also { it.writeText(buildClientConfig(ctx)) }
-            val process = ProcessBuilder(listOf(binary.absolutePath, "run", "-c", config.absolutePath))
+            xrayProcess = ProcessBuilder(listOf(binary.absolutePath, "run", "-c", config.absolutePath))
                 .directory(binary.parentFile ?: File(ctx.applicationInfo.nativeLibraryDir))
                 .redirectErrorStream(true)
                 .start()
-            xrayProcess = process
         }
     }
 
@@ -208,56 +236,84 @@ object BtProxy {
     }.getOrNull()
 
     private fun openTunnel(protectSocket: (Socket) -> Unit): Socket? {
-        try {
+        val result = establishTunnelSocket(protectSocket, currentClientId, ACTION_TUNNEL) ?: return null
+        val socket = result.first
+        val handshake = result.second
+
+        val authState = handshake.headers["x-auth-state"] ?: handshake.headers["x-status"]
+        if (!authState.isNullOrBlank() && !authState.equals("VALID", ignoreCase = true)) {
+            runCatching { socket.close() }
+            TunnelSessionStore.setState("ERROR")
+            return null
+        }
+
+        TunnelSessionStore.updateFromHeaders(
+            mapOf(
+                "X-Status" to (authState ?: "-"),
+                "X-Name" to (handshake.headers["x-name"] ?: "-"),
+                "X-Days-Left" to (handshake.headers["x-days-left"] ?: "-")
+            )
+        )
+
+        TunnelSessionStore.setLatency(handshake.latencyMs)
+        TunnelSessionStore.setState("CONNECTED")
+        return socket
+    }
+
+    private fun establishTunnelSocket(
+        protectSocket: (Socket) -> Unit,
+        clientId: String,
+        action: String
+    ): Pair<Socket, HandshakeResult>? {
+        if (clientId.isBlank()) return null
+
+        return try {
             val startMs = System.currentTimeMillis()
             val socket = openProxySocket(protectSocket) ?: return null
             socket.tcpNoDelay = true
 
             val out = socket.getOutputStream()
             val input = socket.getInputStream()
-
-            out.write(buildHandshakeRequest().toByteArray())
+            out.write(buildHandshakeRequest(action, clientId).toByteArray())
             out.flush()
 
-            val raw = StringBuilder()
-            val deadline = System.currentTimeMillis() + 8_000
-            socket.soTimeout = 8_000
-            while (raw.indexOf(HANDSHAKE_END) < 0 && System.currentTimeMillis() < deadline) {
-                try {
-                    val tmp = ByteArray(4096)
-                    val read = input.read(tmp)
-                    if (read < 0) break
-                    raw.append(String(tmp, 0, read))
-                } catch (_: java.net.SocketTimeoutException) {
-                    break
-                }
-            }
-
-            val handshake = parseHandshakeBlock(raw.toString())
-            val headers = handshake?.headers ?: emptyMap()
-            val authState = headers["x-auth-state"] ?: headers["x-status"]
-            if (!authState.isNullOrBlank() && !authState.equals("VALID", ignoreCase = true)) {
+            val response = readHandshakeResponse(input, socket)
+            val handshake = parseTunnelHandshake(response)?.copy(latencyMs = System.currentTimeMillis() - startMs)
+            if (handshake == null) {
                 runCatching { socket.close() }
-                TunnelSessionStore.setState("ERROR")
                 return null
             }
-
-            TunnelSessionStore.updateFromHeaders(
-                mapOf(
-                    "X-Status" to (headers["x-auth-state"] ?: headers["x-status"] ?: "-"),
-                    "X-Name" to (headers["x-name"] ?: "-"),
-                    "X-Days-Left" to (headers["x-days-left"] ?: "-")
-                )
-            )
-
             socket.soTimeout = 0
-            TunnelSessionStore.setLatency(System.currentTimeMillis() - startMs)
-            TunnelSessionStore.setState("CONNECTED")
-            return socket
+            socket to handshake
         } catch (_: Exception) {
-            TunnelSessionStore.setState("ERROR")
-            return null
+            null
         }
+    }
+
+    private fun readHandshakeResponse(input: java.io.InputStream, socket: Socket): String {
+        val response = StringBuilder()
+        var deadline = 0L
+        socket.soTimeout = 8_000
+
+        while (true) {
+            try {
+                val tmp = ByteArray(4096)
+                val read = input.read(tmp)
+                if (read < 0) break
+                response.append(String(tmp, 0, read))
+
+                if (response.contains(HANDSHAKE_END) && deadline == 0L) {
+                    deadline = System.currentTimeMillis() + 120
+                    socket.soTimeout = 120
+                }
+            } catch (_: java.net.SocketTimeoutException) {
+                break
+            }
+
+            if (deadline > 0L && System.currentTimeMillis() >= deadline) break
+        }
+
+        return response.toString()
     }
 
     private fun openProxySocket(protectSocket: (Socket) -> Unit): Socket? {
@@ -286,16 +342,40 @@ object BtProxy {
         return null
     }
 
-    private data class HandshakeResult(val statusCode: Int, val headers: Map<String, String>)
+    private data class HandshakeResult(
+        val statusCode: Int,
+        val headers: Map<String, String>,
+        val latencyMs: Long = -1L
+    )
 
-    private fun buildHandshakeRequest(): String =
+    private fun buildHandshakeRequest(action: String, clientId: String): String =
         "GET / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\n" +
-            "Action: $ACTION_TUNNEL\r\nX-Client-Id: $currentClientId\r\n\r\n"
+            "Action: $action\r\nX-Client-Id: $clientId\r\n\r\n"
+
+    private fun parseTunnelHandshake(response: String): HandshakeResult? {
+        val blocks = extractHttpBlocks(response)
+        if (blocks.isEmpty()) return null
+
+        val candidates = blocks.mapNotNull { parseHandshakeBlock(it) }
+        return candidates.firstOrNull { it.statusCode == 101 && it.headers["x-auth-state"].equals("VALID", ignoreCase = true) }
+            ?: candidates.firstOrNull { it.statusCode == 101 }
+            ?: candidates.lastOrNull()
+    }
+
+    private fun extractHttpBlocks(response: String): List<String> {
+        val clean = response.replace("\u0000", "")
+        val regex = Regex("HTTP/1\\.1\\s+\\d{3}[\\s\\S]*?(?=HTTP/1\\.1\\s+\\d{3}|$)")
+        val matches = regex.findAll(clean).map { it.value.trim() }.filter { it.isNotBlank() }.toList()
+        if (matches.isNotEmpty()) return matches
+
+        return clean.split(HANDSHAKE_END)
+            .map { it.trim() }
+            .filter { it.startsWith("HTTP/1.1", ignoreCase = true) }
+    }
 
     private fun parseHandshakeBlock(block: String): HandshakeResult? {
         val lines = block.split("\r\n")
-        val statusCode = lines.firstOrNull()?.split(" ")?.getOrNull(1)?.toIntOrNull() ?: -1
-        if (statusCode < 0) return null
+        val statusCode = lines.firstOrNull()?.split(" ")?.getOrNull(1)?.toIntOrNull() ?: return null
         val headers = lines.drop(1).mapNotNull { line ->
             val sep = line.indexOf(':')
             if (sep <= 0) return@mapNotNull null
@@ -303,6 +383,6 @@ object BtProxy {
             val value = line.substring(sep + 1).trim()
             if (key.isEmpty()) null else key to value
         }.toMap()
-        return HandshakeResult(statusCode, headers)
+        return HandshakeResult(statusCode = statusCode, headers = headers)
     }
 }

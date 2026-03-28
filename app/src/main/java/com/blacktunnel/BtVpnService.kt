@@ -39,17 +39,19 @@ class BtVpnService : VpnService() {
         }
 
         TunnelSessionStore.setState("CONNECTING")
-        startVpnForeground()
-
         thread(isDaemon = true, name = "vpn-start-sequence") {
-            val mtu = 1300
             val clientId = TunnelPrefs.getOrCreateClientId(this)
+            val authResult = BtProxy.authenticate(clientId) { socket -> protect(socket) }
+            TunnelSessionStore.updateFromHeaders(authResult.headers)
+            if (!authResult.isValid) {
+                TunnelSessionStore.setState("ERROR")
+                stopSelf()
+                return@thread
+            }
 
-            BtProxy.start(
-                ctx = this,
-                clientId = clientId,
-                protectSocket = { socket -> protect(socket) }
-            )
+            startVpnForeground()
+            val mtu = 1300
+
 
             val builder = Builder()
                 .setSession("BlackTunnel")
@@ -80,6 +82,11 @@ class BtVpnService : VpnService() {
             }
 
             pfd = established
+            BtProxy.start(
+                ctx = this,
+                clientId = clientId,
+                protectSocket = { socket -> protect(socket) }
+            )
             val rawFd = ParcelFileDescriptor.dup(established.fileDescriptor).detachFd()
             val configFile = writeHevConfig()
 
