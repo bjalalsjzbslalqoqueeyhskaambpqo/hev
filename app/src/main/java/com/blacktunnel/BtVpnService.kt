@@ -39,10 +39,21 @@ class BtVpnService : VpnService() {
         }
 
         TunnelSessionStore.setState("CONNECTING")
-        startVpnForeground()
         thread(isDaemon = true, name = "vpn-start-sequence") {
             val mtu = 1300
             val clientId = TunnelPrefs.getOrCreateClientId(this)
+            val tunnelReady = BtProxy.prepareTunnel(
+                clientId = clientId,
+                protectSocket = { socket -> protect(socket) }
+            )
+            if (!tunnelReady) {
+                TunnelSessionStore.setState("ERROR")
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return@thread
+            }
+
+            startVpnForeground()
 
             BtProxy.start(
                 ctx = this,

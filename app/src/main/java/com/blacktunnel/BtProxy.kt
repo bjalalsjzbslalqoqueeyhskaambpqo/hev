@@ -43,6 +43,67 @@ object BtProxy {
         }
     }
 
+    fun prepareTunnel(
+        clientId: String,
+        protectSocket: (Socket) -> Unit
+    ): Boolean {
+        currentClientId = clientId.trim()
+        val authSocket = openProxySocket(protectSocket) ?: return false
+        return runCatching {
+            authSocket.tcpNoDelay = true
+            val out = authSocket.getOutputStream()
+            val inp = authSocket.getInputStream()
+
+            val p1 = "GET / HTTP/1.1\r\nHost: $PROXY_HOST\r\n\r\n"
+            out.write(p1.toByteArray())
+            out.flush()
+            Thread.sleep(HANDSHAKE_GAP_MS)
+
+            val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\nAction: auth\r\nX-Client-Id: $currentClientId\r\n\r\n"
+            out.write(p2.toByteArray())
+            out.flush()
+
+            authSocket.soTimeout = 8000
+            val raw = ByteArrayOutputStream()
+            val deadline = System.currentTimeMillis() + 8000
+            while (System.currentTimeMillis() < deadline) {
+                try {
+                    val tmp = ByteArray(4096)
+                    val n = inp.read(tmp)
+                    if (n <= 0) break
+                    raw.write(tmp, 0, n)
+                    val text = raw.toString()
+                    val blocks = text.split("\r\n\r\n").size - 1
+                    if (blocks >= 2) break
+                } catch (_: java.net.SocketTimeoutException) {
+                    break
+                }
+            }
+
+            val handshake = parseTunnelHandshake(raw.toString()) ?: return@runCatching false
+            val headers = handshake.headers
+            val authState = headers["x-auth-state"] ?: headers["x-status"] ?: ""
+            val status = if (authState.isBlank()) {
+                if (handshake.statusCode == 101) "VALID" else "INVALID"
+            } else {
+                authState
+            }
+            TunnelSessionStore.updateFromHeaders(
+                mapOf(
+                    "X-Status" to status,
+                    "X-Name" to (headers["x-name"] ?: "-"),
+                    "X-Expire" to (headers["x-expire"] ?: "-"),
+                    "X-Days-Left" to (headers["x-days-left"] ?: "-"),
+                    "X-Premium" to "1"
+                )
+            )
+            handshake.statusCode == 101 && status.equals("VALID", ignoreCase = true)
+        }.getOrDefault(false).also {
+            releaseSocket(authSocket)
+            runCatching { authSocket.close() }
+        }
+    }
+
     fun stop() {
         running = false
         runCatching { bridgeServer?.close() }
@@ -128,19 +189,9 @@ object BtProxy {
                 File(ctx.filesDir, "libxray.so"),
                 File(ctx.filesDir, "xray")
             )
-            val binary = candidates.firstOrNull { it.exists() } ?: run {
-                TunnelSessionStore.setState("ERROR")
-                return
-            }
-            if (binary.length() < 2_000_000L) {
-                TunnelSessionStore.setState("ERROR")
-                return
-            }
+            val binary = candidates.firstOrNull { it.exists() } ?: return
             runCatching { binary.setExecutable(true, false) }
-            if (!binary.canExecute()) {
-                TunnelSessionStore.setState("ERROR")
-                return
-            }
+            if (!binary.canExecute()) return
 
             val config = File(ctx.filesDir, "xray-client.json")
             config.writeText(buildClientConfig(ctx))
@@ -161,7 +212,6 @@ object BtProxy {
                 process.inputStream.bufferedReader().forEachLine { }
             }
         } catch (e: Exception) {
-            TunnelSessionStore.setState("ERROR")
         }
     }
 
