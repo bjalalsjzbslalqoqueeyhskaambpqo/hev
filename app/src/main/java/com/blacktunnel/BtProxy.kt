@@ -410,11 +410,24 @@ object BtProxy {
     )
 
     private fun parseTunnelHandshake(response: String): HandshakeResult? {
-        val blocks = response.split("\r\n\r\n").filter { it.trimStart().startsWith("HTTP/1.1") }
-        val block = blocks.firstOrNull { it.contains("101") && it.contains("X-Auth-State", ignoreCase = true) }
+        val regexBlocks = Regex("HTTP/1\\.1\\s+\\d{3}[\\s\\S]*?(?=HTTP/1\\.1\\s+\\d{3}|$)")
+            .findAll(response.replace("\u0000", ""))
+            .map { it.value.trim() }
+            .filter { it.isNotBlank() }
+            .toList()
+
+        val splitBlocks = response
+            .split("\r\n\r\n")
+            .map { it.trim() }
+            .filter { it.contains("HTTP/1.1") }
+
+        val blocks = (regexBlocks + splitBlocks).distinct()
+
+        val block = blocks.firstOrNull { it.contains("HTTP/1.1 101") && it.contains("X-Auth-State", ignoreCase = true) }
             ?: blocks.firstOrNull { it.contains("101") }
             ?: return null
-        return parseHandshakeBlock(block)
+        val normalizedBlock = block.substring(block.indexOf("HTTP/1.1"))
+        return parseHandshakeBlock(normalizedBlock)
     }
 
     private fun parseHandshakeBlock(block: String): HandshakeResult {
