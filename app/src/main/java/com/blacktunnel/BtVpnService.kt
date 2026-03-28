@@ -15,7 +15,6 @@ class BtVpnService : VpnService() {
     private var pfd: ParcelFileDescriptor? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        installCrashHandler()
         return when (intent?.action) {
             ACTION_STOP -> {
                 stopTunnel()
@@ -31,10 +30,6 @@ class BtVpnService : VpnService() {
     override fun onDestroy() {
         stopTunnel()
         super.onDestroy()
-    }
-
-    private fun installCrashHandler() {
-        Thread.setDefaultUncaughtExceptionHandler { _, _ -> }
     }
 
     private fun startTunnel() {

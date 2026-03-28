@@ -143,19 +143,20 @@ def ensure_client(db, client_id):
     item = db.get(client_id)
     now = int(time.time())
     if not item:
-        return "UNKNOWN", 0, ""
+        return "UNKNOWN", 0, "", 0
     expires_at = int(item.get("expires_at", 0))
     name = str(item.get("name", "")).strip() or "sin-nombre"
     if now > expires_at:
-        return "EXPIRED", 0, name
+        return "EXPIRED", 0, name, expires_at
     days_left = max(0, (expires_at - now + 86399) // 86400)
-    return "VALID", days_left, name
+    return "VALID", days_left, name, expires_at
 
 
 def reject(sock, state):
     payload = (
         "HTTP/1.1 403 Forbidden\r\n"
         "Connection: close\r\n"
+        f"X-Status: {state}\r\n"
         f"X-Auth-State: {state}\r\n"
         "X-Days-Left: 0\r\n\r\n"
     ).encode()
@@ -185,10 +186,12 @@ def pipe(src, dst):
             pass
 
 
-def handle_tunnel(client):
+def handle_tunnel(client, initial_upstream_data=b""):
     upstream = None
     try:
         upstream = socket.create_connection(XRAY_ADDR, 5)
+        if initial_upstream_data:
+            upstream.sendall(initial_upstream_data)
         t1 = threading.Thread(target=pipe, args=(client, upstream), daemon=True)
         t2 = threading.Thread(target=pipe, args=(upstream, client), daemon=True)
         t1.start()
@@ -224,13 +227,22 @@ def handle(sock):
                     return
                 if b"\r\n\r\n" in raw and header_complete_at is None:
                     header_complete_at = time.time()
-                    sock.settimeout(0.2)
-                if header_complete_at and (time.time() - header_complete_at) > 0.12:
+                    sock.settimeout(0.3)
+                if header_complete_at and (time.time() - header_complete_at) > 0.2:
                     break
             except socket.timeout:
                 if b"\r\n\r\n" in raw:
                     break
                 return
+
+        header_breaks = []
+        start = 0
+        while True:
+            idx = raw.find(b"\r\n\r\n", start)
+            if idx < 0:
+                break
+            header_breaks.append(idx)
+            start = idx + 4
 
         action = ""
         client_id = ""
@@ -246,7 +258,7 @@ def handle(sock):
             return
 
         db = load_db()
-        state, days_left, name = ensure_client(db, client_id)
+        state, days_left, name, expires_at = ensure_client(db, client_id)
         if state != "VALID":
             reject(sock, state)
             return
@@ -255,8 +267,10 @@ def handle(sock):
             b"HTTP/1.1 101 Switching Protocols\r\n"
             b"Upgrade: websocket\r\n"
             b"Connection: Upgrade\r\n"
+            b"X-Status: VALID\r\n"
             b"X-Auth-State: VALID\r\n"
             + f"X-Name: {name}\r\n".encode()
+            + f"X-Expire: {expires_at}\r\n".encode()
             + f"X-Days-Left: {days_left}\r\n\r\n".encode()
         )
 
@@ -266,7 +280,13 @@ def handle(sock):
                 sock.close()
             else:
                 sock.settimeout(None)
-                handle_tunnel(sock)
+                tail_start = 0
+                if len(header_breaks) >= 2:
+                    tail_start = header_breaks[1] + 4
+                elif len(header_breaks) == 1:
+                    tail_start = header_breaks[0] + 4
+                initial_upstream_data = raw[tail_start:] if tail_start < len(raw) else b""
+                handle_tunnel(sock, initial_upstream_data)
         else:
             sock.close()
     except Exception:

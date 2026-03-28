@@ -4,9 +4,7 @@ data class TunnelSessionSnapshot(
     val state: String = "DISCONNECTED",
     val status: String = "-",
     val name: String = "-",
-    val expire: String = "-",
     val daysLeft: String = "-",
-    val premium: String = "-",
     val latencyMs: Long = -1L
 )
 
@@ -30,9 +28,7 @@ object TunnelSessionStore {
             snapshot = snapshot.copy(
                 status = headers["X-Status"] ?: snapshot.status,
                 name = headers["X-Name"] ?: snapshot.name,
-                expire = headers["X-Expire"] ?: snapshot.expire,
-                daysLeft = headers["X-Days-Left"] ?: snapshot.daysLeft,
-                premium = headers["X-Premium"] ?: snapshot.premium
+                daysLeft = headers["X-Days-Left"] ?: snapshot.daysLeft
             )
         }
         notifyListeners()

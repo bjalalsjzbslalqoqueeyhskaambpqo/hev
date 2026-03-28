@@ -1,7 +1,6 @@
 package com.blacktunnel
 
 import android.content.Context
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -15,6 +14,8 @@ object BtProxy {
     private const val PROXY_HOST = "emailmarketing.personal.com.ar"
     private const val PROXY_PORT = 80
     private const val TUNNEL_HOST = "1.brawlpass.com.ar"
+    private const val ACTION_TUNNEL = "tunnel"
+    private const val HANDSHAKE_END = "\r\n\r\n"
     private const val XRAY_SOCKS5_PORT = 10808
     private const val TUNNEL_LOCAL_PORT = 10809
     private const val XUDP_CONCURRENCY = 80
@@ -215,33 +216,24 @@ object BtProxy {
             val out = socket.getOutputStream()
             val input = socket.getInputStream()
 
-            out.write("GET / HTTP/1.1\r\nHost: $PROXY_HOST\r\n\r\n".toByteArray())
-            out.flush()
-            Thread.sleep(5)
-
-            out.write(
-                (
-                    "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\n" +
-                        "Action: tunnel\r\nX-Client-Id: $currentClientId\r\n\r\n"
-                    ).toByteArray()
-            )
+            out.write(buildHandshakeRequest().toByteArray())
             out.flush()
 
-            val raw = ByteArrayOutputStream()
+            val raw = StringBuilder()
             val deadline = System.currentTimeMillis() + 8_000
             socket.soTimeout = 8_000
-            while (raw.toString().split("\r\n\r\n").size - 1 < 2 && System.currentTimeMillis() < deadline) {
+            while (raw.indexOf(HANDSHAKE_END) < 0 && System.currentTimeMillis() < deadline) {
                 try {
                     val tmp = ByteArray(4096)
                     val read = input.read(tmp)
                     if (read < 0) break
-                    raw.write(tmp, 0, read)
+                    raw.append(String(tmp, 0, read))
                 } catch (_: java.net.SocketTimeoutException) {
                     break
                 }
             }
 
-            val handshake = parseTunnelHandshake(raw.toString())
+            val handshake = parseHandshakeBlock(raw.toString())
             val headers = handshake?.headers ?: emptyMap()
             val authState = headers["x-auth-state"] ?: headers["x-status"]
             if (!authState.isNullOrBlank() && !authState.equals("VALID", ignoreCase = true)) {
@@ -254,9 +246,7 @@ object BtProxy {
                 mapOf(
                     "X-Status" to (headers["x-auth-state"] ?: headers["x-status"] ?: "-"),
                     "X-Name" to (headers["x-name"] ?: "-"),
-                    "X-Expire" to (headers["x-expire"] ?: "-"),
-                    "X-Days-Left" to (headers["x-days-left"] ?: "-"),
-                    "X-Premium" to "1"
+                    "X-Days-Left" to (headers["x-days-left"] ?: "-")
                 )
             )
 
@@ -298,34 +288,14 @@ object BtProxy {
 
     private data class HandshakeResult(val statusCode: Int, val headers: Map<String, String>)
 
-    private fun parseTunnelHandshake(response: String): HandshakeResult? {
-        val blocks = extractHttpBlocks(response)
-        if (blocks.isEmpty()) return null
-        return blocks.map(::parseHandshakeBlock).let { candidates ->
-            candidates.firstOrNull { it.statusCode == 101 && it.headers["x-auth-state"].equals("VALID", ignoreCase = true) }
-                ?: candidates.firstOrNull { it.statusCode == 101 && !it.headers["x-status"].isNullOrBlank() }
-                ?: candidates.firstOrNull { it.statusCode == 101 && it.headers["upgrade"].equals("websocket", ignoreCase = true) }
-                ?: candidates.lastOrNull { it.statusCode == 101 }
-                ?: candidates.lastOrNull()
-        }
-    }
+    private fun buildHandshakeRequest(): String =
+        "GET / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\n" +
+            "Action: $ACTION_TUNNEL\r\nX-Client-Id: $currentClientId\r\n\r\n"
 
-    private fun extractHttpBlocks(response: String): List<String> {
-        val clean = response.replace("\u0000", "")
-        val regex = Regex("HTTP/1\\.1\\s+\\d{3}[\\s\\S]*?(?=HTTP/1\\.1\\s+\\d{3}|$)")
-            .findAll(clean)
-            .map { it.value.trim() }
-            .filter { it.isNotBlank() }
-            .toList()
-        if (regex.isNotEmpty()) return regex
-        return clean.split("\r\n\r\n")
-            .map { it.trim() }
-            .filter { it.startsWith("HTTP/1.1", ignoreCase = true) }
-    }
-
-    private fun parseHandshakeBlock(block: String): HandshakeResult {
+    private fun parseHandshakeBlock(block: String): HandshakeResult? {
         val lines = block.split("\r\n")
         val statusCode = lines.firstOrNull()?.split(" ")?.getOrNull(1)?.toIntOrNull() ?: -1
+        if (statusCode < 0) return null
         val headers = lines.drop(1).mapNotNull { line ->
             val sep = line.indexOf(':')
             if (sep <= 0) return@mapNotNull null
