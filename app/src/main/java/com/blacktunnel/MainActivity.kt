@@ -53,25 +53,8 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        toggleButton = findViewById(R.id.toggleButton)
-        copyClientIdButton = findViewById(R.id.copyClientIdButton)
-        saveSettingsButton = findViewById(R.id.saveSettingsButton)
-        batteryButton = findViewById(R.id.batteryButton)
-        clientIdValue = findViewById(R.id.clientIdValue)
-        profileNormal = findViewById(R.id.profileNormal)
-        profilePerformance = findViewById(R.id.profilePerformance)
-        normalContainer = findViewById(R.id.normalContainer)
-        performanceContainer = findViewById(R.id.performanceContainer)
-        appSearchInput = findViewById(R.id.appSearchInput)
-        appListView = findViewById(R.id.appListView)
-        hotspotSwitch = findViewById(R.id.hotspotSwitch)
-        blockNonSelectedSwitch = findViewById(R.id.blockNonSelectedSwitch)
-        hotspotInfo = findViewById(R.id.hotspotInfo)
-        stateText = findViewById(R.id.stateText)
-        statusValue = findViewById(R.id.statusValue)
-        latencyValue = findViewById(R.id.latencyValue)
-        nameValue = findViewById(R.id.nameValue)
-        daysLeftValue = findViewById(R.id.daysLeftValue)
+        bindViews()
+
         clientId = TunnelPrefs.getOrCreateClientId(this)
         clientIdValue.text = clientId
 
@@ -116,30 +99,61 @@ class MainActivity : AppCompatActivity() {
         super.onStop()
     }
 
+    private fun bindViews() {
+        toggleButton = findViewById(R.id.toggleButton)
+        copyClientIdButton = findViewById(R.id.copyClientIdButton)
+        saveSettingsButton = findViewById(R.id.saveSettingsButton)
+        batteryButton = findViewById(R.id.batteryButton)
+        clientIdValue = findViewById(R.id.clientIdValue)
+        profileNormal = findViewById(R.id.profileNormal)
+        profilePerformance = findViewById(R.id.profilePerformance)
+        normalContainer = findViewById(R.id.normalContainer)
+        performanceContainer = findViewById(R.id.performanceContainer)
+        appSearchInput = findViewById(R.id.appSearchInput)
+        appListView = findViewById(R.id.appListView)
+        hotspotSwitch = findViewById(R.id.hotspotSwitch)
+        blockNonSelectedSwitch = findViewById(R.id.blockNonSelectedSwitch)
+        hotspotInfo = findViewById(R.id.hotspotInfo)
+        stateText = findViewById(R.id.stateText)
+        statusValue = findViewById(R.id.statusValue)
+        latencyValue = findViewById(R.id.latencyValue)
+        nameValue = findViewById(R.id.nameValue)
+        daysLeftValue = findViewById(R.id.daysLeftValue)
+    }
+
     private fun loadInstalledApps() {
         allApps.clear()
-        val packages = packageManager.getInstalledPackages(0)
-        allApps += packages.mapNotNull {
-            val systemApp = (it.applicationInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
-            if (systemApp) return@mapNotNull null
-            val launchIntent = packageManager.getLaunchIntentForPackage(it.packageName) ?: return@mapNotNull null
-            val label = packageManager.getApplicationLabel(it.applicationInfo).toString()
-            label to (launchIntent.component?.packageName ?: it.packageName)
-        }.distinctBy { it.second }.sortedBy { it.first.lowercase() }
+        allApps += packageManager.getInstalledPackages(0)
+            .mapNotNull {
+                val systemApp = (it.applicationInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                if (systemApp) return@mapNotNull null
+                val launchIntent = packageManager.getLaunchIntentForPackage(it.packageName) ?: return@mapNotNull null
+                val label = packageManager.getApplicationLabel(it.applicationInfo).toString()
+                label to (launchIntent.component?.packageName ?: it.packageName)
+            }
+            .distinctBy { it.second }
+            .sortedBy { it.first.lowercase() }
         filterAppList("")
     }
 
     private fun filterAppList(query: String) {
-        val baseList = if (query.isBlank()) allApps else allApps.filter {
-            it.first.contains(query, true) || it.second.contains(query, true)
+        val baseList = if (query.isBlank()) {
+            allApps
+        } else {
+            allApps.filter { it.first.contains(query, true) || it.second.contains(query, true) }
         }
+
         filteredApps = baseList.sortedWith(
             compareByDescending<Pair<String, String>> { selectedPackages.contains(it.second) }
                 .thenBy { it.first.lowercase() }
                 .thenBy { it.second.lowercase() }
         )
-        val labels = filteredApps.map { "${it.first} (${it.second})" }
-        appListView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_multiple_choice, labels)
+
+        appListView.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_list_item_multiple_choice,
+            filteredApps.map { "${it.first} (${it.second})" }
+        )
         filteredApps.forEachIndexed { index, pair -> appListView.setItemChecked(index, selectedPackages.contains(pair.second)) }
     }
 
@@ -174,9 +188,7 @@ class MainActivity : AppCompatActivity() {
         TunnelPrefs.setProfile(this, profile)
         TunnelPrefs.setMux(this, if (profile == "performance") 60 else 32)
         TunnelPrefs.setIncludedApps(this, selectedPackages.toList())
-        if (profile == "normal") {
-            TunnelPrefs.setHotspotProxyEnabled(this, hotspotSwitch.isChecked)
-        }
+        if (profile == "normal") TunnelPrefs.setHotspotProxyEnabled(this, hotspotSwitch.isChecked)
         TunnelPrefs.setBlockNonSelectedEnabled(this, blockNonSelectedSwitch.isChecked)
         if (showToast) Toast.makeText(this, getString(R.string.settings_saved), Toast.LENGTH_SHORT).show()
     }
@@ -189,19 +201,10 @@ class MainActivity : AppCompatActivity() {
             else -> getString(R.string.state_disconnected)
         }
 
-        when (snapshot.state) {
-            "CONNECTING" -> {
-                toggleButton.text = getString(R.string.connecting)
-                toggleButton.isEnabled = true
-            }
-            "CONNECTED" -> {
-                toggleButton.text = getString(R.string.disconnect)
-                toggleButton.isEnabled = true
-            }
-            else -> {
-                toggleButton.text = getString(R.string.connect)
-                toggleButton.isEnabled = true
-            }
+        toggleButton.text = when (snapshot.state) {
+            "CONNECTING" -> getString(R.string.connecting)
+            "CONNECTED" -> getString(R.string.disconnect)
+            else -> getString(R.string.connect)
         }
 
         statusValue.text = getString(R.string.session_status) + ": " + snapshot.status
@@ -209,7 +212,11 @@ class MainActivity : AppCompatActivity() {
         latencyValue.text = getString(R.string.latency_label) + ": " + if (correctedLatency >= 0) "${correctedLatency} ms" else "-"
         nameValue.text = getString(R.string.session_name) + ": " + snapshot.name
         daysLeftValue.text = getString(R.string.session_days_left) + ": " + snapshot.daysLeft
-        hotspotInfo.text = if (hotspotSwitch.isChecked) getString(R.string.hotspot_info, getHotspotIp() ?: "-", HOTSPOT_PORT) else getString(R.string.hotspot_disabled)
+        hotspotInfo.text = if (hotspotSwitch.isChecked) {
+            getString(R.string.hotspot_info, getHotspotIp() ?: "-", HOTSPOT_PORT)
+        } else {
+            getString(R.string.hotspot_disabled)
+        }
     }
 
     private fun onToggle() {
@@ -257,27 +264,28 @@ class MainActivity : AppCompatActivity() {
         if (opened == null) Toast.makeText(this, getString(R.string.battery_settings_failed), Toast.LENGTH_SHORT).show()
     }
 
-    private fun getHotspotIp(): String? {
-        return runCatching {
-            val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
-            val candidates = mutableListOf<Pair<String, String>>()
-            while (interfaces.hasMoreElements()) {
-                val intf = interfaces.nextElement()
-                val name = intf.name.lowercase()
-                val addrs = intf.inetAddresses
-                while (addrs.hasMoreElements()) {
-                    val addr = addrs.nextElement()
-                    if (addr is java.net.Inet4Address && !addr.isLoopbackAddress) {
-                        candidates += name to addr.hostAddress
-                    }
+    private fun getHotspotIp(): String? = runCatching {
+        val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+        val candidates = mutableListOf<Pair<String, String>>()
+
+        while (interfaces.hasMoreElements()) {
+            val intf = interfaces.nextElement()
+            val name = intf.name.lowercase()
+            val addrs = intf.inetAddresses
+
+            while (addrs.hasMoreElements()) {
+                val addr = addrs.nextElement()
+                if (addr is java.net.Inet4Address && !addr.isLoopbackAddress) {
+                    candidates += name to addr.hostAddress
                 }
             }
-            candidates.firstOrNull { (name, ip) ->
-                (name.contains("ap") || name.contains("swlan") || name.contains("rndis") || name.contains("wlan")) &&
-                    !ip.startsWith("127.")
-            }?.second ?: candidates.firstOrNull()?.second
-        }.getOrNull()
-    }
+        }
+
+        candidates.firstOrNull { (name, ip) ->
+            (name.contains("ap") || name.contains("swlan") || name.contains("rndis") || name.contains("wlan")) &&
+                !ip.startsWith("127.")
+        }?.second ?: candidates.firstOrNull()?.second
+    }.getOrNull()
 
     companion object {
         private const val REQ_VPN_PREPARE = 11

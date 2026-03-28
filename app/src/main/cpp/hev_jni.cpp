@@ -1,8 +1,5 @@
-#include <android/log.h>
 #include <dlfcn.h>
 #include <jni.h>
-
-#define TAG "HevJNI"
 
 typedef int (*hev_main_t)(const char *, int);
 typedef void (*hev_quit_t)(void);
@@ -16,10 +13,7 @@ static bool load_hev() {
     if (fn_main) return true;
 
     void *lib = dlopen("libhev-socks5-tunnel.so", RTLD_NOW | RTLD_GLOBAL);
-    if (!lib) {
-        __android_log_print(ANDROID_LOG_ERROR, TAG, "dlopen failed: %s", dlerror());
-        return false;
-    }
+    if (!lib) return false;
 
     fn_main = (hev_main_t)dlsym(lib, "hev_socks5_tunnel_main_from_file");
     fn_quit = (hev_quit_t)dlsym(lib, "hev_socks5_tunnel_quit");
@@ -33,7 +27,6 @@ extern "C" JNIEXPORT jint JNICALL Java_com_blacktunnel_HevBridge_start(JNIEnv *e
     if (!load_hev()) return -1;
 
     const char *p = env->GetStringUTFChars(path, nullptr);
-    __android_log_print(ANDROID_LOG_INFO, TAG, "start fd=%d config=%s", fd, p);
     int r = fn_main(p, fd);
     env->ReleaseStringUTFChars(path, p);
     return r;

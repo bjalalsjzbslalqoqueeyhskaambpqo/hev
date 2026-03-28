@@ -39,25 +39,23 @@ class BtVpnService : VpnService() {
 
     private fun startTunnel() {
         if (pfd != null) {
-            LogStore.add("VPN already running, ignoring duplicated start")
             TunnelSessionStore.setState("CONNECTED")
             return
         }
 
         TunnelSessionStore.setState("CONNECTING")
         startVpnForeground()
+
         thread(isDaemon = true, name = "vpn-start-sequence") {
             val mtu = 1300
-            val profile = TunnelPrefs.getProfile(this)
             val clientId = TunnelPrefs.getOrCreateClientId(this)
 
             BtProxy.start(
                 ctx = this,
-                profile = profile,
                 clientId = clientId,
-                protectSocket = { socket -> protect(socket) },
-                logger = { LogStore.add(it) }
+                protectSocket = { socket -> protect(socket) }
             )
+
             val builder = Builder()
                 .setSession("BlackTunnel")
                 .addAddress("198.18.0.1", 30)
@@ -69,6 +67,7 @@ class BtVpnService : VpnService() {
                 .addDnsServer("2001:4860:4860::8888")
                 .addDnsServer("2606:4700:4700::1111")
                 .setMtu(mtu)
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 builder.allowFamily(OsConstants.AF_INET)
                 builder.allowFamily(OsConstants.AF_INET6)
@@ -76,17 +75,8 @@ class BtVpnService : VpnService() {
 
             configureAllowedApplications(builder)
 
-            val established = runCatching { builder.establish() }.getOrElse {
-                LogStore.add("VPN establish failed: ${it.message}")
-                TunnelSessionStore.setState("ERROR")
-                BtProxy.stop()
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
-                return@thread
-            }
-
+            val established = runCatching { builder.establish() }.getOrNull()
             if (established == null) {
-                LogStore.add("VPN establish returned null")
                 TunnelSessionStore.setState("ERROR")
                 BtProxy.stop()
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -96,30 +86,18 @@ class BtVpnService : VpnService() {
 
             pfd = established
             val rawFd = ParcelFileDescriptor.dup(established.fileDescriptor).detachFd()
-            LogStore.add("TUN established fd=$rawFd")
-
             val configFile = writeHevConfig()
+
             thread(isDaemon = true, name = "hev-main") {
-                val result = runCatching { HevBridge.start(configFile.absolutePath, rawFd) }.getOrElse {
-                    LogStore.add("HEV crashed: ${it.message}")
-                    TunnelSessionStore.setState("ERROR")
-                    -1
-                }
-                LogStore.add("HEV terminó con code=$result")
-                if (result != 0) {
-                    TunnelSessionStore.setState("ERROR")
-                }
+                val result = runCatching { HevBridge.start(configFile.absolutePath, rawFd) }.getOrDefault(-1)
+                if (result != 0) TunnelSessionStore.setState("ERROR")
             }
         }
     }
 
     private fun startVpnForeground() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                VPN_CHANNEL_ID,
-                "BlackTunnel VPN",
-                NotificationManager.IMPORTANCE_MIN
-            )
+            val channel = NotificationChannel(VPN_CHANNEL_ID, "BlackTunnel VPN", NotificationManager.IMPORTANCE_MIN)
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)
         }
@@ -136,13 +114,6 @@ class BtVpnService : VpnService() {
     private fun stopTunnel() {
         runCatching { HevBridge.stop() }
         BtProxy.stop()
-        if (pfd == null) {
-            TunnelSessionStore.setState("DISCONNECTED")
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-            return
-        }
-        LogStore.add("Stopping VPN/HEV")
         runCatching { pfd?.close() }
         pfd = null
         TunnelSessionStore.setState("DISCONNECTED")
@@ -152,44 +123,28 @@ class BtVpnService : VpnService() {
 
     private fun configureAllowedApplications(builder: Builder) {
         val profile = TunnelPrefs.getProfile(this)
-        val blockNonSelected = TunnelPrefs.isBlockNonSelectedEnabled(this)
+        val includedApps = TunnelPrefs.getIncludedApps(this)
 
         if (!profile.equals("performance", ignoreCase = true)) {
             runCatching { builder.addDisallowedApplication(packageName) }
-                .onFailure { LogStore.add("WARN no se pudo excluir app propia: ${it.message}") }
-            LogStore.add("Modo normal: todas las apps usan túnel")
             return
         }
 
-        val includedApps = TunnelPrefs.getIncludedApps(this)
         if (includedApps.isEmpty()) {
-            val installedPackages = packageManager.getInstalledApplications(0)
+            packageManager.getInstalledApplications(0)
                 .map { it.packageName }
                 .filter { it != packageName }
-
-            installedPackages.forEach { pkg ->
-                runCatching { builder.addDisallowedApplication(pkg) }
-                    .onFailure { LogStore.add("WARN no se pudo excluir $pkg: ${it.message}") }
-            }
-            LogStore.add("Modo performance: sin apps seleccionadas, tráfico por túnel desactivado")
+                .forEach { pkg -> runCatching { builder.addDisallowedApplication(pkg) } }
             return
         }
 
-        includedApps.forEach { pkg ->
-            runCatching { builder.addAllowedApplication(pkg) }
-                .onFailure { LogStore.add("WARN app incluida inválida $pkg: ${it.message}") }
-        }
-
-        if (blockNonSelected) {
-            LogStore.add("Modo performance estricto: requiere bloqueo VPN del sistema para negar apps no seleccionadas")
-        }
-        LogStore.add("Modo performance: apps en túnel=${includedApps.joinToString()}")
+        includedApps.forEach { pkg -> runCatching { builder.addAllowedApplication(pkg) } }
     }
-
 
     private fun writeHevConfig(): java.io.File {
         val file = java.io.File(filesDir, "hev.yml")
-        val yaml = """
+        file.writeText(
+            """
             tunnel:
               name: trehev
               mtu: 1300
@@ -201,8 +156,8 @@ class BtVpnService : VpnService() {
               udp: 'udp'
             misc:
               log-level: warn
-        """.trimIndent()
-        file.writeText(yaml)
+            """.trimIndent()
+        )
         return file
     }
 
