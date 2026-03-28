@@ -215,7 +215,6 @@ class MainActivity : AppCompatActivity() {
     private fun onToggle() {
         val current = TunnelSessionStore.current()
         if (current.state == "CONNECTING" || current.state == "CONNECTED") {
-            stopService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
             startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
             return
         }

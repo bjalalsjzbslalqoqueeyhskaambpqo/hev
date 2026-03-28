@@ -16,11 +16,16 @@ class BtVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         installCrashHandler()
-        when (intent?.action) {
-            ACTION_STOP -> stopTunnel()
-            else -> startTunnel()
+        return when (intent?.action) {
+            ACTION_STOP -> {
+                stopTunnel()
+                START_NOT_STICKY
+            }
+            else -> {
+                startTunnel()
+                START_STICKY
+            }
         }
-        return START_STICKY
     }
 
     override fun onDestroy() {

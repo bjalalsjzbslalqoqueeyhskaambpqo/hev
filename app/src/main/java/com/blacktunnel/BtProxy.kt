@@ -22,6 +22,7 @@ object BtProxy {
 
     @Volatile private var xrayProcess: Process? = null
     @Volatile private var running = false
+    @Volatile private var bridgeServer: ServerSocket? = null
     @Volatile private var muxConcurrency: Int = 16
     @Volatile private var xudpConcurrency: Int = 32
     @Volatile private var logLevel: String = "warning"
@@ -50,7 +51,14 @@ object BtProxy {
 
     fun stop() {
         running = false
-        xrayProcess?.destroy()
+        runCatching { bridgeServer?.close() }
+        bridgeServer = null
+        xrayProcess?.let { process ->
+            process.destroy()
+            if (process.isAlive) {
+                process.destroyForcibly()
+            }
+        }
         xrayProcess = null
         TunnelSessionStore.reset()
     }
@@ -59,7 +67,9 @@ object BtProxy {
         protectSocket: (Socket) -> Unit,
         logger: (String) -> Unit
     ) {
+        runCatching { bridgeServer?.close() }
         val srv = ServerSocket(TUNNEL_LOCAL_PORT, 128, InetAddress.getByName("127.0.0.1"))
+        bridgeServer = srv
         logger("Bridge escuchando en 127.0.0.1:$TUNNEL_LOCAL_PORT")
 
         thread(isDaemon = true, name = "bridge-accept") {
@@ -79,6 +89,8 @@ object BtProxy {
                     }
                 }
             } catch (_: Exception) {
+                runCatching { srv.close() }
+                if (bridgeServer === srv) bridgeServer = null
             }
         }
     }
