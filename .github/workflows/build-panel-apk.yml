@@ -6,6 +6,7 @@ on:
     branches:
       - main
     paths:
+      - 'PANEL_CONFIG.txt'
       - 'SELLER_CODE.txt'
       - 'app/**'
       - 'build.gradle.kts'

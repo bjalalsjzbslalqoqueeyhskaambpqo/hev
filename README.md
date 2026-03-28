@@ -1,61 +1,56 @@
-# BlackTunnel Panel APK (producción, arm64)
+# BlackTunnel Panel APK (producción, arm64, preconfigurada)
 
-App Android para gestionar tu `panel.py` con interfaz visual rápida para administración.
+Esta versión está pensada para **entregar al cliente ya lista**, sin que el usuario final tenga que escribir URL/token.
 
-## Dónde poner la URL y el token (IMPORTANTE)
+## Archivo que debes editar antes de compilar
 
-Dentro de la app, en la **primera tarjeta superior**:
+Edita este archivo en la raíz del repo:
 
-1. Campo **Base URL** → aquí pegas la URL del panel.
-2. Campo **Token** → aquí pegas el token del panel.
-3. Pulsa **Guardar**.
-4. Pulsa **Comprobar** para validar conexión.
+- `PANEL_CONFIG.txt`
+
+Formato (una sola línea):
+
+```txt
+<BASE_URL> <TOKEN>
+```
 
 Ejemplo:
 
-- Base URL: `http://TU_IP:8090`
-- Token: `<TU_TOKEN_GENERADO>`
+```txt
+http://TU_IP:8090 TU_TOKEN_GENERADO
+```
 
-> Recomendación de seguridad: no hardcodear el token en el código fuente ni en Git.
+> Al compilar, esos valores se inyectan automáticamente en la app (BuildConfig), y la app arranca ya configurada.
 
-## Qué incluye
+## Qué pasa en la app
 
-- Configuración cifrada localmente (`BASE_URL` + `TOKEN`) con `EncryptedSharedPreferences`.
-- Token oculto por defecto (toggle temporal para mostrar/ocultar).
-- Feedback visual:
-  - Barra de carga.
-  - Snackbar de notificaciones.
-  - Botones con micro-animación.
-- Acciones directas:
-  - Comprobar conexión.
-  - Listar clientes.
-  - Crear/reemplazar cliente.
-  - Agregar días.
-  - Eliminar cliente.
+- Si `PANEL_CONFIG.txt` tiene URL+token válidos:
+  - La app queda preconfigurada.
+  - El usuario final **no necesita configurar nada**.
+  - Los controles de guardado/mostrar token se ocultan.
+- Si `PANEL_CONFIG.txt` está vacío o inválido:
+  - La app queda en modo editable manual.
 
-## Archivo para disparar build automáticamente
-
-Archivo raíz:
+## Archivo de código comercial (opcional)
 
 - `SELLER_CODE.txt`
 
-Cuando cambias ese archivo y haces push a `main`, se dispara compilación automática.
-Ese valor se inyecta como `BuildConfig.SELLER_CODE` y se muestra en pantalla.
+Se inyecta como `BuildConfig.SELLER_CODE` para identificar builds por vendedor/lote.
 
 ## Producción optimizada (64 bits)
 
-Se configura build para **solo arm64-v8a**, con reducción de tamaño en release:
-
+- Solo `arm64-v8a`
 - `minifyEnabled = true`
 - `shrinkResources = true`
-- `splits abi` solo `arm64-v8a`
+- Split ABI sin universal APK
 
 ## CI automático
 
 Workflow: `.github/workflows/build-panel-apk.yml`
 
-Trigger por cambios en:
+Se dispara en `push` a `main` cuando cambian:
 
+- `PANEL_CONFIG.txt`
 - `SELLER_CODE.txt`
 - `app/**`
 - `build.gradle.kts`
@@ -63,9 +58,9 @@ Trigger por cambios en:
 - `gradle.properties`
 - `.github/workflows/build-panel-apk.yml`
 
-Build de CI:
+Pipeline:
 
-- `gradle :app:assembleRelease`
-- Empaquetado zip con compresión máxima (`zip -9`)
-- Artifact: `blacktunnel-panel-arm64-release`
+1. `gradle :app:assembleRelease`
+2. empaqueta en zip (`zip -9`)
+3. sube artifact `blacktunnel-panel-arm64-release`
 

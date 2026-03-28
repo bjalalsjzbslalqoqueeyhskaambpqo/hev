@@ -1,3 +1,5 @@
+import org.gradle.api.GradleException
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -7,6 +9,27 @@ val sellerCodeFile = rootProject.file("SELLER_CODE.txt")
 val sellerCodeRaw = if (sellerCodeFile.exists()) sellerCodeFile.readText().trim() else "DEMO-CODE"
 val sellerCodeEscaped = sellerCodeRaw.replace("\\", "\\\\").replace("\"", "\\\"")
 
+val panelConfigFile = rootProject.file("PANEL_CONFIG.txt")
+val panelConfigRaw = if (panelConfigFile.exists()) panelConfigFile.readText().trim() else ""
+val (baseUrlRaw, tokenRaw) = if (panelConfigRaw.isBlank()) {
+    "" to ""
+} else {
+    val parts = panelConfigRaw.lines()
+        .firstOrNull { it.trim().isNotEmpty() }
+        ?.trim()
+        ?.split(Regex("\\s+"), limit = 2)
+        ?: emptyList()
+
+    if (parts.size < 2) {
+        throw GradleException("PANEL_CONFIG.txt debe tener: <BASE_URL> <TOKEN>")
+    }
+    parts[0] to parts[1]
+}
+
+val baseUrlEscaped = baseUrlRaw.replace("\\", "\\\\").replace("\"", "\\\"")
+val tokenEscaped = tokenRaw.replace("\\", "\\\\").replace("\"", "\\\"")
+val hasInjectedConfig = baseUrlRaw.isNotBlank() && tokenRaw.isNotBlank()
+
 android {
     namespace = "com.blacktunnel.panel"
     compileSdk = 34
@@ -15,10 +38,13 @@ android {
         applicationId = "com.blacktunnel.panel"
         minSdk = 24
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.2.0"
+        versionCode = 4
+        versionName = "1.3.0"
 
         buildConfigField("String", "SELLER_CODE", "\"$sellerCodeEscaped\"")
+        buildConfigField("String", "INJECTED_BASE_URL", "\"$baseUrlEscaped\"")
+        buildConfigField("String", "INJECTED_TOKEN", "\"$tokenEscaped\"")
+        buildConfigField("boolean", "HAS_INJECTED_CONFIG", hasInjectedConfig.toString())
 
         ndk {
             abiFilters += listOf("arm64-v8a")

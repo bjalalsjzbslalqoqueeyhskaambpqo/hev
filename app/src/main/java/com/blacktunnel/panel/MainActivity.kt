@@ -14,6 +14,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.card.MaterialCardView
 import com.google.android.material.snackbar.Snackbar
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -35,6 +36,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var resultText: TextView
     private lateinit var buildCodeText: TextView
+    private lateinit var configCard: MaterialCardView
     private lateinit var progress: ProgressBar
     private lateinit var rootView: View
 
@@ -45,6 +47,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         rootView = findViewById(R.id.rootLayout)
+        configCard = findViewById(R.id.configCard)
         baseUrlInput = findViewById(R.id.inputBaseUrl)
         tokenInput = findViewById(R.id.inputToken)
         clientIdInput = findViewById(R.id.inputClientId)
@@ -63,9 +66,30 @@ class MainActivity : AppCompatActivity() {
         bindAction(R.id.btnDelete) { deleteClient() }
         bindAction(R.id.btnToggleToken) { toggleTokenVisibility() }
 
-        loadConfig()
         buildCodeText.text = getString(R.string.build_code_value, BuildConfig.SELLER_CODE)
+
+        if (BuildConfig.HAS_INJECTED_CONFIG) {
+            setupInjectedConfig()
+        } else {
+            loadConfig()
+            showStatus("Modo editable activo: define URL/token y guarda.", true)
+        }
+
         animateHeader()
+    }
+
+    private fun setupInjectedConfig() {
+        baseUrlInput.setText(BuildConfig.INJECTED_BASE_URL)
+        tokenInput.setText(BuildConfig.INJECTED_TOKEN)
+
+        baseUrlInput.isEnabled = false
+        tokenInput.isEnabled = false
+
+        findViewById<MaterialButton>(R.id.btnSaveConfig).visibility = View.GONE
+        findViewById<MaterialButton>(R.id.btnToggleToken).visibility = View.GONE
+
+        configCard.alpha = 0.92f
+        showStatus("App preconfigurada: el usuario final no necesita poner URL/token.", true)
     }
 
     private fun bindAction(buttonId: Int, action: () -> Unit) {
@@ -208,7 +232,7 @@ class MainActivity : AppCompatActivity() {
         val token = tokenInput.text.toString().trim()
 
         if (baseUrl.isBlank() || token.isBlank()) {
-            showStatus("Configura base URL y token primero.", false)
+            showStatus("No hay configuración de servidor/token.", false)
             return
         }
 
