@@ -128,9 +128,19 @@ object BtProxy {
                 File(ctx.filesDir, "libxray.so"),
                 File(ctx.filesDir, "xray")
             )
-            val binary = candidates.firstOrNull { it.exists() } ?: return
+            val binary = candidates.firstOrNull { it.exists() } ?: run {
+                TunnelSessionStore.setState("ERROR")
+                return
+            }
+            if (binary.length() < 2_000_000L) {
+                TunnelSessionStore.setState("ERROR")
+                return
+            }
             runCatching { binary.setExecutable(true, false) }
-            if (!binary.canExecute()) return
+            if (!binary.canExecute()) {
+                TunnelSessionStore.setState("ERROR")
+                return
+            }
 
             val config = File(ctx.filesDir, "xray-client.json")
             config.writeText(buildClientConfig(ctx))
@@ -151,6 +161,7 @@ object BtProxy {
                 process.inputStream.bufferedReader().forEachLine { }
             }
         } catch (e: Exception) {
+            TunnelSessionStore.setState("ERROR")
         }
     }
 

@@ -41,10 +41,21 @@ jobs:
             -o app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so
 
       - name: Download Xray
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           mkdir -p app/src/main/jniLibs/arm64-v8a
-          curl -L "https://github.com/bjalalsjzbslalqoqueeyhskaambpqo/hev/blob/release-arm64/libxray.so?raw=1" \
+          curl -fL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw" \
+            "https://api.github.com/repos/${{ github.repository }}/contents/libxray.so?ref=release-arm64" \
             -o app/src/main/jniLibs/arm64-v8a/libxray.so
+          XRAY_SIZE=$(wc -c < app/src/main/jniLibs/arm64-v8a/libxray.so)
+          if [ "$XRAY_SIZE" -lt 2000000 ]; then
+            echo "Downloaded libxray.so is unexpectedly small: ${XRAY_SIZE} bytes" >&2
+            exit 1
+          fi
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
