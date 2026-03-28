@@ -42,32 +42,10 @@ class BtVpnService : VpnService() {
         startVpnForeground()
         thread(isDaemon = true, name = "vpn-start-sequence") {
             val mtu = 1300
-            val mux = TunnelPrefs.getMux(this).coerceIn(1, 64)
             val clientId = TunnelPrefs.getOrCreateClientId(this)
-
-            val access = BtProxy.checkAccess(
-                clientId = clientId,
-                protectSocket = { socket -> protect(socket) }
-            )
-            TunnelSessionStore.updateFromHeaders(
-                mapOf(
-                    "X-Status" to access.state,
-                    "X-Days-Left" to access.daysLeft,
-                    "X-Name" to access.name,
-                    "X-Expire" to "-",
-                    "X-Premium" to "-"
-                )
-            )
-            if (!access.isValid) {
-                TunnelSessionStore.setState("ERROR")
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
-                return@thread
-            }
 
             BtProxy.start(
                 ctx = this,
-                mux = mux,
                 clientId = clientId,
                 protectSocket = { socket -> protect(socket) }
             )
