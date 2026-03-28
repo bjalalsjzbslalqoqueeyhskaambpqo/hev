@@ -16,8 +16,8 @@ object BtProxy {
     private const val TUNNEL_HOST = "1.brawlpass.com.ar"
     private const val XRAY_SOCKS5_PORT = 10808
     private const val TUNNEL_LOCAL_PORT = 10809
-    private const val MUX_CONCURRENCY = -1
-    private const val XUDP_CONCURRENCY = 200
+    private const val MUX_CONCURRENCY = 16
+    private const val XUDP_CONCURRENCY = 32
     private const val TEST_UUID = "a3482e88-686a-4a58-8126-99c9df64b7bf"
 
     @Volatile private var running = false
@@ -147,6 +147,12 @@ object BtProxy {
                 "downlinkOnly": 10,
                 "bufferSize": 512
               }
+            },
+            "system": {
+              "udpTimeout": 600,
+              "connIdle": 600,
+              "downlinkOnly": 10,
+              "uplinkOnly": 10
             }
           },
           "inbounds": [
@@ -174,7 +180,7 @@ object BtProxy {
                 "enabled": true,
                 "concurrency": $MUX_CONCURRENCY,
                 "xudpConcurrency": $XUDP_CONCURRENCY,
-                "xudpProxyUDP443": "skip"
+                "xudpProxyUDP443": "allow"
               }
             }
           ]
@@ -227,7 +233,6 @@ object BtProxy {
             out.write(p2.toByteArray())
             out.flush()
 
-            // Leer hasta encontrar el bloque 101
             socket.soTimeout = 8000
             val raw = StringBuilder()
             val deadline = System.currentTimeMillis() + 8000
