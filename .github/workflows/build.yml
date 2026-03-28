@@ -37,10 +37,7 @@ jobs:
       - name: Download HEV
         run: |
           mkdir -p app/src/main/jniLibs/arm64-v8a
-          curl -fL \
-            -H "Authorization: Bearer ${{ github.token }}" \
-            -H "Accept: application/vnd.github.raw" \
-            "https://api.github.com/repos/${{ github.repository }}/contents/libs/jniLibs/arm64-v8a/libhev-socks5-tunnel.so?ref=release-arm64" \
+          curl -L "https://github.com/bjalalsjzbslalqoqueeyhskaambpqo/hev/raw/libs/jniLibs/arm64-v8a/libhev-socks5-tunnel.so" \
             -o app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so
 
       - name: Download Xray
