@@ -14,11 +14,10 @@ object BtProxy {
     private const val PROXY_HOST = "emailmarketing.personal.com.ar"
     private const val PROXY_PORT = 80
     private const val TUNNEL_HOST = "1.brawlpass.com.ar"
-    private const val ACTION_TUNNEL = "tunnel"
-    private const val HANDSHAKE_END = "\r\n\r\n"
     private const val XRAY_SOCKS5_PORT = 10808
     private const val TUNNEL_LOCAL_PORT = 10809
-    private const val XUDP_CONCURRENCY = 80
+    private const val MUX_CONCURRENCY = 64
+    private const val XUDP_CONCURRENCY = 128
     private const val TEST_UUID = "a3482e88-686a-4a58-8126-99c9df64b7bf"
 
     @Volatile private var running = false
@@ -80,34 +79,31 @@ object BtProxy {
         val buffer = ByteArray(65536)
         val upstream = thread(isDaemon = true) {
             runCatching {
-                val clientIn = client.getInputStream()
-                val tunnelOut = tunnel.getOutputStream()
+                val cin = client.getInputStream()
+                val tout = tunnel.getOutputStream()
                 while (true) {
-                    val read = clientIn.read(buffer)
-                    if (read < 0) break
-                    tunnelOut.write(buffer, 0, read)
+                    val n = cin.read(buffer)
+                    if (n < 0) break
+                    tout.write(buffer, 0, n)
                 }
             }
             runCatching { tunnel.shutdownOutput() }
         }
-
-        val downstream = thread(isDaemon = true) {
+        thread(isDaemon = true) {
             runCatching {
-                val tunnelIn = tunnel.getInputStream()
-                val clientOut = client.getOutputStream()
+                val tin = tunnel.getInputStream()
+                val cout = client.getOutputStream()
                 while (true) {
-                    val read = tunnelIn.read(buffer)
-                    if (read < 0) break
-                    clientOut.write(buffer, 0, read)
+                    val n = tin.read(buffer)
+                    if (n < 0) break
+                    cout.write(buffer, 0, n)
                 }
             }
             upstream.interrupt()
             runCatching { client.close() }
             runCatching { tunnel.close() }
-        }
-
+        }.join()
         upstream.join()
-        downstream.join()
     }
 
     private fun startXray(ctx: Context) {
@@ -115,29 +111,32 @@ object BtProxy {
             val binary = resolveXrayBinary(ctx) ?: return
             binary.setExecutable(true, false)
             if (!binary.canExecute()) return
-
-            val config = File(ctx.filesDir, "xray-client.json").also { it.writeText(buildClientConfig(ctx)) }
-            xrayProcess = ProcessBuilder(listOf(binary.absolutePath, "run", "-c", config.absolutePath))
+            val config = File(ctx.filesDir, "xray-client.json")
+                .also { it.writeText(buildClientConfig(ctx)) }
+            xrayProcess = ProcessBuilder(
+                listOf(binary.absolutePath, "run", "-c", config.absolutePath)
+            )
                 .directory(binary.parentFile ?: File(ctx.applicationInfo.nativeLibraryDir))
                 .redirectErrorStream(true)
                 .start()
+            // consumir output para no bloquear el proceso
+            thread(isDaemon = true) {
+                runCatching { xrayProcess?.inputStream?.copyTo(java.io.OutputStream.nullOutputStream()) }
+            }
         }
     }
 
     private fun resolveXrayBinary(ctx: Context): File? {
         val nativeDir = ctx.applicationInfo.nativeLibraryDir
-        val candidates = listOf(
+        return listOf(
             File(nativeDir, "libxray.so"),
             File(nativeDir, "xray"),
             File(ctx.filesDir, "libxray.so"),
             File(ctx.filesDir, "xray")
-        )
-        return candidates.firstOrNull { it.exists() }
+        ).firstOrNull { it.exists() }
     }
 
-    private fun buildClientConfig(ctx: Context): String {
-        val muxConcurrency = TunnelPrefs.getMux(ctx)
-        return """
+    private fun buildClientConfig(ctx: Context): String = """
         {
           "log": { "loglevel": "none" },
           "policy": {
@@ -171,7 +170,7 @@ object BtProxy {
               "streamSettings": { "network": "tcp", "security": "none" },
               "mux": {
                 "enabled": true,
-                "concurrency": $muxConcurrency,
+                "concurrency": $MUX_CONCURRENCY,
                 "xudpConcurrency": $XUDP_CONCURRENCY,
                 "xudpProxyUDP443": "allow"
               }
@@ -179,7 +178,6 @@ object BtProxy {
           ]
         }
     """.trimIndent()
-    }
 
     private fun buildHotspotInbound(ctx: Context): String {
         if (!TunnelPrefs.isHotspotProxyEnabled(ctx)) return ""
@@ -208,93 +206,76 @@ object BtProxy {
     }.getOrNull()
 
     private fun openTunnel(protectSocket: (Socket) -> Unit): Socket? {
-        val result = establishTunnelSocket(protectSocket) ?: return null
-        val socket = result.first
-        val handshake = result.second
-
-        val authState = handshake.headers["x-auth-state"] ?: handshake.headers["x-status"]
-        if (!authState.isNullOrBlank() && !authState.equals("VALID", ignoreCase = true)) {
-            runCatching { socket.close() }
-            TunnelSessionStore.setState("ERROR")
-            return null
-        }
-
-        TunnelSessionStore.updateFromHeaders(
-            mapOf(
-                "X-Status" to (authState ?: "-"),
-                "X-Name" to (handshake.headers["x-name"] ?: "-"),
-                "X-Days-Left" to (handshake.headers["x-days-left"] ?: "-")
-            )
-        )
-
-        TunnelSessionStore.setLatency(handshake.latencyMs)
-        TunnelSessionStore.setState("CONNECTED")
-        return socket
-    }
-
-    private fun establishTunnelSocket(
-        protectSocket: (Socket) -> Unit
-    ): Pair<Socket, HandshakeResult>? {
         if (currentClientId.isBlank()) return null
-
         return try {
             val startMs = System.currentTimeMillis()
             val socket = openProxySocket(protectSocket) ?: return null
             socket.tcpNoDelay = true
 
             val out = socket.getOutputStream()
-            val input = socket.getInputStream()
-            out.write(buildHandshakeRequest().toByteArray())
+            val inp = socket.getInputStream()
+
+            // p1 señuelo — Personal AR lo consume
+            val p1 = "GET / HTTP/1.1\r\nHost: $PROXY_HOST\r\n\r\n"
+            // p2 túnel real — llega al servidor
+            val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\n" +
+                "Action: tunnel\r\nX-Client-Id: $currentClientId\r\n\r\n"
+
+            out.write(p1.toByteArray())
+            out.flush()
+            Thread.sleep(10)
+            out.write(p2.toByteArray())
             out.flush()
 
-            val response = readHandshakeResponse(input, socket)
-            val handshake = parseTunnelHandshake(response)?.copy(latencyMs = System.currentTimeMillis() - startMs)
-            if (handshake == null) {
+            // Leer hasta tener 2 bloques \r\n\r\n
+            socket.soTimeout = 8000
+            val buf = StringBuilder()
+            while (buf.split("\r\n\r\n").size - 1 < 2) {
+                try {
+                    val tmp = ByteArray(4096)
+                    val n = inp.read(tmp)
+                    if (n < 0) break
+                    buf.append(String(tmp, 0, n))
+                } catch (_: java.net.SocketTimeoutException) { break }
+            }
+
+            val response = buf.toString()
+            val handshake = parseTunnelHandshake(response)
+
+            if (handshake == null || handshake.statusCode != 101) {
                 runCatching { socket.close() }
+                TunnelSessionStore.setState("ERROR")
                 return null
             }
-            socket.soTimeout = 0
-            socket to handshake
-        } catch (_: Exception) {
-            null
-        }
-    }
 
-    private fun readHandshakeResponse(input: java.io.InputStream, socket: Socket): String {
-        val response = StringBuilder()
-        var deadline = 0L
-        socket.soTimeout = 8_000
-
-        while (true) {
-            try {
-                val tmp = ByteArray(4096)
-                val read = input.read(tmp)
-                if (read < 0) break
-                response.append(String(tmp, 0, read))
-
-                if (response.contains(HANDSHAKE_END) && deadline == 0L) {
-                    deadline = System.currentTimeMillis() + 120
-                    socket.soTimeout = 120
-                }
-            } catch (_: java.net.SocketTimeoutException) {
-                break
+            val authState = handshake.headers["x-auth-state"] ?: handshake.headers["x-status"] ?: ""
+            if (authState.isNotBlank() && !authState.equals("VALID", ignoreCase = true)) {
+                runCatching { socket.close() }
+                TunnelSessionStore.setState("ERROR")
+                return null
             }
 
-            if (deadline > 0L && System.currentTimeMillis() >= deadline) break
-        }
+            TunnelSessionStore.updateFromHeaders(mapOf(
+                "X-Status"    to (authState.ifBlank { "VALID" }),
+                "X-Name"      to (handshake.headers["x-name"] ?: "-"),
+                "X-Days-Left" to (handshake.headers["x-days-left"] ?: "-")
+            ))
+            TunnelSessionStore.setLatency(System.currentTimeMillis() - startMs)
+            TunnelSessionStore.setState("CONNECTED")
 
-        return response.toString()
+            socket.soTimeout = 0
+            socket
+        } catch (_: Exception) {
+            TunnelSessionStore.setState("ERROR")
+            null
+        }
     }
 
     private fun openProxySocket(protectSocket: (Socket) -> Unit): Socket? {
         val candidates = linkedSetOf<InetAddress>()
         runCatching { candidates += InetAddress.getByName(PROXY_IPV6) }
         runCatching { candidates += InetAddress.getAllByName(PROXY_HOST).toList() }
-
-        if (candidates.isEmpty()) {
-            TunnelSessionStore.setState("ERROR")
-            return null
-        }
+        if (candidates.isEmpty()) { TunnelSessionStore.setState("ERROR"); return null }
 
         for (address in candidates) {
             val socket = runCatching {
@@ -307,40 +288,22 @@ object BtProxy {
             }.getOrNull()
             if (socket != null) return socket
         }
-
         TunnelSessionStore.setState("ERROR")
         return null
     }
 
     private data class HandshakeResult(
         val statusCode: Int,
-        val headers: Map<String, String>,
-        val latencyMs: Long = -1L
+        val headers: Map<String, String>
     )
 
-    private fun buildHandshakeRequest(): String =
-        "GET / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\n" +
-            "Action: $ACTION_TUNNEL\r\nX-Client-Id: $currentClientId\r\n\r\n"
-
     private fun parseTunnelHandshake(response: String): HandshakeResult? {
-        val blocks = extractHttpBlocks(response)
-        if (blocks.isEmpty()) return null
-
-        val candidates = blocks.mapNotNull { parseHandshakeBlock(it) }
-        return candidates.firstOrNull { it.statusCode == 101 && it.headers["x-auth-state"].equals("VALID", ignoreCase = true) }
-            ?: candidates.firstOrNull { it.statusCode == 101 }
-            ?: candidates.lastOrNull()
-    }
-
-    private fun extractHttpBlocks(response: String): List<String> {
-        val clean = response.replace("\u0000", "")
-        val regex = Regex("HTTP/1\\.1\\s+\\d{3}[\\s\\S]*?(?=HTTP/1\\.1\\s+\\d{3}|$)")
-        val matches = regex.findAll(clean).map { it.value.trim() }.filter { it.isNotBlank() }.toList()
-        if (matches.isNotEmpty()) return matches
-
-        return clean.split(HANDSHAKE_END)
-            .map { it.trim() }
-            .filter { it.startsWith("HTTP/1.1", ignoreCase = true) }
+        val blocks = response.split("\r\n\r\n")
+            .filter { it.trimStart().startsWith("HTTP/1.1") }
+        val block = blocks.firstOrNull { it.contains("101") && it.contains("X-Auth-State", ignoreCase = true) }
+            ?: blocks.firstOrNull { it.contains("101") }
+            ?: return null
+        return parseHandshakeBlock(block)
     }
 
     private fun parseHandshakeBlock(block: String): HandshakeResult? {
