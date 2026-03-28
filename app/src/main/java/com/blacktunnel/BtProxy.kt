@@ -15,7 +15,6 @@ object BtProxy {
     private const val PROXY_PORT = 80
     private const val TUNNEL_HOST = "1.brawlpass.com.ar"
     private const val ACTION_TUNNEL = "tunnel"
-    private const val ACTION_AUTH = "auth"
     private const val HANDSHAKE_END = "\r\n\r\n"
     private const val XRAY_SOCKS5_PORT = 10808
     private const val TUNNEL_LOCAL_PORT = 10809
@@ -26,33 +25,6 @@ object BtProxy {
     @Volatile private var currentClientId = ""
     @Volatile private var xrayProcess: Process? = null
     @Volatile private var bridgeServer: ServerSocket? = null
-
-    data class AuthResult(
-        val isValid: Boolean,
-        val headers: Map<String, String> = emptyMap()
-    )
-
-    fun authenticate(clientId: String, protectSocket: (Socket) -> Unit): AuthResult {
-        val normalizedId = clientId.trim()
-        if (normalizedId.isEmpty()) return AuthResult(false)
-
-        val result = establishTunnelSocket(protectSocket, normalizedId, ACTION_AUTH) ?: return AuthResult(false)
-        val socket = result.first
-        val handshake = result.second
-        runCatching { socket.close() }
-
-        val authState = handshake.headers["x-auth-state"] ?: handshake.headers["x-status"]
-        val valid = handshake.statusCode == 101 && authState.equals("VALID", ignoreCase = true)
-
-        return AuthResult(
-            isValid = valid,
-            headers = mapOf(
-                "X-Status" to (authState ?: "-"),
-                "X-Name" to (handshake.headers["x-name"] ?: "-"),
-                "X-Days-Left" to (handshake.headers["x-days-left"] ?: "-")
-            )
-        )
-    }
 
     fun start(
         ctx: Context,
@@ -236,7 +208,7 @@ object BtProxy {
     }.getOrNull()
 
     private fun openTunnel(protectSocket: (Socket) -> Unit): Socket? {
-        val result = establishTunnelSocket(protectSocket, currentClientId, ACTION_TUNNEL) ?: return null
+        val result = establishTunnelSocket(protectSocket) ?: return null
         val socket = result.first
         val handshake = result.second
 
@@ -261,11 +233,9 @@ object BtProxy {
     }
 
     private fun establishTunnelSocket(
-        protectSocket: (Socket) -> Unit,
-        clientId: String,
-        action: String
+        protectSocket: (Socket) -> Unit
     ): Pair<Socket, HandshakeResult>? {
-        if (clientId.isBlank()) return null
+        if (currentClientId.isBlank()) return null
 
         return try {
             val startMs = System.currentTimeMillis()
@@ -274,7 +244,7 @@ object BtProxy {
 
             val out = socket.getOutputStream()
             val input = socket.getInputStream()
-            out.write(buildHandshakeRequest(action, clientId).toByteArray())
+            out.write(buildHandshakeRequest().toByteArray())
             out.flush()
 
             val response = readHandshakeResponse(input, socket)
@@ -348,9 +318,9 @@ object BtProxy {
         val latencyMs: Long = -1L
     )
 
-    private fun buildHandshakeRequest(action: String, clientId: String): String =
+    private fun buildHandshakeRequest(): String =
         "GET / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\n" +
-            "Action: $action\r\nX-Client-Id: $clientId\r\n\r\n"
+            "Action: $ACTION_TUNNEL\r\nX-Client-Id: $currentClientId\r\n\r\n"
 
     private fun parseTunnelHandshake(response: String): HandshakeResult? {
         val blocks = extractHttpBlocks(response)

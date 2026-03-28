@@ -128,15 +128,34 @@ from pathlib import Path
 PORT = 80
 XRAY_ADDR = ("127.0.0.1", 10809)
 DB_PATH = Path("/opt/btserver/clients.json")
+DB_CACHE = {}
+DB_MTIME = 0.0
+DB_LOCK = threading.Lock()
 
 
 def load_db():
-    if not DB_PATH.exists():
-        DB_PATH.write_text("{}")
-    try:
-        return json.loads(DB_PATH.read_text())
-    except Exception:
-        return {}
+    global DB_CACHE, DB_MTIME
+    with DB_LOCK:
+        if not DB_PATH.exists():
+            DB_PATH.write_text("{}")
+            DB_CACHE = {}
+            DB_MTIME = DB_PATH.stat().st_mtime
+            return DB_CACHE
+
+        try:
+            current_mtime = DB_PATH.stat().st_mtime
+        except Exception:
+            return DB_CACHE
+
+        if current_mtime == DB_MTIME and DB_CACHE:
+            return DB_CACHE
+
+        try:
+            DB_CACHE = json.loads(DB_PATH.read_text())
+            DB_MTIME = current_mtime
+        except Exception:
+            DB_CACHE = {}
+        return DB_CACHE
 
 
 def ensure_client(db, client_id):

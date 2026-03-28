@@ -39,20 +39,10 @@ class BtVpnService : VpnService() {
         }
 
         TunnelSessionStore.setState("CONNECTING")
+        startVpnForeground()
         thread(isDaemon = true, name = "vpn-start-sequence") {
             val clientId = TunnelPrefs.getOrCreateClientId(this)
-            val authResult = BtProxy.authenticate(clientId) { socket -> protect(socket) }
-            TunnelSessionStore.updateFromHeaders(authResult.headers)
-            if (!authResult.isValid) {
-                TunnelSessionStore.setState("ERROR")
-                stopSelf()
-                return@thread
-            }
-
-            startVpnForeground()
             val mtu = 1300
-
-
             val builder = Builder()
                 .setSession("BlackTunnel")
                 .addAddress("198.18.0.1", 30)
