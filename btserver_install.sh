@@ -1,11 +1,88 @@
 #!/bin/bash
-set -euo pipefail
+# ============================================================
+#  BlackTunnel Server — Instalación / Actualización
+#  Funciona en servidores limpios y servidores existentes
+# ============================================================
+set -uo pipefail   # SIN -e: no abortar al primer error antes de instalar
+
+# ---------- colores ----------
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+info()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
+warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
+error() { echo -e "${RED}[ERROR]${NC} $*"; }
+
+# ---------- root ----------
+if [ "$(id -u)" -ne 0 ]; then
+    error "Ejecutar como root."
+    exit 1
+fi
+
+# ============================================================
+# 1. DEPENDENCIAS DEL SISTEMA
+# ============================================================
+info "Actualizando listas de paquetes..."
+apt-get update -qq
+
+info "Instalando dependencias básicas (curl, python3, etc.)..."
+apt-get install -y -qq \
+    curl \
+    wget \
+    python3 \
+    python3-pip \
+    ca-certificates \
+    iproute2 \
+    unzip \
+    systemd
+
+# ============================================================
+# 2. DETECTAR MODO: INSTALACIÓN NUEVA vs ACTUALIZACIÓN
+# ============================================================
+FRESH_INSTALL=true
+if [ -f /opt/btserver/token.txt ] && systemctl is-active --quiet btserver 2>/dev/null; then
+    FRESH_INSTALL=false
+    warn "Instalación existente detectada → modo ACTUALIZACIÓN"
+else
+    info "No se detectó instalación previa → modo INSTALACIÓN NUEVA"
+fi
 
 mkdir -p /opt/btserver
 
-bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+# ============================================================
+# 3. TOKEN: preservar si existe, generar si no
+# ============================================================
+if [ -f /opt/btserver/token.txt ] && [ -s /opt/btserver/token.txt ]; then
+    PANEL_TOKEN=$(cat /opt/btserver/token.txt)
+    info "Token existente conservado."
+else
+    PANEL_TOKEN=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 64 || true)
+    echo "${PANEL_TOKEN}" > /opt/btserver/token.txt
+    chmod 600 /opt/btserver/token.txt
+    info "Nuevo token generado."
+fi
 
-cat > /usr/local/etc/xray/config.json << 'XEOF'
+PANEL_PORT=8090
+SERVER_IP=$(ip -4 addr show scope global | awk '/inet /{print $2}' | cut -d/ -f1 | head -1 || echo "0.0.0.0")
+
+# ============================================================
+# 4. INSTALAR / ACTUALIZAR XRAY
+# ============================================================
+info "Instalando/actualizando Xray..."
+if bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install; then
+    info "Xray instalado correctamente."
+else
+    error "Falló la instalación de Xray. Revisa la conexión a internet."
+    exit 1
+fi
+
+# ============================================================
+# 5. CONFIG DE XRAY (solo en instalación nueva)
+# ============================================================
+XRAY_CONFIG=/usr/local/etc/xray/config.json
+mkdir -p "$(dirname "$XRAY_CONFIG")"
+
+if [ "$FRESH_INSTALL" = true ] || [ ! -f "$XRAY_CONFIG" ]; then
+    info "Escribiendo configuración de Xray..."
+    cat > "$XRAY_CONFIG" << 'XEOF'
 {
   "log": { "loglevel": "warning" },
   "inbounds": [
@@ -32,7 +109,14 @@ cat > /usr/local/etc/xray/config.json << 'XEOF'
   ]
 }
 XEOF
+else
+    warn "Config de Xray existente conservada (no se sobreescribe en actualización)."
+fi
 
+# ============================================================
+# 6. BTSERVER.PY
+# ============================================================
+info "Escribiendo btserver.py..."
 cat > /opt/btserver/btserver.py << 'PYEOF'
 #!/usr/bin/env python3
 import json
@@ -101,12 +185,10 @@ def pipe(src, dst):
             pass
 
 
-def handle_tunnel(client, initial_upstream_data=b""):
+def handle_tunnel(client):
     upstream = None
     try:
         upstream = socket.create_connection(XRAY_ADDR, 5)
-        if initial_upstream_data:
-            upstream.sendall(initial_upstream_data)
         t1 = threading.Thread(target=pipe, args=(client, upstream), daemon=True)
         t2 = threading.Thread(target=pipe, args=(upstream, client), daemon=True)
         t1.start()
@@ -142,22 +224,13 @@ def handle(sock):
                     return
                 if b"\r\n\r\n" in raw and header_complete_at is None:
                     header_complete_at = time.time()
-                    sock.settimeout(0.3)
-                if header_complete_at and (time.time() - header_complete_at) > 0.2:
+                    sock.settimeout(0.2)
+                if header_complete_at and (time.time() - header_complete_at) > 0.12:
                     break
             except socket.timeout:
                 if b"\r\n\r\n" in raw:
                     break
                 return
-
-        header_breaks = []
-        start = 0
-        while True:
-            idx = raw.find(b"\r\n\r\n", start)
-            if idx < 0:
-                break
-            header_breaks.append(idx)
-            start = idx + 4
 
         action = ""
         client_id = ""
@@ -193,13 +266,7 @@ def handle(sock):
                 sock.close()
             else:
                 sock.settimeout(None)
-                tail_start = 0
-                if len(header_breaks) >= 2:
-                    tail_start = header_breaks[1] + 4
-                elif len(header_breaks) == 1:
-                    tail_start = header_breaks[0] + 4
-                initial_upstream_data = raw[tail_start:] if tail_start < len(raw) else b""
-                handle_tunnel(sock, initial_upstream_data)
+                handle_tunnel(sock)
         else:
             sock.close()
     except Exception:
@@ -220,17 +287,26 @@ while True:
 PYEOF
 chmod +x /opt/btserver/btserver.py
 
-cat > /opt/btserver/panel.py << 'PYEOF'
+# ============================================================
+# 7. PANEL.PY  (expansión de variables controlada)
+# ============================================================
+info "Escribiendo panel.py..."
+cat > /opt/btserver/panel.py << PYEOF
 #!/usr/bin/env python3
-import html
 import json
 import time
-import urllib.parse
+import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.parse import urlparse, parse_qs
 
 DB_PATH = Path("/opt/btserver/clients.json")
-PORT = 8090
+TOKEN_PATH = Path("/opt/btserver/token.txt")
+PORT = ${PANEL_PORT}
+
+
+def load_token():
+    return TOKEN_PATH.read_text().strip()
 
 
 def load_db():
@@ -250,194 +326,178 @@ def now_ts():
     return int(time.time())
 
 
-def days_left(expires_at: int) -> int:
+def days_left(expires_at):
     return max(0, (int(expires_at) - now_ts() + 86399) // 86400)
 
 
-def create_client(client_id: str, name: str, days: int):
-    db = load_db()
-    now = now_ts()
-    db[client_id] = {
-        "name": name.strip() or "sin-nombre",
-        "created_at": db.get(client_id, {}).get("created_at", now),
-        "expires_at": now + max(days, 0) * 86400,
-    }
-    save_db(db)
-
-
-def update_client(client_id: str, name: str = None, add_days: int = None, sub_days: int = None, set_days: int = None, new_id: str = None):
-    db = load_db()
-    item = db.get(client_id)
-    if not item:
-        return False, "client_id no existe"
-
-    base_exp = int(item.get("expires_at", now_ts()))
-    base = base_exp if base_exp > now_ts() else now_ts()
-
-    if name is not None:
-        item["name"] = name.strip() or "sin-nombre"
-    if add_days is not None:
-        item["expires_at"] = base + max(add_days, 0) * 86400
-    if sub_days is not None:
-        item["expires_at"] = max(0, base_exp - max(sub_days, 0) * 86400)
-    if set_days is not None:
-        item["expires_at"] = now_ts() + max(set_days, 0) * 86400
-
-    if new_id and new_id != client_id:
-        db.pop(client_id, None)
-        db[new_id] = item
-    else:
-        db[client_id] = item
-
-    save_db(db)
-    return True, "ok"
-
-
-def delete_client(client_id: str):
-    db = load_db()
-    if client_id in db:
-        db.pop(client_id, None)
-        save_db(db)
-        return True
-    return False
-
-
-def render_rows():
-    db = load_db()
-    rows = []
-    for cid, data in sorted(db.items()):
-        name = str(data.get("name", "")).strip() or "sin-nombre"
-        exp = int(data.get("expires_at", 0))
-        rows.append((cid, name, days_left(exp), exp))
-    return rows
+def json_resp(handler, code, data):
+    body = json.dumps(data, ensure_ascii=False).encode()
+    handler.send_response(code)
+    handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
 
 
 class Handler(BaseHTTPRequestHandler):
-    def _redirect(self):
-        self.send_response(303)
-        self.send_header("Location", "/")
-        self.end_headers()
+    def log_message(self, format, *args):
+        pass
+
+    def auth(self):
+        token = self.headers.get("X-Token", "").strip()
+        return token == load_token()
+
+    def read_body(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        if length == 0:
+            return {}
+        try:
+            return json.loads(self.rfile.read(length).decode())
+        except Exception:
+            return {}
 
     def do_GET(self):
-        rows = render_rows()
-        table = ""
-        for cid, name, dleft, exp in rows:
-            table += f"""
-            <tr>
-              <td>{html.escape(cid)}</td>
-              <td>{html.escape(name)}</td>
-              <td>{dleft}</td>
-              <td>{exp}</td>
-              <td>
-                <form method='POST' action='/update' style='display:inline;'>
-                  <input type='hidden' name='client_id' value='{html.escape(cid)}'/>
-                  <input name='name' placeholder='nombre' style='width:120px'/>
-                  <button type='submit' name='action' value='set_name'>Editar</button>
-                </form>
-                <form method='POST' action='/update' style='display:inline;'>
-                  <input type='hidden' name='client_id' value='{html.escape(cid)}'/>
-                  <input name='new_id' placeholder='nuevo id' style='width:140px'/>
-                  <button type='submit' name='action' value='rebind_id'>Cambiar ID</button>
-                </form>
-                <form method='POST' action='/update' style='display:inline;'>
-                  <input type='hidden' name='client_id' value='{html.escape(cid)}'/>
-                  <input name='days' value='1' type='number' min='0' style='width:70px'/>
-                  <button type='submit' name='action' value='add_days'>+Días</button>
-                </form>
-                <form method='POST' action='/update' style='display:inline;'>
-                  <input type='hidden' name='client_id' value='{html.escape(cid)}'/>
-                  <input name='days' value='1' type='number' min='0' style='width:70px'/>
-                  <button type='submit' name='action' value='sub_days'>-Días</button>
-                </form>
-                <form method='POST' action='/update' style='display:inline;'>
-                  <input type='hidden' name='client_id' value='{html.escape(cid)}'/>
-                  <input name='days' value='{dleft}' type='number' min='0' style='width:70px'/>
-                  <button type='submit' name='action' value='set_days'>Set Días</button>
-                </form>
-                <form method='POST' action='/delete' style='display:inline;' onsubmit="return confirm('Eliminar {html.escape(cid)}?')">
-                  <input type='hidden' name='client_id' value='{html.escape(cid)}'/>
-                  <button type='submit'>Eliminar</button>
-                </form>
-              </td>
-            </tr>
-            """
+        if not self.auth():
+            json_resp(self, 401, {"error": "unauthorized"})
+            return
 
-        body = f"""
-        <html><body style='font-family:sans-serif;max-width:1200px;margin:20px auto;'>
-          <h2>BT Panel (Crear / Editar / Eliminar / Actualizar)</h2>
-          <form method='POST' action='/create' style='padding:10px;border:1px solid #ddd;margin-bottom:14px;'>
-            <h3>Crear usuario</h3>
-            <input name='client_id' placeholder='client_id' style='width:340px;padding:8px' required />
-            <input name='name' placeholder='nombre' style='width:220px;padding:8px' />
-            <input name='days' type='number' min='0' value='30' style='width:90px;padding:8px' />
-            <button type='submit'>Crear</button>
-          </form>
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/")
+        params = parse_qs(parsed.query)
 
-          <table border='1' cellpadding='6' cellspacing='0' style='width:100%;'>
-            <tr><th>Client ID</th><th>Nombre</th><th>Días restantes</th><th>Expires At</th><th>Acciones</th></tr>
-            {table}
-          </table>
-        </body></html>
-        """
-        payload = body.encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+        if path == "/clients":
+            db = load_db()
+            result = []
+            for cid, data in sorted(db.items()):
+                exp = int(data.get("expires_at", 0))
+                result.append({
+                    "id": cid,
+                    "name": data.get("name", "sin-nombre"),
+                    "expires_at": exp,
+                    "days_left": days_left(exp),
+                    "active": now_ts() <= exp
+                })
+            json_resp(self, 200, {"clients": result, "total": len(result)})
+            return
+
+        if path == "/client":
+            cid = params.get("id", [""])[0].strip()
+            if not cid:
+                json_resp(self, 400, {"error": "falta id"})
+                return
+            db = load_db()
+            item = db.get(cid)
+            if not item:
+                json_resp(self, 404, {"error": "no encontrado"})
+                return
+            exp = int(item.get("expires_at", 0))
+            json_resp(self, 200, {
+                "id": cid,
+                "name": item.get("name", "sin-nombre"),
+                "expires_at": exp,
+                "days_left": days_left(exp),
+                "active": now_ts() <= exp
+            })
+            return
+
+        json_resp(self, 404, {"error": "ruta no encontrada"})
 
     def do_POST(self):
-        length = int(self.headers.get("Content-Length", "0"))
-        raw = self.rfile.read(length).decode()
-        data = urllib.parse.parse_qs(raw)
-        client_id = data.get("client_id", [""])[0].strip()
-        name = data.get("name", [""])[0].strip()
-        days_raw = data.get("days", ["0"])[0].strip()
-        new_id = data.get("new_id", [""])[0].strip()
-        action = data.get("action", [""])[0].strip()
-
-        try:
-            days = int(days_raw)
-        except Exception:
-            days = 0
-
-        if self.path == "/create":
-            if client_id:
-                create_client(client_id, name, days)
-            self._redirect()
+        if not self.auth():
+            json_resp(self, 401, {"error": "unauthorized"})
             return
 
-        if self.path == "/delete":
-            if client_id:
-                delete_client(client_id)
-            self._redirect()
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/")
+        body = self.read_body()
+
+        if path == "/client/create":
+            cid = str(body.get("id", "")).strip()
+            name = str(body.get("name", "sin-nombre")).strip() or "sin-nombre"
+            days = int(body.get("days", 30))
+            if not cid:
+                json_resp(self, 400, {"error": "falta id"})
+                return
+            db = load_db()
+            now = now_ts()
+            db[cid] = {
+                "name": name,
+                "created_at": db.get(cid, {}).get("created_at", now),
+                "expires_at": now + max(days, 0) * 86400
+            }
+            save_db(db)
+            json_resp(self, 200, {"ok": True, "id": cid, "name": name, "days": days})
             return
 
-        if self.path == "/update":
-            if client_id:
-                if action == "set_name":
-                    update_client(client_id, name=name)
-                elif action == "rebind_id":
-                    if new_id:
-                        update_client(client_id, new_id=new_id)
-                elif action == "add_days":
-                    update_client(client_id, add_days=days)
-                elif action == "sub_days":
-                    update_client(client_id, sub_days=days)
-                elif action == "set_days":
-                    update_client(client_id, set_days=days)
-            self._redirect()
+        if path == "/client/delete":
+            cid = str(body.get("id", "")).strip()
+            if not cid:
+                json_resp(self, 400, {"error": "falta id"})
+                return
+            db = load_db()
+            if cid not in db:
+                json_resp(self, 404, {"error": "no encontrado"})
+                return
+            db.pop(cid)
+            save_db(db)
+            json_resp(self, 200, {"ok": True})
             return
 
-        self.send_response(404)
-        self.end_headers()
+        if path == "/client/update":
+            cid = str(body.get("id", "")).strip()
+            if not cid:
+                json_resp(self, 400, {"error": "falta id"})
+                return
+            db = load_db()
+            item = db.get(cid)
+            if not item:
+                json_resp(self, 404, {"error": "no encontrado"})
+                return
+
+            if "name" in body:
+                item["name"] = str(body["name"]).strip() or "sin-nombre"
+
+            base_exp = int(item.get("expires_at", now_ts()))
+            base = base_exp if base_exp > now_ts() else now_ts()
+
+            if "add_days" in body:
+                item["expires_at"] = base + max(int(body["add_days"]), 0) * 86400
+            elif "sub_days" in body:
+                item["expires_at"] = max(0, base_exp - max(int(body["sub_days"]), 0) * 86400)
+            elif "set_days" in body:
+                item["expires_at"] = now_ts() + max(int(body["set_days"]), 0) * 86400
+
+            new_id = str(body.get("new_id", "")).strip()
+            if new_id and new_id != cid:
+                db.pop(cid)
+                db[new_id] = item
+                cid = new_id
+            else:
+                db[cid] = item
+
+            save_db(db)
+            exp = int(item.get("expires_at", 0))
+            json_resp(self, 200, {
+                "ok": True,
+                "id": cid,
+                "name": item.get("name"),
+                "days_left": days_left(exp)
+            })
+            return
+
+        json_resp(self, 404, {"error": "ruta no encontrada"})
 
 
 if __name__ == "__main__":
-    print(f"panel escuchando en :{PORT}")
+    print(f"panel api escuchando :{PORT}")
     HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 PYEOF
 chmod +x /opt/btserver/panel.py
+
+# ============================================================
+# 8. SERVICIOS SYSTEMD
+# ============================================================
+info "Configurando servicios systemd..."
 
 cat > /etc/systemd/system/btserver.service << 'SVCEOF'
 [Unit]
@@ -455,7 +515,7 @@ SVCEOF
 
 cat > /etc/systemd/system/btpanel.service << 'SVCEOF'
 [Unit]
-Description=BlackTunnel Server Panel
+Description=BlackTunnel Panel API
 After=network.target
 
 [Service]
@@ -469,11 +529,43 @@ SVCEOF
 
 systemctl daemon-reload
 systemctl enable xray btserver btpanel
-systemctl restart xray btserver btpanel
-systemctl status xray --no-pager
-systemctl status btserver --no-pager
-systemctl status btpanel --no-pager
 
+# ============================================================
+# 9. INICIAR / REINICIAR SERVICIOS
+# ============================================================
+info "Iniciando/reiniciando servicios..."
+for svc in xray btserver btpanel; do
+    if systemctl restart "$svc" 2>/dev/null; then
+        info "  ✓ $svc OK"
+    else
+        warn "  ✗ $svc no pudo iniciar — revisa: journalctl -u $svc -n 30"
+    fi
+done
+
+# ============================================================
+# 10. RESUMEN FINAL
+# ============================================================
 echo ""
-echo "Listo. Panel: http://<IP_SERVIDOR>:8090"
-echo "Desde el panel puedes: crear, editar, eliminar, sumar/restar/setear días y cambiar ID."
+echo "================================================"
+if [ "$FRESH_INSTALL" = true ]; then
+    echo "  INSTALACION COMPLETA"
+else
+    echo "  ACTUALIZACION COMPLETA"
+fi
+echo "================================================"
+echo ""
+echo "  URL BASE DEL PANEL:"
+echo "  http://${SERVER_IP}:${PANEL_PORT}"
+echo ""
+echo "  TOKEN DE ACCESO:"
+echo "  ${PANEL_TOKEN}"
+echo ""
+echo "  COPIA ESTO EN LA APP:"
+echo "  http://${SERVER_IP}:${PANEL_PORT} ${PANEL_TOKEN}"
+echo ""
+echo "  ESTADO DE SERVICIOS:"
+systemctl is-active xray     && echo "  ✓ xray"     || echo "  ✗ xray (fallo)"
+systemctl is-active btserver && echo "  ✓ btserver" || echo "  ✗ btserver (fallo)"
+systemctl is-active btpanel  && echo "  ✓ btpanel"  || echo "  ✗ btpanel (fallo)"
+echo ""
+echo "================================================"
