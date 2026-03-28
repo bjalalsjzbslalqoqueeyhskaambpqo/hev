@@ -1,12 +1,28 @@
-# BlackTunnel Panel APK (admin visual)
+# BlackTunnel Panel APK (producción, arm64)
 
-App Android para gestionar tu `panel.py` con mejor interfaz visual y flujo rápido de venta.
+App Android para gestionar tu `panel.py` con interfaz visual rápida para administración.
+
+## Dónde poner la URL y el token (IMPORTANTE)
+
+Dentro de la app, en la **primera tarjeta superior**:
+
+1. Campo **Base URL** → aquí pegas la URL del panel.
+2. Campo **Token** → aquí pegas el token del panel.
+3. Pulsa **Guardar**.
+4. Pulsa **Comprobar** para validar conexión.
+
+Ejemplo:
+
+- Base URL: `http://TU_IP:8090`
+- Token: `<TU_TOKEN_GENERADO>`
+
+> Recomendación de seguridad: no hardcodear el token en el código fuente ni en Git.
 
 ## Qué incluye
 
 - Configuración cifrada localmente (`BASE_URL` + `TOKEN`) con `EncryptedSharedPreferences`.
-- Token oculto por defecto (y toggle temporal para mostrar/ocultar).
-- Feedback visual de estado:
+- Token oculto por defecto (toggle temporal para mostrar/ocultar).
+- Feedback visual:
   - Barra de carga.
   - Snackbar de notificaciones.
   - Botones con micro-animación.
@@ -17,21 +33,28 @@ App Android para gestionar tu `panel.py` con mejor interfaz visual y flujo rápi
   - Agregar días.
   - Eliminar cliente.
 
-## Archivo para “código de build”
+## Archivo para disparar build automáticamente
 
-Se añadió el archivo raíz:
+Archivo raíz:
 
 - `SELLER_CODE.txt`
 
-Tú editas ese archivo (por ejemplo con un código de versión comercial), haces push, y el workflow vuelve a compilar APK automáticamente.
+Cuando cambias ese archivo y haces push a `main`, se dispara compilación automática.
+Ese valor se inyecta como `BuildConfig.SELLER_CODE` y se muestra en pantalla.
 
-Ese valor se inyecta al app en build time como `BuildConfig.SELLER_CODE` y se muestra en pantalla como referencia del build.
+## Producción optimizada (64 bits)
 
-## Build automático al detectar cambios
+Se configura build para **solo arm64-v8a**, con reducción de tamaño en release:
+
+- `minifyEnabled = true`
+- `shrinkResources = true`
+- `splits abi` solo `arm64-v8a`
+
+## CI automático
 
 Workflow: `.github/workflows/build-panel-apk.yml`
 
-Se dispara en `push` a `main` cuando cambia cualquiera de estos paths:
+Trigger por cambios en:
 
 - `SELLER_CODE.txt`
 - `app/**`
@@ -40,9 +63,9 @@ Se dispara en `push` a `main` cuando cambia cualquiera de estos paths:
 - `gradle.properties`
 - `.github/workflows/build-panel-apk.yml`
 
-Además puedes lanzarlo manualmente con `workflow_dispatch`.
+Build de CI:
 
-El artifact generado es:
-
-- `blacktunnel-panel-debug-apk`
+- `gradle :app:assembleRelease`
+- Empaquetado zip con compresión máxima (`zip -9`)
+- Artifact: `blacktunnel-panel-arm64-release`
 

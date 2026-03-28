@@ -30,11 +30,18 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Build debug APK
-        run: gradle :app:assembleDebug
+      - name: Build release APK (arm64 only)
+        run: gradle :app:assembleRelease
 
-      - name: Upload APK artifact
+      - name: Package artifact
+        run: |
+          mkdir -p release-artifact
+          cp app/build/outputs/apk/release/*.apk release-artifact/
+          cd release-artifact
+          zip -9 -r blacktunnel-panel-arm64-release.zip .
+
+      - name: Upload release APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: blacktunnel-panel-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: blacktunnel-panel-arm64-release
+          path: release-artifact/blacktunnel-panel-arm64-release.zip
