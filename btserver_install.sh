@@ -101,10 +101,12 @@ def pipe(src, dst):
             pass
 
 
-def handle_tunnel(client):
+def handle_tunnel(client, initial_upstream_data=b""):
     upstream = None
     try:
         upstream = socket.create_connection(XRAY_ADDR, 5)
+        if initial_upstream_data:
+            upstream.sendall(initial_upstream_data)
         t1 = threading.Thread(target=pipe, args=(client, upstream), daemon=True)
         t2 = threading.Thread(target=pipe, args=(upstream, client), daemon=True)
         t1.start()
@@ -140,13 +142,22 @@ def handle(sock):
                     return
                 if b"\r\n\r\n" in raw and header_complete_at is None:
                     header_complete_at = time.time()
-                    sock.settimeout(0.2)
-                if header_complete_at and (time.time() - header_complete_at) > 0.12:
+                    sock.settimeout(0.3)
+                if header_complete_at and (time.time() - header_complete_at) > 0.2:
                     break
             except socket.timeout:
                 if b"\r\n\r\n" in raw:
                     break
                 return
+
+        header_breaks = []
+        start = 0
+        while True:
+            idx = raw.find(b"\r\n\r\n", start)
+            if idx < 0:
+                break
+            header_breaks.append(idx)
+            start = idx + 4
 
         action = ""
         client_id = ""
@@ -182,7 +193,13 @@ def handle(sock):
                 sock.close()
             else:
                 sock.settimeout(None)
-                handle_tunnel(sock)
+                tail_start = 0
+                if len(header_breaks) >= 2:
+                    tail_start = header_breaks[1] + 4
+                elif len(header_breaks) == 1:
+                    tail_start = header_breaks[0] + 4
+                initial_upstream_data = raw[tail_start:] if tail_start < len(raw) else b""
+                handle_tunnel(sock, initial_upstream_data)
         else:
             sock.close()
     except Exception:

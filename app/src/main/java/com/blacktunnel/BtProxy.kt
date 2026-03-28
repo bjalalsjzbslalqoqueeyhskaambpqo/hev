@@ -206,64 +206,68 @@ object BtProxy {
             }
     }.getOrNull()
 
-    private fun openTunnel(protectSocket: (Socket) -> Unit): Socket? = try {
-        val startMs = System.currentTimeMillis()
-        val socket = openProxySocket(protectSocket) ?: return null
-        socket.tcpNoDelay = true
+    private fun openTunnel(protectSocket: (Socket) -> Unit): Socket? {
+        try {
+            val startMs = System.currentTimeMillis()
+            val socket = openProxySocket(protectSocket) ?: return null
+            socket.tcpNoDelay = true
 
-        val out = socket.getOutputStream()
-        val input = socket.getInputStream()
+            val out = socket.getOutputStream()
+            val input = socket.getInputStream()
 
-        out.write("GET / HTTP/1.1\r\nHost: $PROXY_HOST\r\n\r\n".toByteArray())
-        out.flush()
-        Thread.sleep(5)
+            out.write("GET / HTTP/1.1\r\nHost: $PROXY_HOST\r\n\r\n".toByteArray())
+            out.flush()
+            Thread.sleep(5)
 
-        out.write(
-            "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\n" +
-                "Action: tunnel\r\nX-Client-Id: $currentClientId\r\n\r\n"
-        )
-        out.flush()
+            out.write(
+                (
+                    "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\n" +
+                        "Action: tunnel\r\nX-Client-Id: $currentClientId\r\n\r\n"
+                    ).toByteArray()
+            )
+            out.flush()
 
-        val raw = ByteArrayOutputStream()
-        val deadline = System.currentTimeMillis() + 8_000
-        socket.soTimeout = 8_000
-        while (raw.toString().split("\r\n\r\n").size - 1 < 2 && System.currentTimeMillis() < deadline) {
-            try {
-                val tmp = ByteArray(4096)
-                val read = input.read(tmp)
-                if (read < 0) break
-                raw.write(tmp, 0, read)
-            } catch (_: java.net.SocketTimeoutException) {
-                break
+            val raw = ByteArrayOutputStream()
+            val deadline = System.currentTimeMillis() + 8_000
+            socket.soTimeout = 8_000
+            while (raw.toString().split("\r\n\r\n").size - 1 < 2 && System.currentTimeMillis() < deadline) {
+                try {
+                    val tmp = ByteArray(4096)
+                    val read = input.read(tmp)
+                    if (read < 0) break
+                    raw.write(tmp, 0, read)
+                } catch (_: java.net.SocketTimeoutException) {
+                    break
+                }
             }
-        }
 
-        val handshake = parseTunnelHandshake(raw.toString())
-        val headers = handshake?.headers ?: emptyMap()
-        val authState = headers["x-auth-state"] ?: headers["x-status"]
-        if (!authState.isNullOrBlank() && !authState.equals("VALID", ignoreCase = true)) {
-            runCatching { socket.close() }
+            val handshake = parseTunnelHandshake(raw.toString())
+            val headers = handshake?.headers ?: emptyMap()
+            val authState = headers["x-auth-state"] ?: headers["x-status"]
+            if (!authState.isNullOrBlank() && !authState.equals("VALID", ignoreCase = true)) {
+                runCatching { socket.close() }
+                TunnelSessionStore.setState("ERROR")
+                return null
+            }
+
+            TunnelSessionStore.updateFromHeaders(
+                mapOf(
+                    "X-Status" to (headers["x-auth-state"] ?: headers["x-status"] ?: "-"),
+                    "X-Name" to (headers["x-name"] ?: "-"),
+                    "X-Expire" to (headers["x-expire"] ?: "-"),
+                    "X-Days-Left" to (headers["x-days-left"] ?: "-"),
+                    "X-Premium" to "1"
+                )
+            )
+
+            socket.soTimeout = 0
+            TunnelSessionStore.setLatency(System.currentTimeMillis() - startMs)
+            TunnelSessionStore.setState("CONNECTED")
+            return socket
+        } catch (_: Exception) {
             TunnelSessionStore.setState("ERROR")
             return null
         }
-
-        TunnelSessionStore.updateFromHeaders(
-            mapOf(
-                "X-Status" to (headers["x-auth-state"] ?: headers["x-status"] ?: "-"),
-                "X-Name" to (headers["x-name"] ?: "-"),
-                "X-Expire" to (headers["x-expire"] ?: "-"),
-                "X-Days-Left" to (headers["x-days-left"] ?: "-"),
-                "X-Premium" to "1"
-            )
-        )
-
-        socket.soTimeout = 0
-        TunnelSessionStore.setLatency(System.currentTimeMillis() - startMs)
-        TunnelSessionStore.setState("CONNECTED")
-        socket
-    } catch (_: Exception) {
-        TunnelSessionStore.setState("ERROR")
-        null
     }
 
     private fun openProxySocket(protectSocket: (Socket) -> Unit): Socket? {
