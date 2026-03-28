@@ -174,7 +174,7 @@ object BtProxy {
                 "enabled": true,
                 "concurrency": $MUX_CONCURRENCY,
                 "xudpConcurrency": $XUDP_CONCURRENCY,
-                "xudpProxyUDP443": "allow"
+                "xudpProxyUDP443": "skip"
               }
             }
           ]
