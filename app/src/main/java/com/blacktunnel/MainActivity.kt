@@ -215,7 +215,6 @@ class MainActivity : AppCompatActivity() {
     private fun onToggle() {
         val current = TunnelSessionStore.current()
         if (current.state == "CONNECTING" || current.state == "CONNECTED") {
-            stopService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
             startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
             return
         }
@@ -282,7 +281,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val REQ_VPN_PREPARE = 11
-        private const val LATENCY_OFFSET_MS = 260L
+        private const val LATENCY_OFFSET_MS = 200L
         private const val HOTSPOT_PORT = 1080
     }
 }

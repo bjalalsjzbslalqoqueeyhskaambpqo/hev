@@ -11,14 +11,8 @@ object TunnelPrefs {
     private const val KEY_HOTSPOT_PROXY = "hotspot_proxy"
     private const val KEY_BLOCK_NON_SELECTED = "block_non_selected"
 
-    fun getMtu(ctx: Context): Int = 1300
-
     fun getMux(ctx: Context): Int =
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_MUX, 16)
-
-    fun setMtu(ctx: Context, mtu: Int) {
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putInt("mtu", 1300).apply()
-    }
 
     fun setMux(ctx: Context, mux: Int) {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putInt(KEY_MUX, mux).apply()

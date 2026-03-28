@@ -7,6 +7,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.Collections
 import kotlin.concurrent.thread
 
 object BtProxy {
@@ -19,14 +20,16 @@ object BtProxy {
     private const val XRAY_SOCKS5_PORT = 10808
     private const val TUNNEL_LOCAL_PORT = 10809
     private const val TEST_UUID = "a3482e88-686a-4a58-8126-99c9df64b7bf"
+    private const val HANDSHAKE_GAP_MS = 10L
     private val HTTP_STATUS_REGEX = Regex("HTTP/1\\.1\\s+\\d{3}")
 
     @Volatile private var xrayProcess: Process? = null
+    @Volatile private var bridgeServer: ServerSocket? = null
     @Volatile private var running = false
     @Volatile private var muxConcurrency: Int = 16
     @Volatile private var xudpConcurrency: Int = 32
-    @Volatile private var logLevel: String = "warning"
     @Volatile private var currentClientId: String = ""
+    private val activeSockets = Collections.synchronizedSet(mutableSetOf<Socket>())
 
     data class AccessCheckResult(
         val isValid: Boolean,
@@ -38,32 +41,27 @@ object BtProxy {
     fun start(
         ctx: Context,
         mux: Int,
-        profile: String,
         clientId: String,
-        protectSocket: (Socket) -> Unit,
-        logger: (String) -> Unit
+        protectSocket: (Socket) -> Unit
     ) {
         running = true
         currentClientId = clientId.trim()
         muxConcurrency = mux.coerceIn(1, 64)
         xudpConcurrency = (muxConcurrency * 2).coerceIn(16, 128)
-        logLevel = if (profile.equals("performance", ignoreCase = true)) "none" else "warning"
-        logger("BtProxy.start() profile=$profile mux=$muxConcurrency xudp=$xudpConcurrency")
         TunnelSessionStore.setState("CONNECTING")
 
         thread(isDaemon = true, name = "btproxy-init") {
-            startTunnelBridge(protectSocket, logger)
-            startXray(ctx, logger)
+            startTunnelBridge(protectSocket)
+            startXray(ctx)
         }
     }
 
     fun checkAccess(
         clientId: String,
-        protectSocket: (Socket) -> Unit,
-        logger: (String) -> Unit
+        protectSocket: (Socket) -> Unit
     ): AccessCheckResult {
         currentClientId = clientId.trim()
-        val authSocket = openProxySocket(protectSocket, logger) ?: return AccessCheckResult(
+        val authSocket = openProxySocket(protectSocket) ?: return AccessCheckResult(
             isValid = false,
             state = "UNREACHABLE",
             daysLeft = "0",
@@ -77,7 +75,7 @@ object BtProxy {
             val p1 = "GET / HTTP/1.1\r\nHost: $PROXY_HOST\r\n\r\n"
             out.write(p1.toByteArray())
             out.flush()
-            Thread.sleep(120)
+            Thread.sleep(HANDSHAKE_GAP_MS)
 
             val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\nAction: auth\r\nX-Client-ID: $currentClientId\r\n\r\n"
             out.write(p2.toByteArray())
@@ -108,47 +106,53 @@ object BtProxy {
             val daysLeft = headers["x-days-left"] ?: "0"
             val name = headers["x-name"] ?: "-"
             val valid = handshake?.statusCode == 101 && state == "VALID"
-            logger("Auth check result code=${handshake?.statusCode ?: -1} state=$state days=$daysLeft")
             AccessCheckResult(isValid = valid, state = state, daysLeft = daysLeft, name = name)
         }.getOrElse {
-            logger("ERROR auth check: ${it.message}")
             AccessCheckResult(isValid = false, state = "UNREACHABLE", daysLeft = "0", name = "-")
         }.also {
+            releaseSocket(authSocket)
             runCatching { authSocket.close() }
         }
     }
 
     fun stop() {
         running = false
+        runCatching { bridgeServer?.close() }
+        bridgeServer = null
+        synchronized(activeSockets) {
+            activeSockets.forEach { socket -> runCatching { socket.close() } }
+            activeSockets.clear()
+        }
         xrayProcess?.destroy()
         xrayProcess = null
         TunnelSessionStore.reset()
     }
 
     private fun startTunnelBridge(
-        protectSocket: (Socket) -> Unit,
-        logger: (String) -> Unit
+        protectSocket: (Socket) -> Unit
     ) {
         val srv = ServerSocket(TUNNEL_LOCAL_PORT, 128, InetAddress.getByName("127.0.0.1"))
-        logger("Bridge escuchando en 127.0.0.1:$TUNNEL_LOCAL_PORT")
+        bridgeServer = srv
 
         thread(isDaemon = true, name = "bridge-accept") {
             try {
                 while (running) {
                     val client = srv.accept()
+                    trackSocket(client)
                     client.tcpNoDelay = true
                     thread(isDaemon = true, name = "bridge-conn") {
-                        val tunnel = openTunnel(protectSocket, logger)
+                        val tunnel = openTunnel(protectSocket)
                         if (tunnel == null) {
-                            logger("ERROR no se pudo abrir túnel para conexión local")
+                            releaseSocket(client)
                             runCatching { client.close() }
                             return@thread
                         }
-                        logger("Túnel TCP abierto para bridge")
                         relay(client, tunnel)
                     }
                 }
             } catch (_: Exception) {
+            } finally {
+                runCatching { srv.close() }
             }
         }
     }
@@ -178,6 +182,8 @@ object BtProxy {
                 }
             }
             up.interrupt()
+            releaseSocket(client)
+            releaseSocket(tunnel)
             runCatching { client.close() }
             runCatching { tunnel.close() }
         }
@@ -185,7 +191,7 @@ object BtProxy {
         down.join()
     }
 
-    private fun startXray(ctx: Context, logger: (String) -> Unit) {
+    private fun startXray(ctx: Context) {
         try {
             val nativeLibDir = ctx.applicationInfo.nativeLibraryDir
             val candidates = listOf(
@@ -194,18 +200,9 @@ object BtProxy {
                 File(ctx.filesDir, "libxray.so"),
                 File(ctx.filesDir, "xray")
             )
-            candidates.forEach { c ->
-                logger("xray candidato: ${c.absolutePath} exists=${c.exists()} exec=${c.canExecute()} size=${if (c.exists()) c.length() else 0L}")
-            }
-            val binary = candidates.firstOrNull { it.exists() } ?: run {
-                logger("ERROR xray no encontrado en rutas conocidas")
-                return
-            }
+            val binary = candidates.firstOrNull { it.exists() } ?: return
             runCatching { binary.setExecutable(true, false) }
-            if (!binary.canExecute()) {
-                logger("ERROR xray no ejecutable: ${binary.absolutePath}")
-                return
-            }
+            if (!binary.canExecute()) return
 
             val config = File(ctx.filesDir, "xray-client.json")
             config.writeText(buildClientConfig(ctx))
@@ -216,8 +213,6 @@ object BtProxy {
                 "-c",
                 config.absolutePath
             )
-            logger("Iniciando xray: ${cmd.joinToString(" ")}")
-
             val process = ProcessBuilder(cmd)
                 .directory(binary.parentFile ?: File(nativeLibDir))
                 .redirectErrorStream(true)
@@ -225,28 +220,16 @@ object BtProxy {
             xrayProcess = process
 
             thread(isDaemon = true, name = "xray-log") {
-                process.inputStream.bufferedReader().forEachLine { line ->
-                    logger("[xray] $line")
-                }
+                process.inputStream.bufferedReader().forEachLine { }
             }
-            logger("xray proceso iniciado")
         } catch (e: Exception) {
-            logger("ERROR iniciando xray: ${e.message}")
         }
     }
 
     private fun buildClientConfig(ctx: Context): String {
         return """
             {
-              "log": { "loglevel": "$logLevel" },
-              "policy": {
-                "system": {
-                  "udpTimeout": 600,
-                  "connIdle": 600,
-                  "downlinkOnly": 10,
-                  "uplinkOnly": 10
-                }
-              },
+              "log": { "loglevel": "none" },
               "inbounds": [
                 {
                   "protocol": "socks",
@@ -329,12 +312,11 @@ object BtProxy {
     }
 
     private fun openTunnel(
-        protectSocket: (Socket) -> Unit,
-        logger: (String) -> Unit
+        protectSocket: (Socket) -> Unit
     ): Socket? {
         return try {
             val startMs = System.currentTimeMillis()
-            val sock = openProxySocket(protectSocket, logger) ?: return null
+            val sock = openProxySocket(protectSocket) ?: return null
             sock.tcpNoDelay = true
             val out = sock.getOutputStream()
             val inp = sock.getInputStream()
@@ -342,13 +324,11 @@ object BtProxy {
             val p1 = "GET / HTTP/1.1\r\nHost: $PROXY_HOST\r\n\r\n"
             out.write(p1.toByteArray())
             out.flush()
-            logger("TX p1 host=$PROXY_HOST")
-            Thread.sleep(200)
+            Thread.sleep(HANDSHAKE_GAP_MS)
 
             val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\nAction: tunnel\r\nX-Client-ID: $currentClientId\r\n\r\n"
             out.write(p2.toByteArray())
             out.flush()
-            logger("TX p2 host=$TUNNEL_HOST action=tunnel client-id=${currentClientId.take(8)}…")
 
             sock.soTimeout = 8000
             val buf = ByteArrayOutputStream()
@@ -367,7 +347,6 @@ object BtProxy {
             }
 
             val resp = buf.toString()
-            logger("RX $blocks bloques: ${resp.take(100)}")
             val handshake = parseTunnelHandshake(resp)
             val headersForUi = handshake?.headers?.toMutableMap() ?: mutableMapOf()
             val authState = headersForUi["x-auth-state"] ?: headersForUi["x-status"]
@@ -375,12 +354,11 @@ object BtProxy {
                 headersForUi["x-status"] = authState ?: if (handshake?.statusCode == 101) "VALID" else "INVALID"
             }
             if (!authState.isNullOrBlank() && !authState.equals("VALID", ignoreCase = true)) {
-                logger("ERROR tunnel rechazado por servidor auth-state=$authState")
+                releaseSocket(sock)
                 runCatching { sock.close() }
                 TunnelSessionStore.setState("ERROR")
                 return null
             }
-            logger("Handshake tolerante code=${handshake?.statusCode ?: -1} x-status=${headersForUi["x-status"]}")
             TunnelSessionStore.updateFromHeaders(
                 mapOf(
                     "X-Status" to (headersForUi["x-status"] ?: "-"),
@@ -394,27 +372,21 @@ object BtProxy {
             sock.soTimeout = 0
             TunnelSessionStore.setLatency(System.currentTimeMillis() - startMs)
             TunnelSessionStore.setState("CONNECTED")
-            logger("Túnel abierto (modo tolerante) via ${sock.inetAddress.hostAddress}")
             sock
         } catch (e: Exception) {
-            logger("ERROR abriendo túnel: ${e.message}")
             TunnelSessionStore.setState("ERROR")
             null
         }
     }
 
     private fun openProxySocket(
-        protectSocket: (Socket) -> Unit,
-        logger: (String) -> Unit
+        protectSocket: (Socket) -> Unit
     ): Socket? {
         val candidates = linkedSetOf<InetAddress>()
         runCatching { candidates += InetAddress.getByName(PROXY_IPV6) }
-            .onFailure { logger("WARN IPv6 preferido inválido: ${it.message}") }
         runCatching { candidates += InetAddress.getAllByName(PROXY_HOST).toList() }
-            .onFailure { logger("WARN resolución DNS de proxy falló: ${it.message}") }
 
         if (candidates.isEmpty()) {
-            logger("ERROR no hay direcciones para proxy host=$PROXY_HOST")
             TunnelSessionStore.setState("ERROR")
             return null
         }
@@ -426,16 +398,21 @@ object BtProxy {
                 socket.keepAlive = true
                 socket.tcpNoDelay = true
                 socket.connect(InetSocketAddress(address, PROXY_PORT), 10_000)
-                logger("Proxy conectado por ${if (address is java.net.Inet6Address) "IPv6" else "IPv4"} ${address.hostAddress}")
+                trackSocket(socket)
                 return socket
-            }.onFailure {
-                logger("WARN fallo conexión proxy ${address.hostAddress}: ${it.message}")
-            }
+            }.onFailure { }
         }
 
-        logger("ERROR no se pudo conectar al proxy por IPv4/IPv6")
         TunnelSessionStore.setState("ERROR")
         return null
+    }
+
+    private fun trackSocket(socket: Socket) {
+        activeSockets.add(socket)
+    }
+
+    private fun releaseSocket(socket: Socket) {
+        activeSockets.remove(socket)
     }
 
     private data class HandshakeResult(
