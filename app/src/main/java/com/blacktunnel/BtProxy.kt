@@ -139,11 +139,14 @@ object BtProxy {
         {
           "log": { "loglevel": "none" },
           "policy": {
-            "system": {
-              "udpTimeout": 600,
-              "connIdle": 600,
-              "downlinkOnly": 30,
-              "uplinkOnly": 30
+            "levels": {
+              "0": {
+                "handshake": 4,
+                "connIdle": 600,
+                "uplinkOnly": 5,
+                "downlinkOnly": 10,
+                "bufferSize": 512
+              }
             }
           },
           "inbounds": [
@@ -214,9 +217,7 @@ object BtProxy {
             val out = socket.getOutputStream()
             val inp = socket.getInputStream()
 
-            // p1 señuelo — Personal AR lo consume y responde
             val p1 = "GET / HTTP/1.1\r\nHost: $PROXY_HOST\r\n\r\n"
-            // p2 túnel real — llega al servidor
             val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\n" +
                 "Action: tunnel\r\nX-Client-Id: $currentClientId\r\n\r\n"
 
@@ -226,7 +227,7 @@ object BtProxy {
             out.write(p2.toByteArray())
             out.flush()
 
-            // Leer todo lo que llega durante 8s buscando el bloque 101
+            // Leer hasta encontrar el bloque 101
             socket.soTimeout = 8000
             val raw = StringBuilder()
             val deadline = System.currentTimeMillis() + 8000
@@ -236,7 +237,6 @@ object BtProxy {
                     val n = inp.read(tmp)
                     if (n < 0) break
                     raw.append(String(tmp, 0, n))
-                    // Salir apenas tengamos el bloque 101 completo
                     if (findHttpBlock(raw.toString(), 101) != null) break
                 } catch (_: java.net.SocketTimeoutException) { break }
             }
@@ -298,19 +298,16 @@ object BtProxy {
         val headers: Map<String, String>
     )
 
-    // Encuentra el primer bloque HTTP con el statusCode dado dentro del raw
     private fun findHttpBlock(raw: String, statusCode: Int): String? {
         val marker = "HTTP/1.1 $statusCode"
         val start = raw.indexOf(marker).takeIf { it >= 0 } ?: return null
-        // El bloque termina en \r\n\r\n
         val end = raw.indexOf("\r\n\r\n", start).takeIf { it >= 0 } ?: return null
         return raw.substring(start, end)
     }
 
     private fun parseTunnelHandshake(raw: String): HandshakeResult? {
-        // Buscar primero el bloque 101 con X-Auth-State
-        val block101 = findHttpBlock(raw, 101) ?: return null
-        return parseHandshakeBlock(block101)
+        val block = findHttpBlock(raw, 101) ?: return null
+        return parseHandshakeBlock(block)
     }
 
     private fun parseHandshakeBlock(block: String): HandshakeResult? {
