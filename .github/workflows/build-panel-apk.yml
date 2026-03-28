@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - main
+      - codex/create-simple-admin-app-spj2fb
     paths:
       - 'PANEL_CONFIG.txt'
       - 'SELLER_CODE.txt'
