@@ -19,7 +19,6 @@ object BtProxy {
     private const val XRAY_SOCKS5_PORT = 10808
     private const val TUNNEL_LOCAL_PORT = 10809
     private const val TEST_UUID = "a3482e88-686a-4a58-8126-99c9df64b7bf"
-    private val HTTP_STATUS_REGEX = Regex("HTTP/1\\.1\\s+\\d{3}")
 
     @Volatile private var xrayProcess: Process? = null
     @Volatile private var running = false
@@ -28,16 +27,8 @@ object BtProxy {
     @Volatile private var logLevel: String = "warning"
     @Volatile private var currentClientId: String = ""
 
-    data class AccessCheckResult(
-        val isValid: Boolean,
-        val state: String,
-        val daysLeft: String,
-        val name: String
-    )
-
     fun start(
         ctx: Context,
-        mux: Int,
         profile: String,
         clientId: String,
         protectSocket: (Socket) -> Unit,
@@ -45,8 +36,8 @@ object BtProxy {
     ) {
         running = true
         currentClientId = clientId.trim()
-        muxConcurrency = mux.coerceIn(1, 64)
-        xudpConcurrency = (muxConcurrency * 2).coerceIn(16, 128)
+        muxConcurrency = 256
+        xudpConcurrency = 512
         logLevel = if (profile.equals("performance", ignoreCase = true)) "none" else "warning"
         logger("BtProxy.start() profile=$profile mux=$muxConcurrency xudp=$xudpConcurrency")
         TunnelSessionStore.setState("CONNECTING")
@@ -54,67 +45,6 @@ object BtProxy {
         thread(isDaemon = true, name = "btproxy-init") {
             startTunnelBridge(protectSocket, logger)
             startXray(ctx, logger)
-        }
-    }
-
-    fun checkAccess(
-        clientId: String,
-        protectSocket: (Socket) -> Unit,
-        logger: (String) -> Unit
-    ): AccessCheckResult {
-        currentClientId = clientId.trim()
-        val authSocket = openProxySocket(protectSocket, logger) ?: return AccessCheckResult(
-            isValid = false,
-            state = "UNREACHABLE",
-            daysLeft = "0",
-            name = "-"
-        )
-        return runCatching {
-            authSocket.tcpNoDelay = true
-            val out = authSocket.getOutputStream()
-            val inp = authSocket.getInputStream()
-
-            val p1 = "GET / HTTP/1.1\r\nHost: $PROXY_HOST\r\n\r\n"
-            out.write(p1.toByteArray())
-            out.flush()
-            Thread.sleep(120)
-
-            val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\nAction: auth\r\nX-Client-ID: $currentClientId\r\n\r\n"
-            out.write(p2.toByteArray())
-            out.flush()
-
-            authSocket.soTimeout = 7000
-            val raw = ByteArrayOutputStream()
-            val tmp = ByteArray(4096)
-            val deadline = System.currentTimeMillis() + 7000
-            var blocks = 0
-            while (System.currentTimeMillis() < deadline) {
-                try {
-                    val n = inp.read(tmp)
-                    if (n <= 0) break
-                    raw.write(tmp, 0, n)
-                    val rawText = raw.toString()
-                    blocks = rawText.split("\r\n\r\n").size - 1
-                    val httpBlocks = HTTP_STATUS_REGEX.findAll(rawText).count()
-                    if (blocks >= 2 || (httpBlocks >= 2 && rawText.contains("X-Auth-State", ignoreCase = true))) break
-                } catch (_: java.net.SocketTimeoutException) {
-                    break
-                }
-            }
-            val response = raw.toString()
-            val handshake = parseTunnelHandshake(response)
-            val headers = handshake?.headers ?: emptyMap()
-            val state = (headers["x-auth-state"] ?: headers["x-status"] ?: "INVALID").uppercase()
-            val daysLeft = headers["x-days-left"] ?: "0"
-            val name = headers["x-name"] ?: "-"
-            val valid = handshake?.statusCode == 101 && state == "VALID"
-            logger("Auth check result code=${handshake?.statusCode ?: -1} state=$state days=$daysLeft")
-            AccessCheckResult(isValid = valid, state = state, daysLeft = daysLeft, name = name)
-        }.getOrElse {
-            logger("ERROR auth check: ${it.message}")
-            AccessCheckResult(isValid = false, state = "UNREACHABLE", daysLeft = "0", name = "-")
-        }.also {
-            runCatching { authSocket.close() }
         }
     }
 
@@ -278,8 +208,8 @@ object BtProxy {
                   },
                   "mux": {
                     "enabled": true,
-                    "concurrency": $muxConcurrency,
-                    "xudpConcurrency": $xudpConcurrency,
+                    "concurrency": 256,
+                    "xudpConcurrency": 512,
                     "xudpProxyUDP443": "allow"
                   }
                 }
@@ -343,9 +273,9 @@ object BtProxy {
             out.write(p1.toByteArray())
             out.flush()
             logger("TX p1 host=$PROXY_HOST")
-            Thread.sleep(200)
+            Thread.sleep(5)
 
-            val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\nAction: tunnel\r\nX-Client-ID: $currentClientId\r\n\r\n"
+            val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\nAction: tunnel\r\nX-Client-Id: $currentClientId\r\n\r\n"
             out.write(p2.toByteArray())
             out.flush()
             logger("TX p2 host=$TUNNEL_HOST action=tunnel client-id=${currentClientId.take(8)}…")
