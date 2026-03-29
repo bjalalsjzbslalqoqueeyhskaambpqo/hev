@@ -208,7 +208,8 @@ object BtProxy {
                 "concurrency": $MUX_CONCURRENCY,
                 "xudpConcurrency": $XUDP_CONCURRENCY,
                 "xudpProxyUDP443": "allow"
-              }
+              },
+              "targetStrategy": "UseIPv4"
             }
           ]
         }
