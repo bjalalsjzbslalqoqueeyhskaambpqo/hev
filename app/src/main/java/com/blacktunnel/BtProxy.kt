@@ -13,11 +13,11 @@ object BtProxy {
     private const val PROXY_IPV6 = "2606:4700::6812:16b7"
     private const val PROXY_HOST = "emailmarketing.personal.com.ar"
     private const val PROXY_PORT = 80
-    private const val TUNNEL_HOST = "7.brawlpass.com.ar"
+    private const val TUNNEL_HOST = "1.brawlpass.com.ar"
     private const val XRAY_SOCKS5_PORT = 10808
     private const val TUNNEL_LOCAL_PORT = 10809
-    private const val MUX_CONCURRENCY = 128
-    private const val XUDP_CONCURRENCY = 128
+    private const val MUX_CONCURRENCY = 80
+    private const val XUDP_CONCURRENCY = 80
     private const val TEST_UUID = "a3482e88-686a-4a58-8126-99c9df64b7bf"
 
     @Volatile private var running = false
@@ -138,6 +138,20 @@ object BtProxy {
     private fun buildClientConfig(ctx: Context): String = """
         {
           "log": { "loglevel": "none" },
+          "dns": {
+            "servers": [
+              "fakedns",
+              "8.8.8.8",
+              "1.1.1.1"
+            ],
+            "queryStrategy": "UseIPv4"
+          },
+          "fakedns": [
+            {
+              "ipPool": "198.18.0.0/15",
+              "poolSize": 65535
+            }
+          ],
           "policy": {
             "levels": {
               "0": {
@@ -160,7 +174,12 @@ object BtProxy {
               "protocol": "socks",
               "listen": "127.0.0.1",
               "port": $XRAY_SOCKS5_PORT,
-              "settings": { "udp": true }
+              "settings": { "udp": true },
+              "sniffing": {
+                "enabled": true,
+                "destOverride": ["http", "tls", "quic", "fakedns"],
+                "metadataOnly": false
+              }
             }${buildHotspotInbound(ctx)}
           ],
           "outbounds": [
@@ -195,7 +214,12 @@ object BtProxy {
               "protocol": "socks",
               "listen": "0.0.0.0",
               "port": 1080,
-              "settings": { "udp": true, "ip": "$ip" }
+              "settings": { "udp": true, "ip": "$ip" },
+              "sniffing": {
+                "enabled": true,
+                "destOverride": ["http", "tls", "quic", "fakedns"],
+                "metadataOnly": false
+              }
             }"""
     }
 
