@@ -18,12 +18,13 @@ object BtProxy {
     private const val TUNNEL_LOCAL_PORT = 10809
     private const val TEST_UUID = "a3482e88-686a-4a58-8126-99c9df64b7bf"
 
-    // Normal: muchas conexiones simultáneas, bueno para navegación y streaming
-    private const val MUX_NORMAL = 128
-    private const val XUDP_NORMAL = 256
+    // Perfil normal: prioriza estabilidad/continuidad en apps (mensajería, streaming, etc.)
+    // Aceptamos más overhead para reducir microcortes.
+    private const val MUX_NORMAL = 256
+    private const val XUDP_NORMAL = 512
 
-    // Performance/Gaming: menos mux TCP para reducir latencia, más XUDP para UDP de juegos
-    private const val MUX_GAMING = 16
+    // Performance/Gaming: agresivo para menor overhead/latencia con pocas apps en túnel.
+    private const val MUX_GAMING = 8
     private const val XUDP_GAMING = 1024
 
     @Volatile private var running = false
@@ -148,12 +149,12 @@ object BtProxy {
         val mux = if (isGamingMode) MUX_GAMING else MUX_NORMAL
         val xudp = if (isGamingMode) XUDP_GAMING else XUDP_NORMAL
 
-        // Gaming: uplinkOnly/downlinkOnly = 0 para cerrar conexiones muertas inmediatamente
-        // Normal: timers más generosos para streaming/navegación
-        val uplinkOnly = if (isGamingMode) 0 else 5
-        val downlinkOnly = if (isGamingMode) 0 else 10
-        val connIdle = if (isGamingMode) 300 else 600
-        val bufferSize = if (isGamingMode) 2048 else 512
+        // Gaming/performance: cierres agresivos para reducir retención y overhead.
+        // Normal: timers/búfer conservadores para estabilidad de sesión y reconexiones suaves.
+        val uplinkOnly = if (isGamingMode) 0 else 30
+        val downlinkOnly = if (isGamingMode) 0 else 60
+        val connIdle = if (isGamingMode) 120 else 1800
+        val bufferSize = if (isGamingMode) 1024 else 8192
 
         return """
         {
@@ -222,7 +223,14 @@ object BtProxy {
                   }
                 ]
               },
-              "streamSettings": { "network": "tcp", "security": "none" },
+              "streamSettings": {
+                "network": "tcp",
+                "security": "none",
+                "sockopt": {
+                  "tcpKeepAliveIdle": ${if (isGamingMode) 20 else 10},
+                  "tcpNoDelay": ${if (isGamingMode) "true" else "false"}
+                }
+              },
               "mux": {
                 "enabled": true,
                 "concurrency": $mux,

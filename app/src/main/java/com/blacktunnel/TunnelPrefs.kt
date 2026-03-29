@@ -12,7 +12,7 @@ object TunnelPrefs {
     private const val KEY_BLOCK_NON_SELECTED = "block_non_selected"
 
     fun getMux(ctx: Context): Int =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_MUX, 32)
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_MUX, 256)
 
     fun setMux(ctx: Context, mux: Int) {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putInt(KEY_MUX, mux).apply()

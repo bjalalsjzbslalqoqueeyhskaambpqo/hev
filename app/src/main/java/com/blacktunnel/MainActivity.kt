@@ -186,7 +186,7 @@ class MainActivity : AppCompatActivity() {
     private fun saveSettings(showToast: Boolean) {
         val profile = if (profilePerformance.isChecked) "performance" else "normal"
         TunnelPrefs.setProfile(this, profile)
-        TunnelPrefs.setMux(this, if (profile == "performance") 60 else 32)
+        TunnelPrefs.setMux(this, if (profile == "performance") 8 else 256)
         TunnelPrefs.setIncludedApps(this, selectedPackages.toList())
         if (profile == "normal") TunnelPrefs.setHotspotProxyEnabled(this, hotspotSwitch.isChecked)
         TunnelPrefs.setBlockNonSelectedEnabled(this, blockNonSelectedSwitch.isChecked)
