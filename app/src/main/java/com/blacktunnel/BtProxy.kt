@@ -16,8 +16,8 @@ object BtProxy {
     private const val TUNNEL_HOST = "1.brawlpass.com.ar"
     private const val XRAY_SOCKS5_PORT = 10808
     private const val TUNNEL_LOCAL_PORT = 10809
-    private const val MUX_CONCURRENCY = 80
-    private const val XUDP_CONCURRENCY = 80
+    private const val MUX_CONCURRENCY = 128
+    private const val XUDP_CONCURRENCY = 256
     private const val TEST_UUID = "a3482e88-686a-4a58-8126-99c9df64b7bf"
 
     @Volatile private var running = false
@@ -52,7 +52,7 @@ object BtProxy {
 
     private fun startTunnelBridge(protectSocket: (Socket) -> Unit) {
         runCatching { bridgeServer?.close() }
-        val server = ServerSocket(TUNNEL_LOCAL_PORT, 128, InetAddress.getByName("127.0.0.1"))
+        val server = ServerSocket(TUNNEL_LOCAL_PORT, 256, InetAddress.getByName("127.0.0.1"))
         bridgeServer = server
 
         thread(isDaemon = true, name = "bridge-accept") {
@@ -141,10 +141,18 @@ object BtProxy {
           "dns": {
             "servers": [
               "fakedns",
-              "8.8.8.8",
-              "1.1.1.1"
+              {
+                "address": "8.8.8.8",
+                "queryStrategy": "UseIPv4"
+              },
+              {
+                "address": "1.1.1.1",
+                "queryStrategy": "UseIPv4"
+              }
             ],
-            "queryStrategy": "UseIPv4"
+            "queryStrategy": "UseIPv4",
+            "disableCache": false,
+            "disableFallback": false
           },
           "fakedns": [
             {
