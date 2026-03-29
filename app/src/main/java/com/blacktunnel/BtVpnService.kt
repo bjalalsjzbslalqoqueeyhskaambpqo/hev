@@ -75,6 +75,7 @@ class BtVpnService : VpnService() {
             BtProxy.start(
                 ctx = this,
                 clientId = clientId,
+                profile = TunnelPrefs.getProfile(this),
                 protectSocket = { socket -> protect(socket) }
             )
             val rawFd = ParcelFileDescriptor.dup(established.fileDescriptor).detachFd()

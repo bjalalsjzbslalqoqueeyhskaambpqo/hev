@@ -16,21 +16,30 @@ object BtProxy {
     private const val TUNNEL_HOST = "1.brawlpass.com.ar"
     private const val XRAY_SOCKS5_PORT = 10808
     private const val TUNNEL_LOCAL_PORT = 10809
-    private const val MUX_CONCURRENCY = 128
-    private const val XUDP_CONCURRENCY = 256
     private const val TEST_UUID = "a3482e88-686a-4a58-8126-99c9df64b7bf"
+
+    // Normal: muchas conexiones simultáneas, bueno para navegación y streaming
+    private const val MUX_NORMAL = 128
+    private const val XUDP_NORMAL = 256
+
+    // Performance/Gaming: menos mux TCP para reducir latencia, más XUDP para UDP de juegos
+    private const val MUX_GAMING = 16
+    private const val XUDP_GAMING = 1024
 
     @Volatile private var running = false
     @Volatile private var currentClientId = ""
     @Volatile private var xrayProcess: Process? = null
     @Volatile private var bridgeServer: ServerSocket? = null
+    @Volatile private var isGamingMode = false
 
     fun start(
         ctx: Context,
         clientId: String,
+        profile: String,
         protectSocket: (Socket) -> Unit
     ) {
         currentClientId = clientId.trim()
+        isGamingMode = profile.equals("performance", ignoreCase = true)
         running = true
         thread(isDaemon = true, name = "btproxy-init") {
             startTunnelBridge(protectSocket)
@@ -135,7 +144,18 @@ object BtProxy {
         ).firstOrNull { it.exists() }
     }
 
-    private fun buildClientConfig(ctx: Context): String = """
+    private fun buildClientConfig(ctx: Context): String {
+        val mux = if (isGamingMode) MUX_GAMING else MUX_NORMAL
+        val xudp = if (isGamingMode) XUDP_GAMING else XUDP_NORMAL
+
+        // Gaming: uplinkOnly/downlinkOnly = 0 para cerrar conexiones muertas inmediatamente
+        // Normal: timers más generosos para streaming/navegación
+        val uplinkOnly = if (isGamingMode) 0 else 5
+        val downlinkOnly = if (isGamingMode) 0 else 10
+        val connIdle = if (isGamingMode) 300 else 600
+        val bufferSize = if (isGamingMode) 2048 else 512
+
+        return """
         {
           "log": { "loglevel": "none" },
           "dns": {
@@ -164,17 +184,17 @@ object BtProxy {
             "levels": {
               "0": {
                 "handshake": 4,
-                "connIdle": 600,
-                "uplinkOnly": 5,
-                "downlinkOnly": 10,
-                "bufferSize": 512
+                "connIdle": $connIdle,
+                "uplinkOnly": $uplinkOnly,
+                "downlinkOnly": $downlinkOnly,
+                "bufferSize": $bufferSize
               }
             },
             "system": {
-              "udpTimeout": 600,
-              "connIdle": 600,
-              "downlinkOnly": 10,
-              "uplinkOnly": 10
+              "udpTimeout": 300,
+              "connIdle": $connIdle,
+              "downlinkOnly": $downlinkOnly,
+              "uplinkOnly": $uplinkOnly
             }
           },
           "inbounds": [
@@ -205,15 +225,16 @@ object BtProxy {
               "streamSettings": { "network": "tcp", "security": "none" },
               "mux": {
                 "enabled": true,
-                "concurrency": $MUX_CONCURRENCY,
-                "xudpConcurrency": $XUDP_CONCURRENCY,
+                "concurrency": $mux,
+                "xudpConcurrency": $xudp,
                 "xudpProxyUDP443": "allow"
               },
               "targetStrategy": "UseIPv4"
             }
           ]
         }
-    """.trimIndent()
+        """.trimIndent()
+    }
 
     private fun buildHotspotInbound(ctx: Context): String {
         if (!TunnelPrefs.isHotspotProxyEnabled(ctx)) return ""
@@ -276,7 +297,9 @@ object BtProxy {
                     if (n < 0) break
                     raw.append(String(tmp, 0, n))
                     if (findHttpBlock(raw.toString(), 101) != null) break
-                } catch (_: java.net.SocketTimeoutException) { break }
+                } catch (_: java.net.SocketTimeoutException) {
+                    break
+                }
             }
 
             val handshake = parseTunnelHandshake(raw.toString())
@@ -295,8 +318,8 @@ object BtProxy {
             }
 
             TunnelSessionStore.updateFromHeaders(mapOf(
-                "X-Status"    to (authState.ifBlank { "VALID" }),
-                "X-Name"      to (handshake.headers["x-name"] ?: "-"),
+                "X-Status" to (authState.ifBlank { "VALID" }),
+                "X-Name" to (handshake.headers["x-name"] ?: "-"),
                 "X-Days-Left" to (handshake.headers["x-days-left"] ?: "-")
             ))
             TunnelSessionStore.setLatency(System.currentTimeMillis() - startMs)
@@ -314,7 +337,10 @@ object BtProxy {
         val candidates = linkedSetOf<InetAddress>()
         runCatching { candidates += InetAddress.getByName(PROXY_IPV6) }
         runCatching { candidates += InetAddress.getAllByName(PROXY_HOST).toList() }
-        if (candidates.isEmpty()) { TunnelSessionStore.setState("ERROR"); return null }
+        if (candidates.isEmpty()) {
+            TunnelSessionStore.setState("ERROR")
+            return null
+        }
 
         for (address in candidates) {
             val socket = runCatching {
