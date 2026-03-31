@@ -6,7 +6,6 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
-import android.system.Os
 import android.system.OsConstants
 import androidx.core.app.NotificationCompat
 import kotlin.concurrent.thread
@@ -98,7 +97,7 @@ class BtVpnService : VpnService() {
             )
             val rawFd = ParcelFileDescriptor.dup(established.fileDescriptor).detachFd().also { fd ->
                 synchronized(tunnelLock) {
-                    if (sessionToken == token) rawTunFd = fd else runCatching { Os.close(fd) }
+                    if (sessionToken == token) rawTunFd = fd else runCatching { ParcelFileDescriptor.adoptFd(fd).close() }
                 }
             }
             if (!desiredRunning || sessionToken != token) {
@@ -150,7 +149,7 @@ class BtVpnService : VpnService() {
         }
         runCatching { HevBridge.stop() }
         BtProxy.stop()
-        runCatching { tunFdToClose?.let { Os.close(it) } }
+        runCatching { tunFdToClose?.let { ParcelFileDescriptor.adoptFd(it).close() } }
         runCatching { pfdToClose?.close() }
         TunnelSessionStore.setState("DISCONNECTED")
         stopForeground(STOP_FOREGROUND_REMOVE)
