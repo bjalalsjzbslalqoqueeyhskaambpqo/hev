@@ -13,6 +13,8 @@ import kotlin.concurrent.thread
 class BtVpnService : VpnService() {
 
     private var pfd: ParcelFileDescriptor? = null
+    @Volatile
+    private var isStopping = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return when (intent?.action) {
@@ -33,6 +35,7 @@ class BtVpnService : VpnService() {
     }
 
     private fun startTunnel() {
+        isStopping = false
         if (pfd != null) {
             TunnelSessionStore.setState("CONNECTED")
             return
@@ -104,6 +107,8 @@ class BtVpnService : VpnService() {
     }
 
     private fun stopTunnel() {
+        if (isStopping) return
+        isStopping = true
         runCatching { HevBridge.stop() }
         BtProxy.stop()
         runCatching { pfd?.close() }

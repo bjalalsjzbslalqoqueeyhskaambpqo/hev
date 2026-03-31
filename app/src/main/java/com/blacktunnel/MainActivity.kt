@@ -5,8 +5,10 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
+import android.net.Uri
 import android.net.VpnService
 import android.os.Bundle
+import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.View
@@ -251,18 +253,18 @@ class MainActivity : AppCompatActivity() {
         startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_START))
     }
 
-    private fun requestBatteryOptimizationExemption() {
+    private fun requestBatteryOptimizationExemption(): Boolean {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        if (pm.isIgnoringBatteryOptimizations(packageName)) return
+        if (pm.isIgnoringBatteryOptimizations(packageName)) return false
 
         val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-            data = android.net.Uri.parse("package:$packageName")
+            data = Uri.parse("package:$packageName")
         }
-        runCatching { startActivity(intent) }
+        return runCatching { startActivity(intent); true }.getOrDefault(false)
     }
 
     private fun openBatterySettings() {
-        val manufacturer = android.os.Build.MANUFACTURER.lowercase()
+        val manufacturer = Build.MANUFACTURER.lowercase()
         val intents = mutableListOf<Intent>()
 
         if (manufacturer.contains("xiaomi") || manufacturer.contains("redmi") || manufacturer.contains("poco")) {
@@ -275,19 +277,21 @@ class MainActivity : AppCompatActivity() {
             )
         } else if (manufacturer.contains("samsung")) {
             intents += Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                data = android.net.Uri.parse("package:$packageName")
+                data = Uri.parse("package:$packageName")
             }
+        } else if (manufacturer.contains("motorola")) {
+            intents += Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
         }
 
-        intents += Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-            data = android.net.Uri.parse("package:$packageName")
-        }
         intents += Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
         intents += Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-            data = android.net.Uri.parse("package:$packageName")
+            data = Uri.parse("package:$packageName")
         }
 
-        val opened = intents.firstOrNull { runCatching { startActivity(it); true }.getOrDefault(false) }
+        val opened = intents.firstOrNull { intent ->
+            intent.resolveActivity(packageManager) != null &&
+                runCatching { startActivity(intent); true }.getOrDefault(false)
+        }
         if (opened == null) Toast.makeText(this, getString(R.string.battery_settings_failed), Toast.LENGTH_SHORT).show()
     }
 
