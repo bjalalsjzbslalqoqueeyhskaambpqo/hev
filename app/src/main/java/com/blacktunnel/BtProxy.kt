@@ -40,17 +40,21 @@ object BtProxy {
         ctx: Context,
         clientId: String,
         protectSocket: (Socket) -> Unit
-    ) {
+    ): Boolean {
         currentClientId = clientId.trim()
         running = true
-        thread(isDaemon = true, name = "btproxy-init") {
-            val tunnel = openTunnel(protectSocket) ?: return@thread
-            tunnelSocket = tunnel
-            tunnelOut = DataOutputStream(java.io.BufferedOutputStream(tunnel.getOutputStream(), 65536))
-            startTunnelReader(tunnel)
-            startTunnelBridge()
+        val tunnel = openTunnel(protectSocket) ?: run {
+            running = false
+            return false
+        }
+        tunnelSocket = tunnel
+        tunnelOut = DataOutputStream(java.io.BufferedOutputStream(tunnel.getOutputStream(), 65536))
+        startTunnelReader(tunnel)
+        startTunnelBridge()
+        thread(isDaemon = true, name = "btproxy-xray") {
             startXray(ctx)
         }
+        return true
     }
 
     fun stop() {
