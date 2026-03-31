@@ -40,21 +40,17 @@ object BtProxy {
         ctx: Context,
         clientId: String,
         protectSocket: (Socket) -> Unit
-    ): Boolean {
+    ) {
         currentClientId = clientId.trim()
         running = true
-        val tunnel = openTunnel(protectSocket) ?: run {
-            running = false
-            return false
-        }
-        tunnelSocket = tunnel
-        tunnelOut = DataOutputStream(java.io.BufferedOutputStream(tunnel.getOutputStream(), 65536))
-        startTunnelReader(tunnel)
-        startTunnelBridge()
-        thread(isDaemon = true, name = "btproxy-xray") {
+        thread(isDaemon = true, name = "btproxy-init") {
+            val tunnel = openTunnel(protectSocket) ?: return@thread
+            tunnelSocket = tunnel
+            tunnelOut = DataOutputStream(tunnel.getOutputStream())
+            startTunnelReader(tunnel)
+            startTunnelBridge()
             startXray(ctx)
         }
-        return true
     }
 
     fun stop() {
@@ -74,20 +70,14 @@ object BtProxy {
         TunnelSessionStore.reset()
     }
 
-    private fun writeFrame(type: Byte, streamId: Int, data: ByteArray = ByteArray(0), flush: Boolean = false) {
+    private fun writeFrame(type: Byte, streamId: Int, data: ByteArray = ByteArray(0)) {
         synchronized(tunnelLock) {
             val out = tunnelOut ?: return
             out.writeByte(type.toInt())
             out.writeInt(streamId)
             out.writeInt(data.size)
             if (data.isNotEmpty()) out.write(data)
-            if (flush) out.flush()
-        }
-    }
-
-    private fun flushTunnel() {
-        synchronized(tunnelLock) {
-            runCatching { tunnelOut?.flush() }
+            out.flush()
         }
     }
 
@@ -108,12 +98,7 @@ object BtProxy {
                     when (type) {
                         TYPE_DATA -> {
                             val client = streams[streamId] ?: continue
-                            runCatching {
-                                client.getOutputStream().apply {
-                                    write(data)
-                                    flush()
-                                }
-                            }
+                            runCatching { client.getOutputStream().write(data) }
                         }
                         TYPE_CLOSE -> {
                             val client = streams.remove(streamId)
@@ -138,9 +123,7 @@ object BtProxy {
                     val client = server.accept().also { it.tcpNoDelay = true }
                     val streamId = nextStreamId.getAndIncrement()
                     streams[streamId] = client
-
-                    writeFrame(TYPE_OPEN, streamId, flush = true)
-
+                    writeFrame(TYPE_OPEN, streamId)
                     thread(isDaemon = true, name = "stream-$streamId") {
                         val buf = ByteArray(65536)
                         try {
@@ -155,10 +138,9 @@ object BtProxy {
                                 val n = cin.read(buf, 0, frameSize)
                                 if (n < 0) break
                                 writeFrame(TYPE_DATA, streamId, buf.copyOfRange(0, n))
-                                if (streams.size <= 3) flushTunnel()
                             }
                         } catch (_: Exception) {}
-                        writeFrame(TYPE_CLOSE, streamId, flush = true)
+                        writeFrame(TYPE_CLOSE, streamId)
                         streams.remove(streamId)
                         runCatching { client.close() }
                     }
