@@ -70,14 +70,20 @@ object BtProxy {
         TunnelSessionStore.reset()
     }
 
-    private fun writeFrame(type: Byte, streamId: Int, data: ByteArray = ByteArray(0)) {
+    private fun writeFrame(type: Byte, streamId: Int, data: ByteArray = ByteArray(0), flush: Boolean = true) {
         synchronized(tunnelLock) {
             val out = tunnelOut ?: return
             out.writeByte(type.toInt())
             out.writeInt(streamId)
             out.writeInt(data.size)
             if (data.isNotEmpty()) out.write(data)
-            out.flush()
+            if (flush) out.flush()
+        }
+    }
+
+    private fun flushTunnel() {
+        synchronized(tunnelLock) {
+            runCatching { tunnelOut?.flush() }
         }
     }
 
@@ -139,7 +145,8 @@ object BtProxy {
                                 if (streams.size > 3) Thread.yield()
                                 val n = cin.read(buf, 0, frameSize)
                                 if (n < 0) break
-                                writeFrame(TYPE_DATA, streamId, buf.copyOfRange(0, n))
+                                writeFrame(TYPE_DATA, streamId, buf.copyOfRange(0, n), flush = false)
+                                if (streams.size <= 3) flushTunnel()
                             }
                         } catch (_: Exception) {}
                         writeFrame(TYPE_CLOSE, streamId)
