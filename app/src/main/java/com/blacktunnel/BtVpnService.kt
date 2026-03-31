@@ -13,6 +13,8 @@ import kotlin.concurrent.thread
 class BtVpnService : VpnService() {
 
     private var pfd: ParcelFileDescriptor? = null
+    private var rawTunFd: Int? = null
+    private var hevThread: Thread? = null
     @Volatile
     private var isStopping = false
 
@@ -81,11 +83,14 @@ class BtVpnService : VpnService() {
                 protectSocket = { socket -> protect(socket) }
             )
             val rawFd = ParcelFileDescriptor.dup(established.fileDescriptor).detachFd()
+            rawTunFd = rawFd
             val configFile = writeHevConfig()
 
-            thread(isDaemon = true, name = "hev-main") {
+            hevThread = thread(isDaemon = true, name = "hev-main") {
                 val result = runCatching { HevBridge.start(configFile.absolutePath, rawFd) }.getOrDefault(-1)
                 if (result != 0) TunnelSessionStore.setState("ERROR")
+                closeRawTunFd()
+                hevThread = null
             }
         }
     }
@@ -110,12 +115,20 @@ class BtVpnService : VpnService() {
         if (isStopping) return
         isStopping = true
         runCatching { HevBridge.stop() }
+        runCatching { hevThread?.join(1500) }
         BtProxy.stop()
+        closeRawTunFd()
         runCatching { pfd?.close() }
         pfd = null
         TunnelSessionStore.setState("DISCONNECTED")
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    private fun closeRawTunFd() {
+        val fd = rawTunFd ?: return
+        rawTunFd = null
+        runCatching { ParcelFileDescriptor.adoptFd(fd).close() }
     }
 
     private fun configureAllowedApplications(builder: Builder) {

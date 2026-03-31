@@ -80,8 +80,8 @@ class MainActivity : AppCompatActivity() {
         copyClientIdButton.setOnClickListener { copyClientId() }
         saveSettingsButton.setOnClickListener { saveSettings(showToast = true) }
         batteryButton.setOnClickListener {
-            requestBatteryOptimizationExemption()
-            openBatterySettings()
+            val requested = requestBatteryOptimizationExemption()
+            if (!requested) openBatterySettings()
         }
         hotspotSwitch.setOnCheckedChangeListener { _, isChecked ->
             if (isChecked && getHotspotIp() == null) {
@@ -268,6 +268,9 @@ class MainActivity : AppCompatActivity() {
         val intents = mutableListOf<Intent>()
 
         if (manufacturer.contains("xiaomi") || manufacturer.contains("redmi") || manufacturer.contains("poco")) {
+            intents += Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.parse("package:$packageName")
+            }
             intents += Intent("miui.intent.action.POWER_HIDE_MODE_APP_LIST").apply {
                 addCategory(Intent.CATEGORY_DEFAULT)
             }
@@ -283,10 +286,10 @@ class MainActivity : AppCompatActivity() {
             intents += Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
         }
 
-        intents += Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
         intents += Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
             data = Uri.parse("package:$packageName")
         }
+        intents += Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
 
         val opened = intents.firstOrNull { intent ->
             intent.resolveActivity(packageManager) != null &&
