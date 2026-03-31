@@ -201,17 +201,17 @@ object BtProxy {
             "levels": {
               "0": {
                 "handshake": 4,
-                "connIdle": 0,
-                "uplinkOnly": 2,
-                "downlinkOnly": 5,
+                "connIdle": 600,
+                "uplinkOnly": 5,
+                "downlinkOnly": 10,
                 "bufferSize": 512
               }
             },
             "system": {
               "udpTimeout": 0,
-              "connIdle": 0,
-              "downlinkOnly": 5,
-              "uplinkOnly": 2
+              "connIdle": 600,
+              "downlinkOnly": 10,
+              "uplinkOnly": 10
             }
           },
           "inbounds": [
