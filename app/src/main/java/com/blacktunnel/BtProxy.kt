@@ -20,8 +20,6 @@ object BtProxy {
     private const val TUNNEL_HOST = "1.brawlpass.com.ar"
     private const val XRAY_SOCKS5_PORT = 10808
     private const val TUNNEL_LOCAL_PORT = 10809
-    private const val MUX_CONCURRENCY = 128
-    private const val XUDP_CONCURRENCY = 256
     private const val TEST_UUID = "a3482e88-686a-4a58-8126-99c9df64b7bf"
 
     private const val TYPE_OPEN: Byte = 0x01
@@ -129,10 +127,16 @@ object BtProxy {
                     writeFrame(TYPE_OPEN, streamId)
 
                     thread(isDaemon = true, name = "stream-$streamId") {
-                        val buf = ByteArray(65536)
                         try {
                             val cin = client.getInputStream()
                             while (running) {
+                                val frameSize = when {
+                                    streams.size <= 1 -> 65536
+                                    streams.size <= 3 -> 16384
+                                    else -> 4096
+                                }
+                                if (streams.size > 3) Thread.yield()
+                                val buf = ByteArray(frameSize)
                                 val n = cin.read(buf)
                                 if (n < 0) break
                                 writeFrame(TYPE_DATA, streamId, buf.copyOf(n))
@@ -236,8 +240,8 @@ object BtProxy {
               "streamSettings": { "network": "tcp", "security": "none" },
               "mux": {
                 "enabled": true,
-                "concurrency": $MUX_CONCURRENCY,
-                "xudpConcurrency": $XUDP_CONCURRENCY,
+                "concurrency": 128,
+                "xudpConcurrency": 256,
                 "xudpProxyUDP443": "allow"
               },
               "targetStrategy": "UseIPv4"
@@ -280,7 +284,6 @@ object BtProxy {
     private fun openTunnel(protectSocket: (Socket) -> Unit): Socket? {
         if (currentClientId.isBlank()) return null
         return try {
-            val startMs = System.currentTimeMillis()
             val socket = openProxySocket(protectSocket) ?: return null
             socket.tcpNoDelay = true
 
@@ -292,7 +295,8 @@ object BtProxy {
                 "Action: tunnel\r\nX-Client-Id: $currentClientId\r\n\r\n"
 
             out.write(p1.toByteArray()); out.flush()
-            Thread.sleep(10)
+            Thread.sleep(1)
+            val pingStart = System.currentTimeMillis()
             out.write(p2.toByteArray()); out.flush()
 
             socket.soTimeout = 8000
@@ -327,7 +331,7 @@ object BtProxy {
                 "X-Name"      to (handshake.headers["x-name"] ?: "-"),
                 "X-Days-Left" to (handshake.headers["x-days-left"] ?: "-")
             ))
-            TunnelSessionStore.setLatency(System.currentTimeMillis() - startMs)
+            TunnelSessionStore.setLatency(System.currentTimeMillis() - pingStart)
             TunnelSessionStore.setState("CONNECTED")
             socket.soTimeout = 0
             socket
