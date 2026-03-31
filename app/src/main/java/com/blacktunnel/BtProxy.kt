@@ -202,16 +202,16 @@ object BtProxy {
               "0": {
                 "handshake": 4,
                 "connIdle": 0,
-                "uplinkOnly": 0,
-                "downlinkOnly": 0,
+                "uplinkOnly": 2,
+                "downlinkOnly": 5,
                 "bufferSize": 512
               }
             },
             "system": {
               "udpTimeout": 0,
               "connIdle": 0,
-              "downlinkOnly": 0,
-              "uplinkOnly": 0
+              "downlinkOnly": 5,
+              "uplinkOnly": 2
             }
           },
           "inbounds": [
