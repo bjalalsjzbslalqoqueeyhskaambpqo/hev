@@ -271,6 +271,17 @@ object BtProxy {
                 "destOverride": ["http", "tls", "quic", "fakedns"],
                 "metadataOnly": false
               }
+            },
+            {
+              "protocol": "http",
+              "listen": "0.0.0.0",
+              "port": 8282,
+              "settings": {},
+              "sniffing": {
+                "enabled": true,
+                "destOverride": ["http", "tls", "fakedns"],
+                "metadataOnly": false
+              }
             }"""
     }
 
