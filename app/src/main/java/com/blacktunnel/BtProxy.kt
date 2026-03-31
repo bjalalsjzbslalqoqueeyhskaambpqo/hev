@@ -46,7 +46,7 @@ object BtProxy {
         thread(isDaemon = true, name = "btproxy-init") {
             val tunnel = openTunnel(protectSocket) ?: return@thread
             tunnelSocket = tunnel
-            tunnelOut = DataOutputStream(tunnel.getOutputStream())
+            tunnelOut = DataOutputStream(java.io.BufferedOutputStream(tunnel.getOutputStream(), 65536))
             startTunnelReader(tunnel)
             startTunnelBridge()
             startXray(ctx)
