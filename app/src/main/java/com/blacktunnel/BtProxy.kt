@@ -1,11 +1,15 @@
 package com.blacktunnel
 
 import android.content.Context
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.io.File
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
 object BtProxy {
@@ -20,10 +24,19 @@ object BtProxy {
     private const val XUDP_CONCURRENCY = 256
     private const val TEST_UUID = "a3482e88-686a-4a58-8126-99c9df64b7bf"
 
+    private const val TYPE_OPEN: Byte = 0x01
+    private const val TYPE_DATA: Byte = 0x02
+    private const val TYPE_CLOSE: Byte = 0x03
+
     @Volatile private var running = false
     @Volatile private var currentClientId = ""
     @Volatile private var xrayProcess: Process? = null
     @Volatile private var bridgeServer: ServerSocket? = null
+    @Volatile private var tunnelSocket: Socket? = null
+    @Volatile private var tunnelOut: DataOutputStream? = null
+    private val nextStreamId = AtomicInteger(1)
+    private val streams = ConcurrentHashMap<Int, Socket>()
+    private val tunnelLock = Any()
 
     fun start(
         ctx: Context,
@@ -33,7 +46,11 @@ object BtProxy {
         currentClientId = clientId.trim()
         running = true
         thread(isDaemon = true, name = "btproxy-init") {
-            startTunnelBridge(protectSocket)
+            val tunnel = openTunnel(protectSocket) ?: return@thread
+            tunnelSocket = tunnel
+            tunnelOut = DataOutputStream(tunnel.getOutputStream())
+            startTunnelReader(tunnel)
+            startTunnelBridge()
             startXray(ctx)
         }
     }
@@ -42,6 +59,11 @@ object BtProxy {
         running = false
         runCatching { bridgeServer?.close() }
         bridgeServer = null
+        streams.values.forEach { runCatching { it.close() } }
+        streams.clear()
+        runCatching { tunnelSocket?.close() }
+        tunnelSocket = null
+        tunnelOut = null
         xrayProcess?.let { process ->
             process.destroy()
             if (process.isAlive) process.destroyForcibly()
@@ -50,7 +72,49 @@ object BtProxy {
         TunnelSessionStore.reset()
     }
 
-    private fun startTunnelBridge(protectSocket: (Socket) -> Unit) {
+    private fun writeFrame(type: Byte, streamId: Int, data: ByteArray = ByteArray(0)) {
+        synchronized(tunnelLock) {
+            val out = tunnelOut ?: return
+            out.writeByte(type.toInt())
+            out.writeInt(streamId)
+            out.writeInt(data.size)
+            if (data.isNotEmpty()) out.write(data)
+            out.flush()
+        }
+    }
+
+    private fun startTunnelReader(tunnel: Socket) {
+        thread(isDaemon = true, name = "tunnel-reader") {
+            try {
+                val inp = DataInputStream(tunnel.getInputStream())
+                while (running) {
+                    val type = inp.readByte()
+                    val streamId = inp.readInt()
+                    val length = inp.readInt()
+                    val data = if (length > 0) {
+                        val buf = ByteArray(length)
+                        inp.readFully(buf)
+                        buf
+                    } else ByteArray(0)
+
+                    when (type) {
+                        TYPE_DATA -> {
+                            val client = streams[streamId] ?: continue
+                            runCatching { client.getOutputStream().write(data) }
+                        }
+                        TYPE_CLOSE -> {
+                            val client = streams.remove(streamId)
+                            runCatching { client?.close() }
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                if (running) TunnelSessionStore.setState("ERROR")
+            }
+        }
+    }
+
+    private fun startTunnelBridge() {
         runCatching { bridgeServer?.close() }
         val server = ServerSocket(TUNNEL_LOCAL_PORT, 256, InetAddress.getByName("127.0.0.1"))
         bridgeServer = server
@@ -59,13 +123,24 @@ object BtProxy {
             try {
                 while (running) {
                     val client = server.accept().also { it.tcpNoDelay = true }
-                    thread(isDaemon = true, name = "bridge-conn") {
-                        val tunnel = openTunnel(protectSocket)
-                        if (tunnel == null) {
-                            runCatching { client.close() }
-                            return@thread
-                        }
-                        relay(client, tunnel)
+                    val streamId = nextStreamId.getAndIncrement()
+                    streams[streamId] = client
+
+                    writeFrame(TYPE_OPEN, streamId)
+
+                    thread(isDaemon = true, name = "stream-$streamId") {
+                        val buf = ByteArray(65536)
+                        try {
+                            val cin = client.getInputStream()
+                            while (running) {
+                                val n = cin.read(buf)
+                                if (n < 0) break
+                                writeFrame(TYPE_DATA, streamId, buf.copyOf(n))
+                            }
+                        } catch (_: Exception) {}
+                        writeFrame(TYPE_CLOSE, streamId)
+                        streams.remove(streamId)
+                        runCatching { client.close() }
                     }
                 }
             } catch (_: Exception) {
@@ -73,37 +148,6 @@ object BtProxy {
                 if (bridgeServer === server) bridgeServer = null
             }
         }
-    }
-
-    private fun relay(client: Socket, tunnel: Socket) {
-        val buffer = ByteArray(65536)
-        val upstream = thread(isDaemon = true) {
-            runCatching {
-                val cin = client.getInputStream()
-                val tout = tunnel.getOutputStream()
-                while (true) {
-                    val n = cin.read(buffer)
-                    if (n < 0) break
-                    tout.write(buffer, 0, n)
-                }
-            }
-            runCatching { tunnel.shutdownOutput() }
-        }
-        thread(isDaemon = true) {
-            runCatching {
-                val tin = tunnel.getInputStream()
-                val cout = client.getOutputStream()
-                while (true) {
-                    val n = tin.read(buffer)
-                    if (n < 0) break
-                    cout.write(buffer, 0, n)
-                }
-            }
-            upstream.interrupt()
-            runCatching { client.close() }
-            runCatching { tunnel.close() }
-        }.join()
-        upstream.join()
     }
 
     private fun startXray(ctx: Context) {
@@ -141,25 +185,14 @@ object BtProxy {
           "dns": {
             "servers": [
               "fakedns",
-              {
-                "address": "8.8.8.8",
-                "queryStrategy": "UseIPv4"
-              },
-              {
-                "address": "1.1.1.1",
-                "queryStrategy": "UseIPv4"
-              }
+              { "address": "8.8.8.8", "queryStrategy": "UseIPv4" },
+              { "address": "1.1.1.1", "queryStrategy": "UseIPv4" }
             ],
             "queryStrategy": "UseIPv4",
             "disableCache": false,
             "disableFallback": false
           },
-          "fakedns": [
-            {
-              "ipPool": "198.18.0.0/15",
-              "poolSize": 65535
-            }
-          ],
+          "fakedns": [{ "ipPool": "198.18.0.0/15", "poolSize": 65535 }],
           "policy": {
             "levels": {
               "0": {
@@ -194,13 +227,11 @@ object BtProxy {
             {
               "protocol": "vless",
               "settings": {
-                "vnext": [
-                  {
-                    "address": "127.0.0.1",
-                    "port": $TUNNEL_LOCAL_PORT,
-                    "users": [{ "id": "$TEST_UUID", "encryption": "none" }]
-                  }
-                ]
+                "vnext": [{
+                  "address": "127.0.0.1",
+                  "port": $TUNNEL_LOCAL_PORT,
+                  "users": [{ "id": "$TEST_UUID", "encryption": "none" }]
+                }]
               },
               "streamSettings": { "network": "tcp", "security": "none" },
               "mux": {
@@ -260,11 +291,9 @@ object BtProxy {
             val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\n" +
                 "Action: tunnel\r\nX-Client-Id: $currentClientId\r\n\r\n"
 
-            out.write(p1.toByteArray())
-            out.flush()
+            out.write(p1.toByteArray()); out.flush()
             Thread.sleep(10)
-            out.write(p2.toByteArray())
-            out.flush()
+            out.write(p2.toByteArray()); out.flush()
 
             socket.soTimeout = 8000
             val raw = StringBuilder()
@@ -280,7 +309,6 @@ object BtProxy {
             }
 
             val handshake = parseTunnelHandshake(raw.toString())
-
             if (handshake == null || handshake.statusCode != 101) {
                 runCatching { socket.close() }
                 TunnelSessionStore.setState("ERROR")
@@ -301,7 +329,6 @@ object BtProxy {
             ))
             TunnelSessionStore.setLatency(System.currentTimeMillis() - startMs)
             TunnelSessionStore.setState("CONNECTED")
-
             socket.soTimeout = 0
             socket
         } catch (_: Exception) {
@@ -331,10 +358,7 @@ object BtProxy {
         return null
     }
 
-    private data class HandshakeResult(
-        val statusCode: Int,
-        val headers: Map<String, String>
-    )
+    private data class HandshakeResult(val statusCode: Int, val headers: Map<String, String>)
 
     private fun findHttpBlock(raw: String, statusCode: Int): String? {
         val marker = "HTTP/1.1 $statusCode"
@@ -350,8 +374,7 @@ object BtProxy {
 
     private fun parseHandshakeBlock(block: String): HandshakeResult? {
         val lines = block.split("\r\n")
-        val statusCode = lines.firstOrNull()
-            ?.split(" ")?.getOrNull(1)?.toIntOrNull() ?: return null
+        val statusCode = lines.firstOrNull()?.split(" ")?.getOrNull(1)?.toIntOrNull() ?: return null
         val headers = lines.drop(1).mapNotNull { line ->
             val sep = line.indexOf(':')
             if (sep <= 0) return@mapNotNull null
