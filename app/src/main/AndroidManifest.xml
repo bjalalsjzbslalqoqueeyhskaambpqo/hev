@@ -31,6 +31,7 @@
             android:name=".BtVpnService"
             android:exported="false"
             android:foregroundServiceType="specialUse"
+            android:stopWithTask="false"
             android:permission="android.permission.BIND_VPN_SERVICE">
             <intent-filter>
                 <action android:name="android.net.VpnService" />
