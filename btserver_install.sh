@@ -65,6 +65,23 @@ if [ "$FRESH_INSTALL" = true ] || [ ! -f "$XRAY_CONFIG" ]; then
     "servers": ["8.8.8.8", "1.1.1.1"],
     "queryStrategy": "UseIPv4"
   },
+  "policy": {
+    "levels": {
+      "0": {
+        "handshake": 4,
+        "connIdle": 0,
+        "uplinkOnly": 0,
+        "downlinkOnly": 0,
+        "bufferSize": 512
+      }
+    },
+    "system": {
+      "udpTimeout": 0,
+      "connIdle": 0,
+      "downlinkOnly": 0,
+      "uplinkOnly": 0
+    }
+  },
   "inbounds": [
     {
       "port": 10809,
@@ -101,45 +118,44 @@ fi
 info "Escribiendo btserver.py..."
 cat > /opt/btserver/btserver.py << 'PYEOF'
 #!/usr/bin/env python3
+import asyncio
 import json
-import socket
 import struct
-import threading
 import time
 from pathlib import Path
 
 PORT = 80
-XRAY_ADDR = ("127.0.0.1", 10809)
+XRAY_HOST = "127.0.0.1"
+XRAY_PORT = 10809
 DB_PATH = Path("/opt/btserver/clients.json")
-DB_CACHE = {}
-DB_MTIME = 0.0
-DB_LOCK = threading.Lock()
 
 TYPE_OPEN  = 0x01
 TYPE_DATA  = 0x02
 TYPE_CLOSE = 0x03
 
+DB_CACHE = {}
+DB_MTIME = 0.0
+
 
 def load_db():
     global DB_CACHE, DB_MTIME
-    with DB_LOCK:
-        if not DB_PATH.exists():
-            DB_PATH.write_text("{}")
-            DB_CACHE = {}
-            DB_MTIME = DB_PATH.stat().st_mtime
-            return DB_CACHE
-        try:
-            current_mtime = DB_PATH.stat().st_mtime
-        except Exception:
-            return DB_CACHE
-        if current_mtime == DB_MTIME and DB_CACHE:
-            return DB_CACHE
-        try:
-            DB_CACHE = json.loads(DB_PATH.read_text())
-            DB_MTIME = current_mtime
-        except Exception:
-            DB_CACHE = {}
+    if not DB_PATH.exists():
+        DB_PATH.write_text("{}")
+        DB_CACHE = {}
+        DB_MTIME = DB_PATH.stat().st_mtime
         return DB_CACHE
+    try:
+        mtime = DB_PATH.stat().st_mtime
+    except Exception:
+        return DB_CACHE
+    if mtime == DB_MTIME and DB_CACHE:
+        return DB_CACHE
+    try:
+        DB_CACHE = json.loads(DB_PATH.read_text())
+        DB_MTIME = mtime
+    except Exception:
+        DB_CACHE = {}
+    return DB_CACHE
 
 
 def ensure_client(db, client_id):
@@ -155,136 +171,122 @@ def ensure_client(db, client_id):
     return "VALID", days_left, name, expires_at
 
 
-def reject(sock, state):
-    payload = (
-        "HTTP/1.1 403 Forbidden\r\n"
-        "Connection: close\r\n"
-        f"X-Status: {state}\r\nX-Auth-State: {state}\r\nX-Days-Left: 0\r\n\r\n"
-    ).encode()
+async def read_exact(reader, n):
+    data = await reader.readexactly(n)
+    return data
+
+
+async def pipe(reader, writer):
     try:
-        sock.sendall(payload)
+        while True:
+            data = await reader.read(65536)
+            if not data:
+                break
+            writer.write(data)
+            await writer.drain()
     except Exception:
         pass
-    try:
-        sock.close()
-    except Exception:
-        pass
+    finally:
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:
+            pass
 
 
-def read_exact(sock, n):
-    buf = b""
-    while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
-        if not chunk:
-            raise ConnectionError("closed")
-        buf += chunk
-    return buf
-
-
-def handle_mux_tunnel(client):
+async def handle_mux_tunnel(client_reader, client_writer):
     streams = {}
-    streams_lock = threading.Lock()
-    write_lock = threading.Lock()
+    write_lock = asyncio.Lock()
 
-    def send_frame(type_, stream_id, data=b""):
-        with write_lock:
+    async def send_frame(type_, stream_id, data=b""):
+        async with write_lock:
             header = struct.pack("!B I I", type_, stream_id, len(data))
-            try:
-                client.sendall(header + data)
-            except Exception:
-                pass
+            client_writer.write(header + data)
+            await client_writer.drain()
 
-    def xray_to_client(stream_id, xray_conn):
+    async def xray_to_client(stream_id, xray_reader):
         try:
             while True:
-                data = xray_conn.recv(65536)
+                data = await xray_reader.read(65536)
                 if not data:
                     break
-                send_frame(TYPE_DATA, stream_id, data)
+                await send_frame(TYPE_DATA, stream_id, data)
         except Exception:
             pass
-        send_frame(TYPE_CLOSE, stream_id)
-        with streams_lock:
-            streams.pop(stream_id, None)
-        try:
-            xray_conn.close()
-        except Exception:
-            pass
+        await send_frame(TYPE_CLOSE, stream_id)
+        streams.pop(stream_id, None)
 
     try:
         while True:
-            header = read_exact(client, 9)
+            header = await read_exact(client_reader, 9)
             type_, stream_id, length = struct.unpack("!B I I", header)
-            data = read_exact(client, length) if length > 0 else b""
+            data = await read_exact(client_reader, length) if length > 0 else b""
 
             if type_ == TYPE_OPEN:
                 try:
-                    xray_conn = socket.create_connection(XRAY_ADDR, 5)
-                    with streams_lock:
-                        streams[stream_id] = xray_conn
-                    threading.Thread(
-                        target=xray_to_client,
-                        args=(stream_id, xray_conn),
-                        daemon=True
-                    ).start()
+                    xray_reader, xray_writer = await asyncio.open_connection(XRAY_HOST, XRAY_PORT)
+                    streams[stream_id] = (xray_reader, xray_writer)
+                    asyncio.ensure_future(xray_to_client(stream_id, xray_reader))
                 except Exception:
-                    send_frame(TYPE_CLOSE, stream_id)
+                    await send_frame(TYPE_CLOSE, stream_id)
 
             elif type_ == TYPE_DATA:
-                with streams_lock:
-                    xray_conn = streams.get(stream_id)
-                if xray_conn:
+                pair = streams.get(stream_id)
+                if pair:
+                    _, xray_writer = pair
                     try:
-                        xray_conn.sendall(data)
+                        xray_writer.write(data)
+                        await xray_writer.drain()
                     except Exception:
-                        send_frame(TYPE_CLOSE, stream_id)
-                        with streams_lock:
-                            streams.pop(stream_id, None)
+                        await send_frame(TYPE_CLOSE, stream_id)
+                        streams.pop(stream_id, None)
 
             elif type_ == TYPE_CLOSE:
-                with streams_lock:
-                    xray_conn = streams.pop(stream_id, None)
-                if xray_conn:
+                pair = streams.pop(stream_id, None)
+                if pair:
                     try:
-                        xray_conn.close()
+                        _, xray_writer = pair
+                        xray_writer.close()
+                        await xray_writer.wait_closed()
                     except Exception:
                         pass
 
     except Exception:
         pass
     finally:
-        with streams_lock:
-            for conn in streams.values():
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-            streams.clear()
+        for _, (_, xray_writer) in list(streams.items()):
+            try:
+                xray_writer.close()
+                await xray_writer.wait_closed()
+            except Exception:
+                pass
+        streams.clear()
         try:
-            client.close()
+            client_writer.close()
+            await client_writer.wait_closed()
         except Exception:
             pass
 
 
-def handle(sock):
+async def handle(reader, writer):
     try:
-        sock.settimeout(10)
+        writer.transport.set_write_buffer_limits(high=65536, low=32768)
         raw = b""
         header_complete_at = None
+
         while True:
             try:
-                chunk = sock.recv(4096)
+                chunk = await asyncio.wait_for(reader.read(4096), timeout=10)
                 if not chunk:
                     return
                 raw += chunk
                 if len(raw) > 65536:
                     return
                 if b"\r\n\r\n" in raw and header_complete_at is None:
-                    header_complete_at = time.time()
-                    sock.settimeout(0.3)
-                if header_complete_at and (time.time() - header_complete_at) > 0.2:
+                    header_complete_at = time.monotonic()
+                if header_complete_at and (time.monotonic() - header_complete_at) > 0.2:
                     break
-            except socket.timeout:
+            except asyncio.TimeoutError:
                 if b"\r\n\r\n" in raw:
                     break
                 return
@@ -298,14 +300,31 @@ def handle(sock):
             if lower.startswith("x-client-id:"):
                 client_id = line.split(":", 1)[1].strip()
 
+        async def reject(state):
+            payload = (
+                "HTTP/1.1 403 Forbidden\r\n"
+                "Connection: close\r\n"
+                f"X-Status: {state}\r\nX-Auth-State: {state}\r\nX-Days-Left: 0\r\n\r\n"
+            ).encode()
+            try:
+                writer.write(payload)
+                await writer.drain()
+            except Exception:
+                pass
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+
         if not client_id:
-            reject(sock, "INVALID")
+            await reject("INVALID")
             return
 
         db = load_db()
         state, days_left, name, expires_at = ensure_client(db, client_id)
         if state != "VALID":
-            reject(sock, state)
+            await reject(state)
             return
 
         response = (
@@ -316,29 +335,42 @@ def handle(sock):
         )
 
         if action in ("tunnel", "tunnel-fast"):
-            sock.sendall(response)
-            sock.settimeout(None)
-            handle_mux_tunnel(sock)
+            writer.write(response)
+            await writer.drain()
+            await handle_mux_tunnel(reader, writer)
         elif action == "auth":
-            sock.sendall(response)
-            sock.close()
+            writer.write(response)
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
         else:
-            sock.close()
+            writer.close()
+            await writer.wait_closed()
+
     except Exception:
         try:
-            sock.close()
+            writer.close()
+            await writer.wait_closed()
         except Exception:
             pass
 
 
-srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-srv.bind(("0.0.0.0", PORT))
-srv.listen(512)
-print(f"escuchando :{PORT}")
-while True:
-    conn, _ = srv.accept()
-    threading.Thread(target=handle, args=(conn,), daemon=True).start()
+async def main():
+    server = await asyncio.start_server(
+        handle,
+        "0.0.0.0",
+        PORT,
+        limit=65536,
+        backlog=512
+    )
+    print(f"escuchando :{PORT}")
+    async with server:
+        await server.serve_forever()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
 PYEOF
 chmod +x /opt/btserver/btserver.py
 
