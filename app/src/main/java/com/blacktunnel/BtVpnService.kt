@@ -6,13 +6,18 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.system.Os
 import android.system.OsConstants
 import androidx.core.app.NotificationCompat
 import kotlin.concurrent.thread
 
 class BtVpnService : VpnService() {
 
+    private val tunnelLock = Any()
     private var pfd: ParcelFileDescriptor? = null
+    private var rawTunFd: Int? = null
+    @Volatile private var desiredRunning = false
+    @Volatile private var sessionToken = 0L
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return when (intent?.action) {
@@ -33,10 +38,15 @@ class BtVpnService : VpnService() {
     }
 
     private fun startTunnel() {
-        if (pfd != null) {
-            TunnelSessionStore.setState("CONNECTED")
-            return
+        synchronized(tunnelLock) {
+            if (desiredRunning) {
+                TunnelSessionStore.setState("CONNECTED")
+                return
+            }
+            desiredRunning = true
+            sessionToken += 1
         }
+        val token = sessionToken
 
         TunnelSessionStore.setState("CONNECTING")
         startVpnForeground()
@@ -64,6 +74,9 @@ class BtVpnService : VpnService() {
 
             val established = runCatching { builder.establish() }.getOrNull()
             if (established == null) {
+                synchronized(tunnelLock) {
+                    if (sessionToken == token) desiredRunning = false
+                }
                 TunnelSessionStore.setState("ERROR")
                 BtProxy.stop()
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -71,18 +84,39 @@ class BtVpnService : VpnService() {
                 return@thread
             }
 
-            pfd = established
+            synchronized(tunnelLock) {
+                if (!desiredRunning || sessionToken != token) {
+                    runCatching { established.close() }
+                    return@thread
+                }
+                pfd = established
+            }
             BtProxy.start(
                 ctx = this,
                 clientId = clientId,
                 protectSocket = { socket -> protect(socket) }
             )
-            val rawFd = ParcelFileDescriptor.dup(established.fileDescriptor).detachFd()
+            val rawFd = ParcelFileDescriptor.dup(established.fileDescriptor).detachFd().also { fd ->
+                synchronized(tunnelLock) {
+                    if (sessionToken == token) rawTunFd = fd else runCatching { Os.close(fd) }
+                }
+            }
+            if (!desiredRunning || sessionToken != token) {
+                stopTunnel()
+                return@thread
+            }
             val configFile = writeHevConfig()
 
             thread(isDaemon = true, name = "hev-main") {
                 val result = runCatching { HevBridge.start(configFile.absolutePath, rawFd) }.getOrDefault(-1)
-                if (result != 0) TunnelSessionStore.setState("ERROR")
+                synchronized(tunnelLock) {
+                    if (rawTunFd == rawFd) rawTunFd = null
+                }
+                if (!desiredRunning || sessionToken != token) return@thread
+                if (result != 0) {
+                    TunnelSessionStore.setState("ERROR")
+                    stopTunnel()
+                }
             }
         }
     }
@@ -104,10 +138,20 @@ class BtVpnService : VpnService() {
     }
 
     private fun stopTunnel() {
+        val tunFdToClose: Int?
+        val pfdToClose: ParcelFileDescriptor?
+        synchronized(tunnelLock) {
+            desiredRunning = false
+            sessionToken += 1
+            tunFdToClose = rawTunFd
+            rawTunFd = null
+            pfdToClose = pfd
+            pfd = null
+        }
         runCatching { HevBridge.stop() }
         BtProxy.stop()
-        runCatching { pfd?.close() }
-        pfd = null
+        runCatching { tunFdToClose?.let { Os.close(it) } }
+        runCatching { pfdToClose?.close() }
         TunnelSessionStore.setState("DISCONNECTED")
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
