@@ -49,9 +49,11 @@ class BtVpnService : VpnService() {
 
         TunnelSessionStore.setState("CONNECTING")
         startVpnForeground()
+
         thread(isDaemon = true, name = "vpn-start-sequence") {
             val clientId = TunnelPrefs.getOrCreateClientId(this)
             val mtu = 1300
+
             val builder = Builder()
                 .setSession("BlackTunnel")
                 .addAddress("198.18.0.1", 30)
@@ -77,7 +79,6 @@ class BtVpnService : VpnService() {
                     if (sessionToken == token) desiredRunning = false
                 }
                 TunnelSessionStore.setState("ERROR")
-                BtProxy.stop()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return@thread
@@ -90,20 +91,41 @@ class BtVpnService : VpnService() {
                 }
                 pfd = established
             }
-            BtProxy.start(
+
+            val started = BtProxy.start(
                 ctx = this,
                 clientId = clientId,
                 protectSocket = { socket -> protect(socket) }
             )
-            val rawFd = ParcelFileDescriptor.dup(established.fileDescriptor).detachFd().also { fd ->
+
+            if (!started) {
                 synchronized(tunnelLock) {
-                    if (sessionToken == token) rawTunFd = fd else runCatching { ParcelFileDescriptor.adoptFd(fd).close() }
+                    if (sessionToken == token) desiredRunning = false
                 }
+                runCatching { established.close() }
+                synchronized(tunnelLock) { pfd = null }
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return@thread
             }
+
             if (!desiredRunning || sessionToken != token) {
                 stopTunnel()
                 return@thread
             }
+
+            val rawFd = ParcelFileDescriptor.dup(established.fileDescriptor).detachFd().also { fd ->
+                synchronized(tunnelLock) {
+                    if (sessionToken == token) rawTunFd = fd
+                    else runCatching { ParcelFileDescriptor.adoptFd(fd).close() }
+                }
+            }
+
+            if (!desiredRunning || sessionToken != token) {
+                stopTunnel()
+                return@thread
+            }
+
             val configFile = writeHevConfig()
 
             thread(isDaemon = true, name = "hev-main") {
@@ -126,13 +148,11 @@ class BtVpnService : VpnService() {
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)
         }
-
         val notification = NotificationCompat.Builder(this, VPN_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setContentTitle("BlackTunnel activo")
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .build()
-
         startForeground(VPN_NOTIFICATION_ID, notification)
     }
 
