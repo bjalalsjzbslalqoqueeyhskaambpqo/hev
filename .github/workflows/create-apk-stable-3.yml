@@ -1,0 +1,45 @@
+name: Create APK Stable 3 branch
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  recreate-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout destination repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Import stable commit into target branch
+        env:
+          SOURCE_REPO: https://github.com/bjalalsjzbslalqoqueeyhskaambpqo/hev.git
+          SOURCE_COMMIT: 00689b0367980083a036649048729a4508d789aa
+          TARGET_BRANCH: APK-Stable-3
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          rm -rf /tmp/source-hev
+          git clone "$SOURCE_REPO" /tmp/source-hev
+          cd /tmp/source-hev
+          git checkout "$SOURCE_COMMIT"
+
+          cd "$GITHUB_WORKSPACE"
+          rm -rf ./* ./.??* || true
+          cp -a /tmp/source-hev/. "$GITHUB_WORKSPACE"/
+          rm -rf .git
+
+          git init
+          git checkout -b "$TARGET_BRANCH"
+          git add .
+          git commit -m "Restore stable APK source from $SOURCE_COMMIT"
+
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --force origin "$TARGET_BRANCH"
