@@ -248,7 +248,7 @@ object BtProxy {
               "mux": {
                 "enabled": true,
                 "concurrency": 128,
-                "xudpConcurrency": 256,
+                "xudpConcurrency": 1024,
                 "xudpProxyUDP443": "allow"
               },
               "targetStrategy": "UseIPv4"
