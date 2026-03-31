@@ -201,7 +201,7 @@ object BtProxy {
             "levels": {
               "0": {
                 "handshake": 4,
-                "connIdle": 600,
+                "connIdle": 0,
                 "uplinkOnly": 5,
                 "downlinkOnly": 10,
                 "bufferSize": 512
