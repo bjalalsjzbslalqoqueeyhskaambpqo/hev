@@ -135,7 +135,7 @@ object BtProxy {
                     val streamId = nextStreamId.getAndIncrement()
                     streams[streamId] = client
 
-                    writeFrame(TYPE_OPEN, streamId)
+                    writeFrame(TYPE_OPEN, streamId, flush = true)
 
                     thread(isDaemon = true, name = "stream-$streamId") {
                         val buf = ByteArray(65536)
@@ -151,7 +151,7 @@ object BtProxy {
                                 val n = cin.read(buf, 0, frameSize)
                                 if (n < 0) break
                                 writeFrame(TYPE_DATA, streamId, buf.copyOfRange(0, n))
-                                if (streams.size <= 1) flushTunnel()
+                                if (streams.size <= 3) flushTunnel()
                             }
                         } catch (_: Exception) {}
                         writeFrame(TYPE_CLOSE, streamId, flush = true)
