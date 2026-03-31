@@ -2,10 +2,12 @@ package com.blacktunnel
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.net.VpnService
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import android.view.View
 import android.widget.ArrayAdapter
@@ -75,7 +77,10 @@ class MainActivity : AppCompatActivity() {
         toggleButton.setOnClickListener { onToggle() }
         copyClientIdButton.setOnClickListener { copyClientId() }
         saveSettingsButton.setOnClickListener { saveSettings(showToast = true) }
-        batteryButton.setOnClickListener { openBatterySettings() }
+        batteryButton.setOnClickListener {
+            requestBatteryOptimizationExemption()
+            openBatterySettings()
+        }
         hotspotSwitch.setOnCheckedChangeListener { _, isChecked ->
             if (isChecked && getHotspotIp() == null) {
                 hotspotSwitch.isChecked = false
@@ -246,14 +251,36 @@ class MainActivity : AppCompatActivity() {
         startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_START))
     }
 
+    private fun requestBatteryOptimizationExemption() {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (pm.isIgnoringBatteryOptimizations(packageName)) return
+
+        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+            data = android.net.Uri.parse("package:$packageName")
+        }
+        runCatching { startActivity(intent) }
+    }
+
     private fun openBatterySettings() {
-        val intents = mutableListOf<Intent>()
         val manufacturer = android.os.Build.MANUFACTURER.lowercase()
-        if (manufacturer.contains("xiaomi")) {
+        val intents = mutableListOf<Intent>()
+
+        if (manufacturer.contains("xiaomi") || manufacturer.contains("redmi") || manufacturer.contains("poco")) {
+            intents += Intent("miui.intent.action.POWER_HIDE_MODE_APP_LIST").apply {
+                addCategory(Intent.CATEGORY_DEFAULT)
+            }
             intents += Intent().setClassName(
-                "com.miui.powerkeeper",
-                "com.miui.powerkeeper.ui.HiddenAppsConfigActivity"
-            ).putExtra("package_name", packageName).putExtra("package_label", getString(R.string.app_name))
+                "com.miui.securitycenter",
+                "com.miui.permcenter.autostart.AutoStartManagementActivity"
+            )
+        } else if (manufacturer.contains("samsung")) {
+            intents += Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = android.net.Uri.parse("package:$packageName")
+            }
+        }
+
+        intents += Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+            data = android.net.Uri.parse("package:$packageName")
         }
         intents += Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
         intents += Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
