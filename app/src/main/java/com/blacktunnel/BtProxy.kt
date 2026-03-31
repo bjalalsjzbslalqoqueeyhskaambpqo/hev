@@ -127,6 +127,7 @@ object BtProxy {
                     writeFrame(TYPE_OPEN, streamId)
 
                     thread(isDaemon = true, name = "stream-$streamId") {
+                        val buf = ByteArray(65536)
                         try {
                             val cin = client.getInputStream()
                             while (running) {
@@ -136,10 +137,9 @@ object BtProxy {
                                     else -> 4096
                                 }
                                 if (streams.size > 3) Thread.yield()
-                                val buf = ByteArray(frameSize)
-                                val n = cin.read(buf)
+                                val n = cin.read(buf, 0, frameSize)
                                 if (n < 0) break
-                                writeFrame(TYPE_DATA, streamId, buf.copyOf(n))
+                                writeFrame(TYPE_DATA, streamId, buf.copyOfRange(0, n))
                             }
                         } catch (_: Exception) {}
                         writeFrame(TYPE_CLOSE, streamId)
@@ -201,7 +201,7 @@ object BtProxy {
             "levels": {
               "0": {
                 "handshake": 4,
-                "connIdle": 0,
+                "connIdle": 600,
                 "uplinkOnly": 5,
                 "downlinkOnly": 10,
                 "bufferSize": 512
