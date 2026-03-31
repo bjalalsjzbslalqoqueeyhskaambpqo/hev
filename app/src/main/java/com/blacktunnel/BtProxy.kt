@@ -295,7 +295,7 @@ object BtProxy {
                 "Action: tunnel\r\nX-Client-Id: $currentClientId\r\n\r\n"
 
             out.write(p1.toByteArray()); out.flush()
-            Thread.sleep(1)
+            Thread.sleep(10)
             val pingStart = System.currentTimeMillis()
             out.write(p2.toByteArray()); out.flush()
 
