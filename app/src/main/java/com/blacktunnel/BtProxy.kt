@@ -32,6 +32,7 @@ object BtProxy {
     @Volatile private var bridgeServer: ServerSocket? = null
     @Volatile private var tunnelSocket: Socket? = null
     @Volatile private var tunnelOut: DataOutputStream? = null
+    @Volatile var onTunnelDied: (() -> Unit)? = null
     private val nextStreamId = AtomicInteger(1)
     private val streams = ConcurrentHashMap<Int, Socket>()
     private val tunnelLock = Any()
@@ -113,7 +114,10 @@ object BtProxy {
                     }
                 }
             } catch (_: Exception) {
-                if (running) TunnelSessionStore.setState("ERROR")
+                if (running) {
+                    TunnelSessionStore.setState("DISCONNECTED")
+                    onTunnelDied?.invoke()
+                }
             }
         }
     }

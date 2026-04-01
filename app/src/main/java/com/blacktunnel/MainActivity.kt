@@ -42,6 +42,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var hotspotSwitch: SwitchCompat
     private lateinit var wifiDirectSwitch: SwitchCompat
     private lateinit var blockNonSelectedSwitch: SwitchCompat
+    private lateinit var hotspotInfoContainer: LinearLayout
+    private lateinit var wifiDirectInfoContainer: LinearLayout
     private lateinit var wifiDirectPasswordInput: EditText
     private lateinit var wifiDirectLegacyHint: TextView
     private lateinit var wifiDirectCredsInfo: TextView
@@ -181,6 +183,8 @@ class MainActivity : AppCompatActivity() {
         hotspotSwitch = findViewById(R.id.hotspotSwitch)
         wifiDirectSwitch = findViewById(R.id.switchWifiDirect)
         blockNonSelectedSwitch = findViewById(R.id.blockNonSelectedSwitch)
+        hotspotInfoContainer = findViewById(R.id.hotspotInfoContainer)
+        wifiDirectInfoContainer = findViewById(R.id.wifiDirectInfoContainer)
         wifiDirectPasswordInput = findViewById(R.id.etWifiDirectPassword)
         wifiDirectLegacyHint = findViewById(R.id.tvWifiDirectLegacyHint)
         wifiDirectCredsInfo = findViewById(R.id.tvWifiDirectCredentials)
@@ -296,6 +300,7 @@ class MainActivity : AppCompatActivity() {
     private fun refreshHotspotInfo() {
         val ip = BtProxy.getHotspotIp()
         if (ip != null && hotspotSwitch.isChecked) {
+            hotspotInfoContainer.visibility = View.VISIBLE
             socks5Info.text = getString(R.string.hotspot_socks5_info, ip, HOTSPOT_SOCKS5_PORT)
             httpInfo.text = getString(R.string.hotspot_http_info, ip, HOTSPOT_HTTP_PORT)
             return
@@ -305,17 +310,20 @@ class MainActivity : AppCompatActivity() {
             TunnelPrefs.setHotspotProxyEnabled(this, false)
             hotspotSwitch.isChecked = false
         }
+        hotspotInfoContainer.visibility = View.GONE
         socks5Info.text = ""
         httpInfo.text = ""
     }
 
     private fun refreshWifiDirectInfo() {
         if (!BtWifiDirect.isActive) {
+            wifiDirectInfoContainer.visibility = View.GONE
             wifiDirectCredsInfo.text = ""
             wifiDirectSocks5Info.text = ""
             wifiDirectHttpInfo.text = ""
             return
         }
+        wifiDirectInfoContainer.visibility = View.VISIBLE
         val info = BtWifiDirect.getConnectionInfo(this)
         val ssid = info["ssid"]?.toString().orEmpty()
         val password = info["password"]?.toString().orEmpty()

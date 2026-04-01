@@ -5,6 +5,8 @@ import android.app.NotificationManager
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.system.OsConstants
 import androidx.core.app.NotificationCompat
@@ -17,14 +19,20 @@ class BtVpnService : VpnService() {
     private var hevThread: Thread? = null
     @Volatile
     private var isStopping = false
+    @Volatile
+    private var desiredRunning = false
+    private val reconnectHandler = Handler(Looper.getMainLooper())
+    private var reconnectAttempts = 0
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return when (intent?.action) {
             ACTION_STOP -> {
+                desiredRunning = false
                 stopTunnel()
                 START_NOT_STICKY
             }
             else -> {
+                desiredRunning = true
                 startTunnel()
                 START_STICKY
             }
@@ -38,6 +46,9 @@ class BtVpnService : VpnService() {
 
     private fun startTunnel() {
         isStopping = false
+        desiredRunning = true
+        reconnectHandler.removeCallbacksAndMessages(null)
+        reconnectAttempts = 0
         if (pfd != null) {
             TunnelSessionStore.setState("CONNECTED")
             return
@@ -82,6 +93,9 @@ class BtVpnService : VpnService() {
                 clientId = clientId,
                 protectSocket = { socket -> protect(socket) }
             )
+            BtProxy.onTunnelDied = {
+                reconnectHandler.post { scheduleReconnect() }
+            }
             val rawFd = ParcelFileDescriptor.dup(established.fileDescriptor).detachFd()
             rawTunFd = rawFd
             val configFile = writeHevConfig()
@@ -114,6 +128,10 @@ class BtVpnService : VpnService() {
     private fun stopTunnel() {
         if (isStopping) return
         isStopping = true
+        desiredRunning = false
+        reconnectHandler.removeCallbacksAndMessages(null)
+        reconnectAttempts = 0
+        BtProxy.onTunnelDied = null
         runCatching { HevBridge.stop() }
         runCatching { hevThread?.join(1500) }
         BtProxy.stop()
@@ -123,6 +141,48 @@ class BtVpnService : VpnService() {
         TunnelSessionStore.setState("DISCONNECTED")
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    private fun scheduleReconnect() {
+        if (!desiredRunning || isStopping) return
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+            TunnelSessionStore.setState("ERROR")
+            stopTunnel()
+            return
+        }
+        reconnectAttempts++
+        val delayMs = (reconnectAttempts * 2000L).coerceAtMost(10000L)
+        TunnelSessionStore.setState("CONNECTING")
+        reconnectHandler.postDelayed({
+            if (desiredRunning && !isStopping) reconnectTunnel()
+        }, delayMs)
+    }
+
+    private fun reconnectTunnel() {
+        if (!desiredRunning || isStopping) return
+        BtProxy.onTunnelDied = null
+        BtProxy.stop()
+        reconnectHandler.postDelayed({
+            if (!desiredRunning || isStopping) return@postDelayed
+            val clientId = TunnelPrefs.getOrCreateClientId(this)
+            BtProxy.start(
+                ctx = this,
+                clientId = clientId,
+                protectSocket = { socket -> protect(socket) }
+            )
+            BtProxy.onTunnelDied = {
+                reconnectHandler.post { scheduleReconnect() }
+            }
+            reconnectHandler.postDelayed({
+                if (!desiredRunning || isStopping) return@postDelayed
+                val connected = TunnelSessionStore.current().state == "CONNECTED"
+                if (connected) {
+                    reconnectAttempts = 0
+                } else {
+                    scheduleReconnect()
+                }
+            }, RECONNECT_VERIFY_DELAY_MS)
+        }, 500L)
     }
 
     private fun closeRawTunFd() {
@@ -176,5 +236,7 @@ class BtVpnService : VpnService() {
         const val ACTION_STOP = "com.blacktunnel.STOP"
         private const val VPN_CHANNEL_ID = "vpn_channel"
         private const val VPN_NOTIFICATION_ID = 1
+        private const val MAX_RECONNECT_ATTEMPTS = 5
+        private const val RECONNECT_VERIFY_DELAY_MS = 2500L
     }
 }

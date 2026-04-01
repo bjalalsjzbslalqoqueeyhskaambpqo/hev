@@ -169,19 +169,27 @@
                         android:text="@string/hotspot_proxy_toggle"
                         android:textColor="@color/text_primary" />
 
-                    <TextView
-                        android:id="@+id/tvSocks5Info"
+                    <LinearLayout
+                        android:id="@+id/hotspotInfoContainer"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="4dp"
-                        android:textColor="@color/text_secondary" />
+                        android:orientation="vertical"
+                        android:visibility="gone">
 
-                    <TextView
-                        android:id="@+id/tvHttpInfo"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
-                        android:textColor="@color/text_secondary" />
+                        <TextView
+                            android:id="@+id/tvSocks5Info"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/text_secondary" />
+
+                        <TextView
+                            android:id="@+id/tvHttpInfo"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:textColor="@color/text_secondary" />
+                    </LinearLayout>
 
                     <androidx.appcompat.widget.SwitchCompat
                         android:id="@+id/switchWifiDirect"
@@ -191,45 +199,53 @@
                         android:text="@string/wifi_direct_switch"
                         android:textColor="@color/text_primary" />
 
-                    <EditText
-                        android:id="@+id/etWifiDirectPassword"
+                    <LinearLayout
+                        android:id="@+id/wifiDirectInfoContainer"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
-                        android:hint="@string/wifi_direct_password_hint"
-                        android:inputType="textPassword"
-                        android:textColor="@color/text_primary"
-                        android:textColorHint="@color/text_secondary" />
+                        android:orientation="vertical"
+                        android:visibility="gone">
 
-                    <TextView
-                        android:id="@+id/tvWifiDirectLegacyHint"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
-                        android:text="@string/wifi_direct_legacy_warning"
-                        android:textColor="@color/text_secondary"
-                        android:visibility="gone" />
+                        <EditText
+                            android:id="@+id/etWifiDirectPassword"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="6dp"
+                            android:hint="@string/wifi_direct_password_hint"
+                            android:inputType="textPassword"
+                            android:textColor="@color/text_primary"
+                            android:textColorHint="@color/text_secondary" />
 
-                    <TextView
-                        android:id="@+id/tvWifiDirectCredentials"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="8dp"
-                        android:textColor="@color/text_secondary" />
+                        <TextView
+                            android:id="@+id/tvWifiDirectLegacyHint"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="6dp"
+                            android:text="@string/wifi_direct_legacy_warning"
+                            android:textColor="@color/text_secondary"
+                            android:visibility="gone" />
 
-                    <TextView
-                        android:id="@+id/tvWifiDirectSocks5Info"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
-                        android:textColor="@color/text_secondary" />
+                        <TextView
+                            android:id="@+id/tvWifiDirectCredentials"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:textColor="@color/text_secondary" />
 
-                    <TextView
-                        android:id="@+id/tvWifiDirectHttpInfo"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
-                        android:textColor="@color/text_secondary" />
+                        <TextView
+                            android:id="@+id/tvWifiDirectSocks5Info"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:textColor="@color/text_secondary" />
+
+                        <TextView
+                            android:id="@+id/tvWifiDirectHttpInfo"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:textColor="@color/text_secondary" />
+                    </LinearLayout>
                 </LinearLayout>
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/saveSettingsButton"
