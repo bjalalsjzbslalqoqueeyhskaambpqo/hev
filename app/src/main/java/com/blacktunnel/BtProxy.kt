@@ -36,6 +36,7 @@ object BtProxy {
     @Volatile private var tunnelSocket: Socket? = null
     @Volatile private var tunnelOut: DataOutputStream? = null
     @Volatile private var reconnectAttempts = 0
+    @Volatile private var authFatalError = false
     @Volatile private var savedCtx: Context? = null
     @Volatile private var savedProtect: ((Socket) -> Unit)? = null
 
@@ -53,6 +54,7 @@ object BtProxy {
         savedProtect = protectSocket
         running = true
         reconnectAttempts = 0
+        authFatalError = false
         thread(isDaemon = true, name = "btproxy-init") {
             connectTunnel(ctx, protectSocket)
         }
@@ -63,6 +65,7 @@ object BtProxy {
         savedCtx = null
         savedProtect = null
         reconnectAttempts = 0
+        authFatalError = false
         runCatching { bridgeServer?.close() }
         bridgeServer = null
         streams.values.forEach { runCatching { it.close() } }
@@ -81,9 +84,11 @@ object BtProxy {
     private fun connectTunnel(ctx: Context, protectSocket: (Socket) -> Unit) {
         val tunnel = openTunnel(protectSocket)
         if (tunnel == null) {
+            if (authFatalError) return
             scheduleReconnect()
             return
         }
+        authFatalError = false
         reconnectAttempts = 0
 
         // Limpiar streams del túnel anterior
@@ -114,6 +119,7 @@ object BtProxy {
 
     private fun scheduleReconnect() {
         if (!running) return
+        if (authFatalError) return
         reconnectAttempts++
         LogSink.add("⟳", "Reconectando (intento $reconnectAttempts)...", LogLevel.WARN)
         if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
@@ -408,6 +414,7 @@ object BtProxy {
             if (authState.isNotBlank() && !authState.equals("VALID", ignoreCase = true)) {
                 runCatching { socket.close() }
                 TunnelSessionStore.setState("ERROR")
+                authFatalError = true
                 val message = if (authState.contains("EXPIRED", ignoreCase = true)) {
                     "Usuario expirado"
                 } else {
