@@ -35,6 +35,7 @@
     <string name="wifi_direct_legacy_warning">En Android 9 o menor la contraseña puede cambiar al reiniciar</string>
     <string name="wifi_direct_password_min">Mínimo 8 caracteres</string>
     <string name="wifi_direct_start_error">Error al iniciar WiFi Direct</string>
+    <string name="wifi_direct_permission_required">Se necesita permiso de dispositivos cercanos</string>
     <string name="wifi_direct_credentials">WiFi: %1$s\nContraseña: %2$s</string>
     <string name="wifi_direct_socks5_info">📱 Android → SOCKS5: %1$s : %2$s</string>
     <string name="wifi_direct_http_info">📺 Smart TV → HTTP: %1$s : %2$s</string>

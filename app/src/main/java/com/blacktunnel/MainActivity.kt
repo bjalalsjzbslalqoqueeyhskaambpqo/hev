@@ -1,10 +1,12 @@
 package com.blacktunnel
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.VpnService
 import android.os.Bundle
@@ -19,6 +21,8 @@ import android.widget.ListView
 import android.widget.RadioButton
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import com.google.android.material.button.MaterialButton
@@ -55,6 +59,7 @@ class MainActivity : AppCompatActivity() {
     private val allApps = mutableListOf<Pair<String, String>>()
     private var filteredApps = listOf<Pair<String, String>>()
     private val selectedPackages = mutableSetOf<String>()
+    private var pendingWifiDirectStart = false
 
     private val sessionListener: (TunnelSessionSnapshot) -> Unit = { snapshot ->
         runOnUiThread { render(snapshot) }
@@ -108,17 +113,9 @@ class MainActivity : AppCompatActivity() {
                     return@setOnCheckedChangeListener
                 }
                 BtWifiDirect.savePassword(this, pass)
-                BtWifiDirect.start(this) { success ->
-                    runOnUiThread {
-                        if (!success) {
-                            wifiDirectSwitch.isChecked = false
-                            Toast.makeText(this, getString(R.string.wifi_direct_start_error), Toast.LENGTH_SHORT).show()
-                            return@runOnUiThread
-                        }
-                        refreshWifiDirectInfo()
-                    }
-                }
+                requestWifiDirectPermissionOrStart()
             } else {
+                pendingWifiDirectStart = false
                 BtWifiDirect.stop(this)
                 refreshWifiDirectInfo()
             }
@@ -146,6 +143,27 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         refreshHotspotInfo()
         refreshWifiDirectInfo()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQ_WIFI_DIRECT_PERMISSION) return
+
+        val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+        if (granted && pendingWifiDirectStart && wifiDirectSwitch.isChecked) {
+            pendingWifiDirectStart = false
+            startWifiDirect()
+            return
+        }
+
+        pendingWifiDirectStart = false
+        wifiDirectSwitch.isChecked = false
+        Toast.makeText(this, getString(R.string.wifi_direct_permission_required), Toast.LENGTH_SHORT).show()
     }
 
     private fun bindViews() {
@@ -309,6 +327,34 @@ class MainActivity : AppCompatActivity() {
         wifiDirectHttpInfo.text = getString(R.string.wifi_direct_http_info, ip, httpPort)
     }
 
+    private fun requestWifiDirectPermissionOrStart() {
+        val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            Manifest.permission.NEARBY_WIFI_DEVICES
+        } else {
+            Manifest.permission.ACCESS_FINE_LOCATION
+        }
+        val granted = ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            startWifiDirect()
+            return
+        }
+        pendingWifiDirectStart = true
+        ActivityCompat.requestPermissions(this, arrayOf(permission), REQ_WIFI_DIRECT_PERMISSION)
+    }
+
+    private fun startWifiDirect() {
+        BtWifiDirect.start(this) { success ->
+            runOnUiThread {
+                if (!success) {
+                    wifiDirectSwitch.isChecked = false
+                    Toast.makeText(this, getString(R.string.wifi_direct_start_error), Toast.LENGTH_SHORT).show()
+                    return@runOnUiThread
+                }
+                refreshWifiDirectInfo()
+            }
+        }
+    }
+
     private fun onToggle() {
         val current = TunnelSessionStore.current()
         if (current.state == "CONNECTING" || current.state == "CONNECTED") {
@@ -387,5 +433,6 @@ class MainActivity : AppCompatActivity() {
         private const val HOTSPOT_SOCKS5_PORT = 1080
         private const val HOTSPOT_HTTP_PORT = 8282
         private const val WIFI_DIRECT_MIN_PASSWORD_LEN = 8
+        private const val REQ_WIFI_DIRECT_PERMISSION = 3101
     }
 }
