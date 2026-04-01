@@ -43,6 +43,8 @@ object BtProxy {
     private val streams = ConcurrentHashMap<Int, Socket>()
     private val tunnelLock = Any()
 
+    @Volatile private var isPerformanceMode = false
+
     fun start(
         ctx: Context,
         clientId: String,
@@ -51,6 +53,7 @@ object BtProxy {
         currentClientId = clientId.trim()
         savedCtx = ctx
         savedProtect = protectSocket
+        isPerformanceMode = TunnelPrefs.getProfile(ctx).equals("performance", ignoreCase = true)
         running = true
         reconnectAttempts = 0
         thread(isDaemon = true, name = "btproxy-init") {
@@ -194,16 +197,11 @@ object BtProxy {
                         try {
                             val cin = client.getInputStream()
                             while (running) {
-                                val frameSize = when {
-                                    streams.size <= 1 -> 65536
-                                    streams.size <= 3 -> 16384
-                                    else -> 4096
-                                }
-                                if (streams.size > 3) Thread.yield()
-                                val n = cin.read(buf, 0, frameSize)
+                                val n = cin.read(buf)
                                 if (n < 0) break
                                 writeFrame(TYPE_DATA, streamId, buf.copyOfRange(0, n), flush = false)
-                                if (streams.size <= 3) flushTunnel()
+                                if (isPerformanceMode || streams.size <= 1) flushTunnel()
+                                else Thread.yield()
                             }
                         } catch (_: Exception) {}
                         writeFrame(TYPE_CLOSE, streamId)
