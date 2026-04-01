@@ -95,7 +95,7 @@ object BtProxy {
         nextStreamId.set(1)
 
         tunnelSocket = tunnel
-        tunnelOut = DataOutputStream(java.io.BufferedOutputStream(tunnel.getOutputStream(), 65536))
+        tunnelOut = DataOutputStream(tunnel.getOutputStream())
         startTunnelReader(tunnel, ctx, protectSocket)
         if (bridgeServer == null) {
             startTunnelBridge()
@@ -124,20 +124,14 @@ object BtProxy {
         }
     }
 
-    private fun writeFrame(type: Byte, streamId: Int, data: ByteArray = ByteArray(0), flush: Boolean = true) {
+    private fun writeFrame(type: Byte, streamId: Int, data: ByteArray = ByteArray(0)) {
         synchronized(tunnelLock) {
             val out = tunnelOut ?: return
             out.writeByte(type.toInt())
             out.writeInt(streamId)
             out.writeInt(data.size)
             if (data.isNotEmpty()) out.write(data)
-            if (flush) out.flush()
-        }
-    }
-
-    private fun flushTunnel() {
-        synchronized(tunnelLock) {
-            runCatching { tunnelOut?.flush() }
+            out.flush()
         }
     }
 
@@ -199,13 +193,7 @@ object BtProxy {
                             while (running) {
                                 val n = cin.read(buf)
                                 if (n < 0) break
-                                writeFrame(TYPE_DATA, streamId, buf.copyOfRange(0, n), flush = false)
-                                if (isPerformanceMode || streams.size <= 1) {
-                                    flushTunnel()
-                                } else {
-                                    Thread.yield()
-                                    flushTunnel()
-                                }
+                                writeFrame(TYPE_DATA, streamId, buf.copyOfRange(0, n))
                             }
                         } catch (_: Exception) {}
                         writeFrame(TYPE_CLOSE, streamId)
