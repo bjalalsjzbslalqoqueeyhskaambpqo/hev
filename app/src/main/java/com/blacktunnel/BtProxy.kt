@@ -85,6 +85,12 @@ object BtProxy {
             return
         }
         reconnectAttempts = 0
+
+        // Limpiar streams del túnel anterior
+        streams.values.forEach { runCatching { it.close() } }
+        streams.clear()
+        nextStreamId.set(1)
+
         tunnelSocket = tunnel
         tunnelOut = DataOutputStream(java.io.BufferedOutputStream(tunnel.getOutputStream(), 65536))
         startTunnelReader(tunnel, ctx, protectSocket)
