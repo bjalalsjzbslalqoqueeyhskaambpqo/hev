@@ -1,5 +1,9 @@
 package com.blacktunnel
 
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
 data class TunnelSessionSnapshot(
     val state: String = "DISCONNECTED",
     val status: String = "-",
@@ -11,6 +15,8 @@ data class TunnelSessionSnapshot(
 object TunnelSessionStore {
     private val lock = Any()
     private var snapshot = TunnelSessionSnapshot()
+    private val _stateFlow = MutableStateFlow(snapshot)
+    val stateFlow: StateFlow<TunnelSessionSnapshot> = _stateFlow.asStateFlow()
     private val listeners = mutableSetOf<(TunnelSessionSnapshot) -> Unit>()
 
     fun setState(state: String) {
@@ -52,6 +58,7 @@ object TunnelSessionStore {
 
     private fun notifyListeners() {
         val current = current()
+        _stateFlow.value = current
         val activeListeners = synchronized(lock) { listeners.toList() }
         activeListeners.forEach { it(current) }
     }
