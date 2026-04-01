@@ -473,15 +473,18 @@ object BtProxy {
                 val status = rejection?.get("x-status") ?: rejection?.get("x-auth-state") ?: ""
                 when {
                     status.equals("EXPIRED", ignoreCase = true) -> {
-                        TunnelSessionStore.setState("ERROR")
-                        authFatalError = true
                         LogSink.add("✗", "Usuario expirado", LogLevel.ERROR)
+                        authFatalError = true
+                        TunnelSessionStore.setState("ERROR")
+                        stop()
                     }
                     status.equals("UNKNOWN", ignoreCase = true) ||
                     status.equals("INVALID", ignoreCase = true) -> {
-                        TunnelSessionStore.setState("ERROR")
-                        authFatalError = true
                         LogSink.add("✗", "Usuario no registrado", LogLevel.ERROR)
+                        authFatalError = true
+                        TunnelSessionStore.setState("ERROR")
+                        stop()
+                        stop()
                     }
                     else -> {
                         TunnelSessionStore.setState("CONNECTING")
@@ -501,6 +504,7 @@ object BtProxy {
                 val message = if (authState.contains("EXPIRED", ignoreCase = true))
                     "Usuario expirado" else "Usuario inválido"
                 LogSink.add("✗", message, LogLevel.ERROR)
+                stop()
                 return null
             }
 
