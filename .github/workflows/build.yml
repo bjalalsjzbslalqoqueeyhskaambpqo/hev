@@ -107,7 +107,7 @@ jobs:
             -keypass "${{ steps.signing.outputs.key_password }}" \
             -dname "CN=XTunnel,OU=Mobile,O=XTunnel,L=Internet,ST=Global,C=US"
 
-      - name: Build signed release APK
+      - name: Build minimized release artifacts (AAB + APK)
         env:
           ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/.ci/release-keystore.jks
           ANDROID_KEYSTORE_PASSWORD: ${{ steps.signing.outputs.store_password }}
@@ -120,15 +120,40 @@ jobs:
           --parallel
           --build-cache
           --configuration-cache
+          clean
+          :app:bundleRelease
           assembleRelease
+          -Pandroid.enableR8.fullMode=true
+          -Pandroid.experimental.enableNewResourceShrinker=true
+          -Pandroid.nonTransitiveRClass=true
+          -Pandroid.nonFinalResIds=true
           -x lint
           -x test
+
+      - name: Generate artifact size report
+        run: |
+          APK_PATH="$(ls -1 app/build/outputs/apk/release/*.apk | head -n 1)"
+          AAB_PATH="$(ls -1 app/build/outputs/bundle/release/*.aab | head -n 1)"
+          APK_SIZE="$(du -h "$APK_PATH" | cut -f1)"
+          AAB_SIZE="$(du -h "$AAB_PATH" | cut -f1)"
+          {
+            echo "### Release artifact size"
+            echo ""
+            echo "- APK: \`$APK_SIZE\` (`$APK_PATH`)"
+            echo "- AAB: \`$AAB_SIZE\` (`$AAB_PATH`)"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload R8 mapping (obfuscation)
         uses: actions/upload-artifact@v4
         with:
           name: r8-mapping
           path: app/build/outputs/mapping/release/mapping.txt
+
+      - name: Upload release AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: aab-release
+          path: app/build/outputs/bundle/release/*.aab
 
       - id: upload_apk_primary
         continue-on-error: true
