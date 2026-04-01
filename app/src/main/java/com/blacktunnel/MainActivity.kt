@@ -36,7 +36,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var appSearchInput: EditText
     private lateinit var appListView: ListView
     private lateinit var hotspotSwitch: SwitchCompat
+    private lateinit var wifiDirectSwitch: SwitchCompat
     private lateinit var blockNonSelectedSwitch: SwitchCompat
+    private lateinit var wifiDirectPasswordInput: EditText
+    private lateinit var wifiDirectLegacyHint: TextView
+    private lateinit var wifiDirectCredsInfo: TextView
+    private lateinit var wifiDirectSocks5Info: TextView
+    private lateinit var wifiDirectHttpInfo: TextView
     private lateinit var socks5Info: TextView
     private lateinit var httpInfo: TextView
     private lateinit var stateText: TextView
@@ -93,6 +99,35 @@ class MainActivity : AppCompatActivity() {
             TunnelPrefs.setHotspotProxyEnabled(this, isChecked)
             render(TunnelSessionStore.current())
         }
+        wifiDirectSwitch.setOnCheckedChangeListener { _, isChecked ->
+            if (isChecked) {
+                val pass = wifiDirectPasswordInput.text?.toString().orEmpty().trim()
+                if (pass.length < WIFI_DIRECT_MIN_PASSWORD_LEN) {
+                    Toast.makeText(this, getString(R.string.wifi_direct_password_min), Toast.LENGTH_SHORT).show()
+                    wifiDirectSwitch.isChecked = false
+                    return@setOnCheckedChangeListener
+                }
+                BtWifiDirect.savePassword(this, pass)
+                BtWifiDirect.start(this) { success ->
+                    runOnUiThread {
+                        if (!success) {
+                            wifiDirectSwitch.isChecked = false
+                            Toast.makeText(this, getString(R.string.wifi_direct_start_error), Toast.LENGTH_SHORT).show()
+                            return@runOnUiThread
+                        }
+                        refreshWifiDirectInfo()
+                    }
+                }
+            } else {
+                BtWifiDirect.stop(this)
+                refreshWifiDirectInfo()
+            }
+        }
+        wifiDirectPasswordInput.addTextChangedListener(SimpleTextWatcher {
+            val pass = it.trim()
+            if (pass.length >= WIFI_DIRECT_MIN_PASSWORD_LEN) BtWifiDirect.savePassword(this, pass)
+            refreshWifiDirectInfo()
+        })
 
         render(TunnelSessionStore.current())
     }
@@ -110,6 +145,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refreshHotspotInfo()
+        refreshWifiDirectInfo()
     }
 
     private fun bindViews() {
@@ -125,7 +161,13 @@ class MainActivity : AppCompatActivity() {
         appSearchInput = findViewById(R.id.appSearchInput)
         appListView = findViewById(R.id.appListView)
         hotspotSwitch = findViewById(R.id.hotspotSwitch)
+        wifiDirectSwitch = findViewById(R.id.switchWifiDirect)
         blockNonSelectedSwitch = findViewById(R.id.blockNonSelectedSwitch)
+        wifiDirectPasswordInput = findViewById(R.id.etWifiDirectPassword)
+        wifiDirectLegacyHint = findViewById(R.id.tvWifiDirectLegacyHint)
+        wifiDirectCredsInfo = findViewById(R.id.tvWifiDirectCredentials)
+        wifiDirectSocks5Info = findViewById(R.id.tvWifiDirectSocks5Info)
+        wifiDirectHttpInfo = findViewById(R.id.tvWifiDirectHttpInfo)
         socks5Info = findViewById(R.id.tvSocks5Info)
         httpInfo = findViewById(R.id.tvHttpInfo)
         stateText = findViewById(R.id.stateText)
@@ -177,6 +219,9 @@ class MainActivity : AppCompatActivity() {
         profilePerformance.isChecked = profile == "performance"
         hotspotSwitch.isChecked = TunnelPrefs.isHotspotProxyEnabled(this)
         blockNonSelectedSwitch.isChecked = TunnelPrefs.isBlockNonSelectedEnabled(this)
+        wifiDirectPasswordInput.setText(BtWifiDirect.getSavedPassword(this))
+        wifiDirectLegacyHint.visibility = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) View.VISIBLE else View.GONE
+        wifiDirectSwitch.isChecked = BtWifiDirect.isActive
 
         selectedPackages.clear()
         selectedPackages += TunnelPrefs.getIncludedApps(this)
@@ -227,6 +272,7 @@ class MainActivity : AppCompatActivity() {
         nameValue.text = getString(R.string.session_name) + ": " + snapshot.name
         daysLeftValue.text = getString(R.string.session_days_left) + ": " + snapshot.daysLeft
         refreshHotspotInfo()
+        refreshWifiDirectInfo()
     }
 
     private fun refreshHotspotInfo() {
@@ -243,6 +289,24 @@ class MainActivity : AppCompatActivity() {
         }
         socks5Info.text = ""
         httpInfo.text = ""
+    }
+
+    private fun refreshWifiDirectInfo() {
+        if (!BtWifiDirect.isActive) {
+            wifiDirectCredsInfo.text = ""
+            wifiDirectSocks5Info.text = ""
+            wifiDirectHttpInfo.text = ""
+            return
+        }
+        val info = BtWifiDirect.getConnectionInfo(this)
+        val ssid = info["ssid"]?.toString().orEmpty()
+        val password = info["password"]?.toString().orEmpty()
+        val ip = info["ip"]?.toString().orEmpty()
+        val socks5Port = info["socks5"]?.toString().orEmpty()
+        val httpPort = info["http"]?.toString().orEmpty()
+        wifiDirectCredsInfo.text = getString(R.string.wifi_direct_credentials, ssid, password)
+        wifiDirectSocks5Info.text = getString(R.string.wifi_direct_socks5_info, ip, socks5Port)
+        wifiDirectHttpInfo.text = getString(R.string.wifi_direct_http_info, ip, httpPort)
     }
 
     private fun onToggle() {
@@ -322,5 +386,6 @@ class MainActivity : AppCompatActivity() {
         private const val LATENCY_OFFSET_MS = 260L
         private const val HOTSPOT_SOCKS5_PORT = 1080
         private const val HOTSPOT_HTTP_PORT = 8282
+        private const val WIFI_DIRECT_MIN_PASSWORD_LEN = 8
     }
 }

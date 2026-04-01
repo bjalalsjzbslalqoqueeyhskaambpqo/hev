@@ -30,4 +30,12 @@
     <string name="block_non_selected_toggle">Bloquear apps no seleccionadas (requiere bloqueo VPN del sistema)</string>
     <string name="hotspot_socks5_info">📱 Android → SOCKS5: %1$s : %2$d</string>
     <string name="hotspot_http_info">📺 Smart TV / PC → HTTP: %1$s : %2$d</string>
+    <string name="wifi_direct_switch">WiFi Direct para Smart TV</string>
+    <string name="wifi_direct_password_hint">Contraseña WiFi (mínimo 8 caracteres)</string>
+    <string name="wifi_direct_legacy_warning">En Android 9 o menor la contraseña puede cambiar al reiniciar</string>
+    <string name="wifi_direct_password_min">Mínimo 8 caracteres</string>
+    <string name="wifi_direct_start_error">Error al iniciar WiFi Direct</string>
+    <string name="wifi_direct_credentials">WiFi: %1$s\nContraseña: %2$s</string>
+    <string name="wifi_direct_socks5_info">📱 Android → SOCKS5: %1$s : %2$s</string>
+    <string name="wifi_direct_http_info">📺 Smart TV → HTTP: %1$s : %2$s</string>
 </resources>
