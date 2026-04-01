@@ -29,6 +29,32 @@ object BtProxy {
     private const val RECONNECT_DELAY_MS = 6000L
     private const val MAX_RECONNECT_ATTEMPTS = 10
 
+    // ── DNS cache ─────────────────────────────────────────────────────────────
+    private const val DNS_TTL_MS = 300 * 60 * 1000L
+    @Volatile private var cachedAddresses: List<InetAddress> = emptyList()
+    @Volatile private var cacheTimestamp = 0L
+
+    private fun resolveProxyAddresses(): List<InetAddress> {
+        val now = System.currentTimeMillis()
+        if (cachedAddresses.isNotEmpty() && now - cacheTimestamp < DNS_TTL_MS) {
+            return cachedAddresses
+        }
+        val fresh = linkedSetOf<InetAddress>()
+        runCatching { fresh += InetAddress.getByName(PROXY_IPV6) }
+        runCatching { fresh += InetAddress.getAllByName(PROXY_HOST).toList() }
+        if (fresh.isNotEmpty()) {
+            cachedAddresses = fresh.toList()
+            cacheTimestamp = now
+        }
+        return if (cachedAddresses.isNotEmpty()) cachedAddresses else fresh.toList()
+    }
+
+    fun clearDnsCache() {
+        cachedAddresses = emptyList()
+        cacheTimestamp = 0L
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     @Volatile private var running = false
     @Volatile private var currentClientId = ""
     @Volatile private var xrayProcess: Process? = null
@@ -91,7 +117,6 @@ object BtProxy {
         authFatalError = false
         reconnectAttempts = 0
 
-        // Limpiar streams del túnel anterior
         streams.values.forEach { runCatching { it.close() } }
         streams.clear()
         nextStreamId.set(1)
@@ -367,8 +392,8 @@ object BtProxy {
         if (currentClientId.isBlank()) return null
         return try {
             val totalStart = System.currentTimeMillis()
-            val dnsStart = System.currentTimeMillis()
             LogSink.add("🔍", "Resolviendo DNS...", LogLevel.INFO)
+            val dnsStart = System.currentTimeMillis()
             val socket = openProxySocket(protectSocket) ?: return null
             LogSink.add("✓", "DNS/Socket listo (${System.currentTimeMillis() - dnsStart}ms)", LogLevel.OK)
             socket.tcpNoDelay = true
@@ -380,11 +405,10 @@ object BtProxy {
             val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\n" +
                 "Action: tunnel\r\nX-Client-Id: $currentClientId\r\n\r\n"
 
-            val p1Start = System.currentTimeMillis()
             out.write(p1.toByteArray()); out.flush()
-            LogSink.add("→", "P1 enviado (${System.currentTimeMillis() - p1Start}ms)", LogLevel.INFO)
+            LogSink.add("→", "P1 enviado", LogLevel.INFO)
             Thread.sleep(10)
-            val clientServerStart = System.currentTimeMillis()
+            val pingStart = System.currentTimeMillis()
             out.write(p2.toByteArray()); out.flush()
             LogSink.add("→", "P2 enviado", LogLevel.INFO)
 
@@ -406,6 +430,8 @@ object BtProxy {
                 runCatching { socket.close() }
                 TunnelSessionStore.setState("CONNECTING")
                 LogSink.add("✗", "Handshake inválido", LogLevel.ERROR)
+                // Limpiar cache si falla — puede ser IP inválida
+                clearDnsCache()
                 return null
             }
             LogSink.add("✓", "P1/P2 OK", LogLevel.OK)
@@ -415,11 +441,8 @@ object BtProxy {
                 runCatching { socket.close() }
                 TunnelSessionStore.setState("ERROR")
                 authFatalError = true
-                val message = if (authState.contains("EXPIRED", ignoreCase = true)) {
-                    "Usuario expirado"
-                } else {
-                    "Usuario inválido"
-                }
+                val message = if (authState.contains("EXPIRED", ignoreCase = true))
+                    "Usuario expirado" else "Usuario inválido"
                 LogSink.add("✗", message, LogLevel.ERROR)
                 return null
             }
@@ -429,24 +452,23 @@ object BtProxy {
                 "X-Name"      to (handshake.headers["x-name"] ?: "-"),
                 "X-Days-Left" to (handshake.headers["x-days-left"] ?: "-")
             ))
-            val clientServerMs = System.currentTimeMillis() - clientServerStart
+            val latencyMs = System.currentTimeMillis() - pingStart
             val totalMs = System.currentTimeMillis() - totalStart
-            TunnelSessionStore.setLatency(clientServerMs)
+            TunnelSessionStore.setLatency(latencyMs)
             TunnelSessionStore.setState("CONNECTED")
-            LogSink.add("🔒", "Conectado · Client-Server ${clientServerMs}ms · Total ${totalMs}ms", LogLevel.SUCCESS)
+            LogSink.add("🔒", "Conectado · ${latencyMs}ms · Total ${totalMs}ms", LogLevel.SUCCESS)
             socket.soTimeout = 0
             socket
         } catch (_: Exception) {
             TunnelSessionStore.setState("CONNECTING")
             LogSink.add("✗", "Timeout de conexión", LogLevel.ERROR)
+            clearDnsCache()
             null
         }
     }
 
     private fun openProxySocket(protectSocket: (Socket) -> Unit): Socket? {
-        val candidates = linkedSetOf<InetAddress>()
-        runCatching { candidates += InetAddress.getByName(PROXY_IPV6) }
-        runCatching { candidates += InetAddress.getAllByName(PROXY_HOST).toList() }
+        val candidates = resolveProxyAddresses()
         if (candidates.isEmpty()) return null
 
         for (address in candidates) {
@@ -460,6 +482,7 @@ object BtProxy {
             }.getOrNull()
             if (socket != null) return socket
         }
+        clearDnsCache()
         return null
     }
 
