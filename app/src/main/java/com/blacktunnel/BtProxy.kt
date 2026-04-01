@@ -106,7 +106,8 @@ object BtProxy {
             while (running && tunnelSocket?.isConnected == true) {
                 Thread.sleep(45_000)
                 if (!running) break
-                runCatching { writeFrame(TYPE_DATA, 0, ByteArray(0)) }.onFailure { break }
+                val sent = runCatching { writeFrame(TYPE_DATA, 0, ByteArray(0)) }.isSuccess
+                if (!sent) break
             }
         }
     }
