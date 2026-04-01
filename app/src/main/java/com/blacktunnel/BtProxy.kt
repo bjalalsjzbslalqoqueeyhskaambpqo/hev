@@ -393,40 +393,35 @@ object BtProxy {
     }.getOrNull()
 
     private fun waitForNetwork(ctx: Context) {
-        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE)
+        val cm = ctx.getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
             as android.net.ConnectivityManager
-
-        // Esperar hasta 60 segundos a que haya red real con internet validado
-        // Sin límite de intentos — si no hay red, no tiene sentido reconectar
         var waited = 0
         while (running) {
-            val hasNetwork = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                val net = cm.activeNetwork ?: run {
-                    Thread.sleep(2000)
-                    waited += 2
-                    return@while
+            val hasNetwork = runCatching {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                    val net = cm.activeNetwork
+                    if (net == null) {
+                        false
+                    } else {
+                        val caps = cm.getNetworkCapabilities(net)
+                        caps != null &&
+                            caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                            caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                    }
+                } else {
+                    @Suppress("DEPRECATION")
+                    val info = cm.activeNetworkInfo
+                    info != null && info.isConnected
                 }
-                val caps = cm.getNetworkCapabilities(net)
-                caps != null &&
-                    caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                    caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-            } else {
-                @Suppress("DEPRECATION")
-                val info = cm.activeNetworkInfo
-                info != null && info.isConnected
-            }
+            }.getOrElse { false }
 
             if (hasNetwork) {
-                // Red validada — dar 1 segundo extra para que las interfaces estén listas
                 Thread.sleep(1000)
                 return
             }
 
-            // Sin red — esperar 2 segundos y volver a verificar
             Thread.sleep(2000)
             waited += 2
-
-            // Log cada 10 segundos para que el usuario sepa qué pasa
             if (waited % 10 == 0) {
                 LogSink.add("📡", "Sin red · esperando... (${waited}s)", LogLevel.WARN)
                 TunnelSessionStore.setState("CONNECTING")
