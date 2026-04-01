@@ -392,41 +392,64 @@ object BtProxy {
             }
     }.getOrNull()
 
+    private fun isNetworkValidated(cm: android.net.ConnectivityManager): Boolean {
+        return runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                val net = cm.activeNetwork ?: return false
+                val caps = cm.getNetworkCapabilities(net) ?: return false
+                caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            } else {
+                @Suppress("DEPRECATION")
+                val info = cm.activeNetworkInfo
+                info != null && info.isConnected
+            }
+        }.getOrElse { false }
+    }
+
     private fun waitForNetwork(ctx: Context) {
         val cm = ctx.getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
             as android.net.ConnectivityManager
-        var waited = 0
-        while (running) {
-            val hasNetwork = runCatching {
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-                    val net = cm.activeNetwork
-                    if (net == null) {
-                        false
-                    } else {
-                        val caps = cm.getNetworkCapabilities(net)
-                        caps != null &&
-                            caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                            caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-                    }
-                } else {
-                    @Suppress("DEPRECATION")
-                    val info = cm.activeNetworkInfo
-                    info != null && info.isConnected
+
+        if (isNetworkValidated(cm)) return
+
+        LogSink.add("📡", "Sin red · esperando señal...", LogLevel.WARN)
+        TunnelSessionStore.setState("CONNECTING")
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+            val latch = java.util.concurrent.CountDownLatch(1)
+            val callback = object : android.net.ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: android.net.Network) {
+                    latch.countDown()
                 }
-            }.getOrElse { false }
-
-            if (hasNetwork) {
-                Thread.sleep(1000)
-                return
+                override fun onCapabilitiesChanged(
+                    network: android.net.Network,
+                    caps: android.net.NetworkCapabilities
+                ) {
+                    if (caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                        caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                        latch.countDown()
+                    }
+                }
             }
-
-            Thread.sleep(2000)
-            waited += 2
-            if (waited % 10 == 0) {
-                LogSink.add("📡", "Sin red · esperando... (${waited}s)", LogLevel.WARN)
-                TunnelSessionStore.setState("CONNECTING")
+            val request = android.net.NetworkRequest.Builder()
+                .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            runCatching { cm.registerNetworkCallback(request, callback) }
+            try {
+                while (running && latch.count > 0) {
+                    latch.await(2, java.util.concurrent.TimeUnit.SECONDS)
+                }
+            } finally {
+                runCatching { cm.unregisterNetworkCallback(callback) }
+            }
+        } else {
+            while (running && !isNetworkValidated(cm)) {
+                Thread.sleep(2000)
             }
         }
+
+        if (running) Thread.sleep(500)
     }
 
     private fun openTunnel(protectSocket: (Socket) -> Unit): Socket? {
