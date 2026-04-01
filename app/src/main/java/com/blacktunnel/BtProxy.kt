@@ -43,8 +43,6 @@ object BtProxy {
     private val streams = ConcurrentHashMap<Int, Socket>()
     private val tunnelLock = Any()
 
-    @Volatile private var isPerformanceMode = false
-
     fun start(
         ctx: Context,
         clientId: String,
@@ -53,7 +51,6 @@ object BtProxy {
         currentClientId = clientId.trim()
         savedCtx = ctx
         savedProtect = protectSocket
-        isPerformanceMode = TunnelPrefs.getProfile(ctx).equals("performance", ignoreCase = true)
         running = true
         reconnectAttempts = 0
         thread(isDaemon = true, name = "btproxy-init") {

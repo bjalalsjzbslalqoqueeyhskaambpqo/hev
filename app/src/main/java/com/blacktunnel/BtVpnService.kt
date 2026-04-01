@@ -15,17 +15,14 @@ class BtVpnService : VpnService() {
     private var pfd: ParcelFileDescriptor? = null
     private var rawTunFd: Int? = null
     @Volatile private var isStopping = false
-    @Volatile private var desiredRunning = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return when (intent?.action) {
             ACTION_STOP -> {
-                desiredRunning = false
                 stopTunnel()
                 START_NOT_STICKY
             }
             else -> {
-                desiredRunning = true
                 startTunnel()
                 START_STICKY
             }
@@ -39,7 +36,6 @@ class BtVpnService : VpnService() {
 
     private fun startTunnel() {
         isStopping = false
-        desiredRunning = true
 
         if (pfd != null) {
             TunnelSessionStore.setState("CONNECTED")
@@ -114,7 +110,6 @@ class BtVpnService : VpnService() {
     private fun stopTunnel() {
         if (isStopping) return
         isStopping = true
-        desiredRunning = false
         runCatching { HevBridge.stop() }
         BtProxy.stop()
         closeRawTunFd()

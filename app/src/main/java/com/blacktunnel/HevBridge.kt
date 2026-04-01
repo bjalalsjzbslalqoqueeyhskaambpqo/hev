@@ -7,5 +7,4 @@ object HevBridge {
 
     external fun start(configPath: String, tunFd: Int): Int
     external fun stop()
-    external fun stats(): LongArray
 }

@@ -4,19 +4,11 @@ import android.content.Context
 
 object TunnelPrefs {
     private const val PREFS = "tunnel_prefs"
-    private const val KEY_MUX = "mux"
     private const val KEY_PROFILE = "profile"
     private const val KEY_INCLUDED_APPS = "included_apps"
     private const val KEY_CLIENT_ID = "client_id"
     private const val KEY_HOTSPOT_PROXY = "hotspot_proxy"
     private const val KEY_BLOCK_NON_SELECTED = "block_non_selected"
-
-    fun getMux(ctx: Context): Int =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_MUX, 32)
-
-    fun setMux(ctx: Context, mux: Int) {
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putInt(KEY_MUX, mux).apply()
-    }
 
     fun getProfile(ctx: Context): String =
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_PROFILE, "normal") ?: "normal"
