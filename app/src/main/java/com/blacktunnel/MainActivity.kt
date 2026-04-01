@@ -37,7 +37,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var appListView: ListView
     private lateinit var hotspotSwitch: SwitchCompat
     private lateinit var blockNonSelectedSwitch: SwitchCompat
-    private lateinit var hotspotInfo: TextView
+    private lateinit var socks5Info: TextView
+    private lateinit var httpInfo: TextView
     private lateinit var stateText: TextView
     private lateinit var statusValue: TextView
     private lateinit var latencyValue: TextView
@@ -84,9 +85,9 @@ class MainActivity : AppCompatActivity() {
             if (!requested) openBatterySettings()
         }
         hotspotSwitch.setOnCheckedChangeListener { _, isChecked ->
-            if (isChecked && getHotspotIp() == null) {
+            if (isChecked && BtProxy.getHotspotIp() == null) {
                 hotspotSwitch.isChecked = false
-                Toast.makeText(this, getString(R.string.hotspot_requires_system), Toast.LENGTH_LONG).show()
+                Toast.makeText(this, getString(R.string.hotspot_enable_first), Toast.LENGTH_SHORT).show()
                 return@setOnCheckedChangeListener
             }
             TunnelPrefs.setHotspotProxyEnabled(this, isChecked)
@@ -106,6 +107,11 @@ class MainActivity : AppCompatActivity() {
         super.onStop()
     }
 
+    override fun onResume() {
+        super.onResume()
+        refreshHotspotInfo()
+    }
+
     private fun bindViews() {
         toggleButton = findViewById(R.id.toggleButton)
         copyClientIdButton = findViewById(R.id.copyClientIdButton)
@@ -120,7 +126,8 @@ class MainActivity : AppCompatActivity() {
         appListView = findViewById(R.id.appListView)
         hotspotSwitch = findViewById(R.id.hotspotSwitch)
         blockNonSelectedSwitch = findViewById(R.id.blockNonSelectedSwitch)
-        hotspotInfo = findViewById(R.id.hotspotInfo)
+        socks5Info = findViewById(R.id.tvSocks5Info)
+        httpInfo = findViewById(R.id.tvHttpInfo)
         stateText = findViewById(R.id.stateText)
         statusValue = findViewById(R.id.statusValue)
         latencyValue = findViewById(R.id.latencyValue)
@@ -219,11 +226,23 @@ class MainActivity : AppCompatActivity() {
         latencyValue.text = getString(R.string.latency_label) + ": " + if (correctedLatency >= 0) "${correctedLatency} ms" else "-"
         nameValue.text = getString(R.string.session_name) + ": " + snapshot.name
         daysLeftValue.text = getString(R.string.session_days_left) + ": " + snapshot.daysLeft
-        hotspotInfo.text = if (hotspotSwitch.isChecked) {
-            getString(R.string.hotspot_info, getHotspotIp() ?: "-", HOTSPOT_PORT)
-        } else {
-            getString(R.string.hotspot_disabled)
+        refreshHotspotInfo()
+    }
+
+    private fun refreshHotspotInfo() {
+        val ip = BtProxy.getHotspotIp()
+        if (ip != null && hotspotSwitch.isChecked) {
+            socks5Info.text = getString(R.string.hotspot_socks5_info, ip, HOTSPOT_SOCKS5_PORT)
+            httpInfo.text = getString(R.string.hotspot_http_info, ip, HOTSPOT_HTTP_PORT)
+            return
         }
+
+        if (ip == null && TunnelPrefs.isHotspotProxyEnabled(this)) {
+            TunnelPrefs.setHotspotProxyEnabled(this, false)
+            hotspotSwitch.isChecked = false
+        }
+        socks5Info.text = ""
+        httpInfo.text = ""
     }
 
     private fun onToggle() {
@@ -298,32 +317,10 @@ class MainActivity : AppCompatActivity() {
         if (opened == null) Toast.makeText(this, getString(R.string.battery_settings_failed), Toast.LENGTH_SHORT).show()
     }
 
-    private fun getHotspotIp(): String? = runCatching {
-        val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
-        val candidates = mutableListOf<Pair<String, String>>()
-
-        while (interfaces.hasMoreElements()) {
-            val intf = interfaces.nextElement()
-            val name = intf.name.lowercase()
-            val addrs = intf.inetAddresses
-
-            while (addrs.hasMoreElements()) {
-                val addr = addrs.nextElement()
-                if (addr is java.net.Inet4Address && !addr.isLoopbackAddress) {
-                    candidates += name to addr.hostAddress
-                }
-            }
-        }
-
-        candidates.firstOrNull { (name, ip) ->
-            (name.contains("ap") || name.contains("swlan") || name.contains("rndis") || name.contains("wlan")) &&
-                !ip.startsWith("127.")
-        }?.second ?: candidates.firstOrNull()?.second
-    }.getOrNull()
-
     companion object {
         private const val REQ_VPN_PREPARE = 11
         private const val LATENCY_OFFSET_MS = 260L
-        private const val HOTSPOT_PORT = 1080
+        private const val HOTSPOT_SOCKS5_PORT = 1080
+        private const val HOTSPOT_HTTP_PORT = 8282
     }
 }

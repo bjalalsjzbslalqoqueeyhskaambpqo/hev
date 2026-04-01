@@ -285,7 +285,7 @@ object BtProxy {
             }"""
     }
 
-    private fun getHotspotIp(): String? = runCatching {
+    fun getHotspotIp(): String? = runCatching {
         java.net.NetworkInterface.getNetworkInterfaces()
             .asSequence()
             .flatMap { intf -> intf.inetAddresses.asSequence().map { intf.name.lowercase() to it } }

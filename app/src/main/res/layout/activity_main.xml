@@ -170,10 +170,17 @@
                         android:textColor="@color/text_primary" />
 
                     <TextView
-                        android:id="@+id/hotspotInfo"
+                        android:id="@+id/tvSocks5Info"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="4dp"
+                        android:textColor="@color/text_secondary" />
+
+                    <TextView
+                        android:id="@+id/tvHttpInfo"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
                         android:textColor="@color/text_secondary" />
                 </LinearLayout>
                 <com.google.android.material.button.MaterialButton
