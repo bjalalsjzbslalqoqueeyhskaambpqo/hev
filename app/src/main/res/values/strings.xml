@@ -25,9 +25,7 @@
     <string name="settings_saved">Ajustes guardados</string>
     <string name="battery_settings_failed">No se pudo abrir ajustes de batería</string>
     <string name="hotspot_proxy_toggle">Compartir Wi‑Fi por proxy</string>
-    <string name="hotspot_requires_system">Primero activa \"Compartir Wi‑Fi\" del sistema y luego esta opción.</string>
     <string name="hotspot_enable_first">Activá el hotspot del celular primero</string>
-    <string name="block_non_selected_toggle">Bloquear apps no seleccionadas (requiere bloqueo VPN del sistema)</string>
     <string name="hotspot_socks5_info">📱 Android → SOCKS5: %1$s : %2$d</string>
     <string name="hotspot_http_info">📺 Smart TV / PC → HTTP: %1$s : %2$d</string>
     <string name="wifi_direct_switch">WiFi Direct para Smart TV</string>

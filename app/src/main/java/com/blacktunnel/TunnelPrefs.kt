@@ -8,7 +8,6 @@ object TunnelPrefs {
     private const val KEY_INCLUDED_APPS = "included_apps"
     private const val KEY_CLIENT_ID = "client_id"
     private const val KEY_HOTSPOT_PROXY = "hotspot_proxy"
-    private const val KEY_BLOCK_NON_SELECTED = "block_non_selected"
 
     fun getProfile(ctx: Context): String =
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_PROFILE, "normal") ?: "normal"
@@ -49,10 +48,4 @@ object TunnelPrefs {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_HOTSPOT_PROXY, enabled).apply()
     }
 
-    fun isBlockNonSelectedEnabled(ctx: Context): Boolean =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_BLOCK_NON_SELECTED, false)
-
-    fun setBlockNonSelectedEnabled(ctx: Context, enabled: Boolean) {
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_BLOCK_NON_SELECTED, enabled).apply()
-    }
 }

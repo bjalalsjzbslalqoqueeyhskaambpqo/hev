@@ -41,7 +41,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var appListView: ListView
     private lateinit var hotspotSwitch: SwitchCompat
     private lateinit var wifiDirectSwitch: SwitchCompat
-    private lateinit var blockNonSelectedSwitch: SwitchCompat
     private lateinit var hotspotInfoContainer: LinearLayout
     private lateinit var wifiDirectInfoContainer: LinearLayout
     private lateinit var wifiDirectPasswordInput: EditText
@@ -182,7 +181,6 @@ class MainActivity : AppCompatActivity() {
         appListView = findViewById(R.id.appListView)
         hotspotSwitch = findViewById(R.id.hotspotSwitch)
         wifiDirectSwitch = findViewById(R.id.switchWifiDirect)
-        blockNonSelectedSwitch = findViewById(R.id.blockNonSelectedSwitch)
         hotspotInfoContainer = findViewById(R.id.hotspotInfoContainer)
         wifiDirectInfoContainer = findViewById(R.id.wifiDirectInfoContainer)
         wifiDirectPasswordInput = findViewById(R.id.etWifiDirectPassword)
@@ -240,7 +238,6 @@ class MainActivity : AppCompatActivity() {
         profileNormal.isChecked = profile == "normal"
         profilePerformance.isChecked = profile == "performance"
         hotspotSwitch.isChecked = TunnelPrefs.isHotspotProxyEnabled(this)
-        blockNonSelectedSwitch.isChecked = TunnelPrefs.isBlockNonSelectedEnabled(this)
         wifiDirectPasswordInput.setText(BtWifiDirect.getSavedPassword(this))
         wifiDirectLegacyHint.visibility = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) View.VISIBLE else View.GONE
         wifiDirectSwitch.isChecked = BtWifiDirect.isActive
@@ -269,7 +266,6 @@ class MainActivity : AppCompatActivity() {
         TunnelPrefs.setProfile(this, profile)
         TunnelPrefs.setIncludedApps(this, selectedPackages.toList())
         if (profile == "normal") TunnelPrefs.setHotspotProxyEnabled(this, hotspotSwitch.isChecked)
-        TunnelPrefs.setBlockNonSelectedEnabled(this, blockNonSelectedSwitch.isChecked)
         if (showToast) Toast.makeText(this, getString(R.string.settings_saved), Toast.LENGTH_SHORT).show()
     }
 

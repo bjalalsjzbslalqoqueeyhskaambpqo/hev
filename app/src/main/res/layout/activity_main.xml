@@ -146,13 +146,6 @@
                         android:layout_height="160dp"
                         android:layout_marginTop="6dp"
                         android:choiceMode="multipleChoice" />
-                    <androidx.appcompat.widget.SwitchCompat
-                        android:id="@+id/blockNonSelectedSwitch"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="8dp"
-                        android:text="@string/block_non_selected_toggle"
-                        android:textColor="@color/text_primary" />
                 </LinearLayout>
 
                 <LinearLayout
