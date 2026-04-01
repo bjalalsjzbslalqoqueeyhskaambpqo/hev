@@ -162,6 +162,8 @@ object BtProxy {
             runCatching { tunnelSocket?.close() }
             tunnelSocket = null
             tunnelOut = null
+            waitForNetwork(ctx)
+            if (!running) return@thread
             connectTunnel(ctx, protect)
         }
     }
@@ -387,6 +389,18 @@ object BtProxy {
                 }?.second ?: pairs.firstOrNull()?.second
             }
     }.getOrNull()
+
+    private fun waitForNetwork(ctx: Context) {
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE)
+            as android.net.ConnectivityManager
+        var attempts = 0
+        while (running && attempts < 10) {
+            val net = cm.activeNetworkInfo
+            if (net != null && net.isConnected) return
+            Thread.sleep(1000)
+            attempts++
+        }
+    }
 
     private fun openTunnel(protectSocket: (Socket) -> Unit): Socket? {
         if (currentClientId.isBlank()) return null
