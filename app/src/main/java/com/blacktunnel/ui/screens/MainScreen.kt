@@ -134,9 +134,9 @@ fun MainScreen(
 
             Spacer(Modifier.height(14.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                InfoChip("⚡", if (latencyMs >= 0) "${latencyMs}ms" else "-")
-                InfoChip("📅", "$daysLeft días")
-                InfoChip("👤", clientName.ifBlank { "-" })
+                InfoChip("⚡", if (latencyMs >= 0) "${latencyMs}ms" else "-", Modifier.weight(1f))
+                InfoChip("📅", "$daysLeft días", Modifier.weight(1f))
+                InfoChip("👤", clientName.ifBlank { "-" }, Modifier.weight(1f))
             }
 
             Spacer(Modifier.height(16.dp))
@@ -194,9 +194,9 @@ private fun Orb(state: VpnState) {
 }
 
 @Composable
-private fun InfoChip(icon: String, label: String) {
+private fun InfoChip(icon: String, label: String, modifier: Modifier = Modifier) {
     Surface(
-        modifier = Modifier.weight(1f),
+        modifier = modifier,
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surface
     ) {
