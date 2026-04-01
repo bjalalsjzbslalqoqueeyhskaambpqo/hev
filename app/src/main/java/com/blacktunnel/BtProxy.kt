@@ -30,7 +30,7 @@ object BtProxy {
     private const val MAX_RECONNECT_ATTEMPTS = 10
 
     // ── DNS cache ─────────────────────────────────────────────────────────────
-    private const val DNS_TTL_MS = 300 * 60 * 1000L
+    private const val DNS_TTL_MS = 30 * 60 * 1000L // 30 minutos
     @Volatile private var cachedAddresses: List<InetAddress> = emptyList()
     @Volatile private var cacheTimestamp = 0L
 
@@ -162,6 +162,8 @@ object BtProxy {
             runCatching { tunnelSocket?.close() }
             tunnelSocket = null
             tunnelOut = null
+            // Esperar a que la red esté realmente estable antes de reconectar
+            // Motorola y otros hacen un breve periodo de red inestable al volver la señal
             waitForNetwork(ctx)
             if (!running) return@thread
             connectTunnel(ctx, protect)
@@ -393,12 +395,42 @@ object BtProxy {
     private fun waitForNetwork(ctx: Context) {
         val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE)
             as android.net.ConnectivityManager
-        var attempts = 0
-        while (running && attempts < 10) {
-            val net = cm.activeNetworkInfo
-            if (net != null && net.isConnected) return
-            Thread.sleep(1000)
-            attempts++
+
+        // Esperar hasta 60 segundos a que haya red real con internet validado
+        // Sin límite de intentos — si no hay red, no tiene sentido reconectar
+        var waited = 0
+        while (running) {
+            val hasNetwork = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val net = cm.activeNetwork ?: run {
+                    Thread.sleep(2000)
+                    waited += 2
+                    return@while
+                }
+                val caps = cm.getNetworkCapabilities(net)
+                caps != null &&
+                    caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            } else {
+                @Suppress("DEPRECATION")
+                val info = cm.activeNetworkInfo
+                info != null && info.isConnected
+            }
+
+            if (hasNetwork) {
+                // Red validada — dar 1 segundo extra para que las interfaces estén listas
+                Thread.sleep(1000)
+                return
+            }
+
+            // Sin red — esperar 2 segundos y volver a verificar
+            Thread.sleep(2000)
+            waited += 2
+
+            // Log cada 10 segundos para que el usuario sepa qué pasa
+            if (waited % 10 == 0) {
+                LogSink.add("📡", "Sin red · esperando... (${waited}s)", LogLevel.WARN)
+                TunnelSessionStore.setState("CONNECTING")
+            }
         }
     }
 
@@ -496,6 +528,7 @@ object BtProxy {
             }.getOrNull()
             if (socket != null) return socket
         }
+        // Todos los candidatos fallaron — limpiar cache para forzar re-resolución
         clearDnsCache()
         return null
     }
