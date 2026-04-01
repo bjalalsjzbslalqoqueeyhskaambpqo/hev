@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -134,9 +133,9 @@ fun MainScreen(
 
             Spacer(Modifier.height(14.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                InfoChip("⚡", if (latencyMs >= 0) "${latencyMs}ms" else "-", Modifier.weight(1f))
-                InfoChip("📅", "$daysLeft días", Modifier.weight(1f))
-                InfoChip("👤", clientName.ifBlank { "-" }, Modifier.weight(1f))
+                InfoChip("⚡", if (latencyMs >= 0) "${latencyMs}ms" else "-")
+                InfoChip("📅", "$daysLeft días")
+                InfoChip("👤", clientName.ifBlank { "-" })
             }
 
             Spacer(Modifier.height(16.dp))
@@ -194,9 +193,9 @@ private fun Orb(state: VpnState) {
 }
 
 @Composable
-private fun InfoChip(icon: String, label: String, modifier: Modifier = Modifier) {
+private fun InfoChip(icon: String, label: String) {
     Surface(
-        modifier = modifier,
+        modifier = Modifier,
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surface
     ) {
