@@ -1,11 +1,17 @@
 package com.blacktunnel
 
+import android.app.AlarmManager
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Intent
+import android.content.IntentFilter
+import android.app.PendingIntent
+import android.net.ConnectivityManager
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.system.OsConstants
 import androidx.core.app.NotificationCompat
 import kotlin.concurrent.thread
@@ -15,21 +21,51 @@ class BtVpnService : VpnService() {
     private var pfd: ParcelFileDescriptor? = null
     private var rawTunFd: Int? = null
     @Volatile private var isStopping = false
+    @Volatile private var desiredRunning = false
+    private var networkReceiverRegistered = false
+    private val networkChangeReceiver = NetworkChangeReceiver()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return when (intent?.action) {
             ACTION_STOP -> {
+                desiredRunning = false
+                TunnelPrefs.setWasConnected(this, false)
                 stopTunnel()
                 START_NOT_STICKY
             }
             else -> {
+                desiredRunning = true
+                TunnelPrefs.setWasConnected(this, true)
                 startTunnel()
                 START_STICKY
             }
         }
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        if (!desiredRunning) return
+        val restartIntent = Intent(applicationContext, BtVpnService::class.java).setAction(ACTION_START)
+        val pending = PendingIntent.getService(
+            this, 1, restartIntent, PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val alarm = getSystemService(ALARM_SERVICE) as AlarmManager
+        alarm.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + 1000, pending)
+    }
+
     override fun onDestroy() {
+        if (desiredRunning) {
+            val restartIntent = Intent(applicationContext, BtVpnService::class.java).setAction(ACTION_START)
+            val pending = PendingIntent.getService(
+                this, 2, restartIntent, PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val alarm = getSystemService(ALARM_SERVICE) as AlarmManager
+            alarm.setExactAndAllowWhileIdle(
+                AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                SystemClock.elapsedRealtime() + 2000,
+                pending
+            )
+        }
         stopTunnel()
         super.onDestroy()
     }
@@ -49,7 +85,7 @@ class BtVpnService : VpnService() {
             val clientId = TunnelPrefs.getOrCreateClientId(this)
 
             val builder = Builder()
-                .setSession("BlackTunnel")
+                .setSession("XTunnel")
                 .addAddress("198.18.0.1", 30)
                 .addAddress("fc00::1", 126)
                 .addRoute("0.0.0.0", 0)
@@ -76,6 +112,7 @@ class BtVpnService : VpnService() {
             }
 
             pfd = established
+            registerNetworkReceiver()
 
             BtProxy.start(
                 ctx = this,
@@ -96,13 +133,32 @@ class BtVpnService : VpnService() {
 
     private fun startVpnForeground() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(VPN_CHANNEL_ID, "BlackTunnel VPN", NotificationManager.IMPORTANCE_MIN)
+            val channel = NotificationChannel(VPN_CHANNEL_ID, "XTunnel VPN", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Servicio VPN activo"
+                setShowBadge(false)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            }
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
+        val openAppIntent = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE
+        )
+        val disconnectIntent = PendingIntent.getService(
+            this, 0, Intent(this, BtVpnService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_IMMUTABLE
+        )
         val notification = NotificationCompat.Builder(this, VPN_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
-            .setContentTitle("BlackTunnel activo")
-            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setContentTitle("XTunnel activo")
+            .setContentText("Conexión protegida")
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .setContentIntent(openAppIntent)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Desconectar", disconnectIntent)
             .build()
         startForeground(VPN_NOTIFICATION_ID, notification)
     }
@@ -115,9 +171,22 @@ class BtVpnService : VpnService() {
         closeRawTunFd()
         runCatching { pfd?.close() }
         pfd = null
+        runCatching {
+            if (networkReceiverRegistered) {
+                unregisterReceiver(networkChangeReceiver)
+                networkReceiverRegistered = false
+            }
+        }
         TunnelSessionStore.setState("DISCONNECTED")
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    private fun registerNetworkReceiver() {
+        if (networkReceiverRegistered) return
+        val filter = IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION)
+        registerReceiver(networkChangeReceiver, filter)
+        networkReceiverRegistered = true
     }
 
     private fun closeRawTunFd() {

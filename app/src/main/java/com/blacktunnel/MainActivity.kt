@@ -1,6 +1,7 @@
 package com.blacktunnel
 
 import android.Manifest
+import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -44,6 +45,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         wifiDirectPasswordState.value = BtWifiDirect.getSavedPassword(this)
         TunnelPrefs.setProfile(this, "normal")
+        requestBatteryExemptionIfNeeded()
 
         setContent {
             BlackTunnelTheme {
@@ -204,6 +206,38 @@ class MainActivity : ComponentActivity() {
                 runCatching { startActivity(intent); true }.getOrDefault(false)
         }
         if (opened == null) Toast.makeText(this, getString(R.string.battery_settings_failed), Toast.LENGTH_SHORT).show()
+    }
+
+    private fun requestBatteryExemptionIfNeeded() {
+        if (TunnelPrefs.isOnboardingShown(this)) return
+        val pm = getSystemService(PowerManager::class.java)
+        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+            AlertDialog.Builder(this)
+                .setTitle("Mantener conexión activa")
+                .setMessage(getBatteryInstructionsByBrand())
+                .setPositiveButton("Configurar ahora") { _, _ ->
+                    startActivity(Intent(
+                        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.parse("package:$packageName")
+                    ))
+                    TunnelPrefs.setOnboardingShown(this)
+                }
+                .setNegativeButton("Después", null)
+                .show()
+        } else {
+            TunnelPrefs.setOnboardingShown(this)
+        }
+    }
+
+    private fun getBatteryInstructionsByBrand(): String {
+        return when (Build.MANUFACTURER.lowercase()) {
+            "motorola" -> "Ajustes → Batería → Gestión de batería → XTunnel → Sin restricciones"
+            "xiaomi", "redmi", "poco" -> "Ajustes → Aplicaciones → XTunnel → Batería → Sin restricciones"
+            "samsung" -> "Ajustes → Batería → Optimización de batería → XTunnel → No optimizar"
+            "huawei", "honor" -> "Ajustes → Batería → Inicio de aplicaciones → XTunnel → Activar manualmente"
+            "oppo", "realme", "oneplus" -> "Ajustes → Batería → Optimización de batería → XTunnel → No optimizar"
+            else -> "Ajustes → Batería → Optimización de batería → XTunnel → No optimizar"
+        }
     }
 
     companion object {

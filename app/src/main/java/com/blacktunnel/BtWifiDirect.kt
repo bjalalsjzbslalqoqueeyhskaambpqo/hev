@@ -62,7 +62,7 @@ object BtWifiDirect {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val config = WifiP2pConfig.Builder()
-                .setNetworkName("DIRECT-BlackTunnel")
+                .setNetworkName("DIRECT-XTunnel")
                 .setPassphrase(getSavedPassword(appCtx))
                 .build()
             manager?.createGroup(activeChannel, config, object : WifiP2pManager.ActionListener {
@@ -101,7 +101,7 @@ object BtWifiDirect {
     }
 
     fun getConnectionInfo(ctx: Context) = mapOf(
-        "ssid" to "DIRECT-BlackTunnel",
+        "ssid" to "DIRECT-XTunnel",
         "password" to getSavedPassword(ctx),
         "ip" to GATEWAY_IP,
         "socks5" to SOCKS5_PORT,

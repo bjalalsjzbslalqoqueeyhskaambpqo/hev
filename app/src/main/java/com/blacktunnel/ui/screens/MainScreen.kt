@@ -109,7 +109,7 @@ fun MainScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("BlackTunnel", color = MaterialTheme.colorScheme.onSurface, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Text("XTunnel", color = MaterialTheme.colorScheme.onSurface, fontSize = 22.sp, fontWeight = FontWeight.Bold)
                 IconButton(onClick = onCopyClientId) {
                     Icon(Icons.Default.CopyAll, contentDescription = "Copiar ID", tint = MaterialTheme.colorScheme.primary)
                 }

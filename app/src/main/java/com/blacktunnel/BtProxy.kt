@@ -94,9 +94,20 @@ object BtProxy {
         tunnelSocket = tunnel
         tunnelOut = DataOutputStream(tunnel.getOutputStream())
         startTunnelReader(tunnel, ctx, protectSocket)
+        startKeepalive()
         if (bridgeServer == null) {
             startTunnelBridge()
             startXray(ctx)
+        }
+    }
+
+    private fun startKeepalive() {
+        thread(isDaemon = true, name = "tunnel-keepalive") {
+            while (running && tunnelSocket?.isConnected == true) {
+                Thread.sleep(45_000)
+                if (!running) break
+                runCatching { writeFrame(TYPE_DATA, 0, ByteArray(0)) }.onFailure { break }
+            }
         }
     }
 
@@ -348,8 +359,11 @@ object BtProxy {
     private fun openTunnel(protectSocket: (Socket) -> Unit): Socket? {
         if (currentClientId.isBlank()) return null
         return try {
+            val totalStart = System.currentTimeMillis()
+            val dnsStart = System.currentTimeMillis()
             LogSink.add("🔍", "Resolviendo DNS...", LogLevel.INFO)
             val socket = openProxySocket(protectSocket) ?: return null
+            LogSink.add("✓", "DNS/Socket listo (${System.currentTimeMillis() - dnsStart}ms)", LogLevel.OK)
             socket.tcpNoDelay = true
 
             val out = socket.getOutputStream()
@@ -359,10 +373,11 @@ object BtProxy {
             val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\n" +
                 "Action: tunnel\r\nX-Client-Id: $currentClientId\r\n\r\n"
 
+            val p1Start = System.currentTimeMillis()
             out.write(p1.toByteArray()); out.flush()
-            LogSink.add("→", "P1 enviado", LogLevel.INFO)
+            LogSink.add("→", "P1 enviado (${System.currentTimeMillis() - p1Start}ms)", LogLevel.INFO)
             Thread.sleep(10)
-            val pingStart = System.currentTimeMillis()
+            val clientServerStart = System.currentTimeMillis()
             out.write(p2.toByteArray()); out.flush()
             LogSink.add("→", "P2 enviado", LogLevel.INFO)
 
@@ -401,9 +416,11 @@ object BtProxy {
                 "X-Name"      to (handshake.headers["x-name"] ?: "-"),
                 "X-Days-Left" to (handshake.headers["x-days-left"] ?: "-")
             ))
-            TunnelSessionStore.setLatency(System.currentTimeMillis() - pingStart)
+            val clientServerMs = System.currentTimeMillis() - clientServerStart
+            val totalMs = System.currentTimeMillis() - totalStart
+            TunnelSessionStore.setLatency(clientServerMs)
             TunnelSessionStore.setState("CONNECTED")
-            LogSink.add("🔒", "Conectado · ${System.currentTimeMillis() - pingStart}ms", LogLevel.SUCCESS)
+            LogSink.add("🔒", "Conectado · Client-Server ${clientServerMs}ms · Total ${totalMs}ms", LogLevel.SUCCESS)
             socket.soTimeout = 0
             socket
         } catch (_: Exception) {
