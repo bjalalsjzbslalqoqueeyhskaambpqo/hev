@@ -213,11 +213,20 @@ private fun InfoChip(icon: String, label: String) {
 
 @Composable
 fun LogPanel(logEntries: List<LogEntry>, fallbackStatus: String) {
+    var expanded by remember { mutableStateOf(false) }
     Surface(modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(12.dp)) {
         Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Log de conexión", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(0.8f), fontWeight = FontWeight.SemiBold)
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Log de conexión", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(0.8f), fontWeight = FontWeight.SemiBold)
+                Text(if (expanded) "Ocultar" else "Ver todo", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+            }
             val entries = if (logEntries.isNotEmpty()) logEntries.takeLast(6) else listOf(LogEntry("ℹ", fallbackStatus, Color(0xFF94A3B8)))
-            entries.forEach { entry ->
+            val visibleEntries = if (expanded) entries else listOf(entries.last())
+            visibleEntries.forEach { entry ->
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()

@@ -408,7 +408,12 @@ object BtProxy {
             if (authState.isNotBlank() && !authState.equals("VALID", ignoreCase = true)) {
                 runCatching { socket.close() }
                 TunnelSessionStore.setState("ERROR")
-                LogSink.add("✗", "Credenciales inválidas", LogLevel.ERROR)
+                val message = if (authState.contains("EXPIRED", ignoreCase = true)) {
+                    "Usuario expirado"
+                } else {
+                    "Usuario inválido"
+                }
+                LogSink.add("✗", message, LogLevel.ERROR)
                 return null
             }
 
