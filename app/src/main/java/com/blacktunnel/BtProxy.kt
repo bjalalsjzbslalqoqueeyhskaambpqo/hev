@@ -203,15 +203,8 @@ object BtProxy {
                                 if (isPerformanceMode || streams.size <= 1) {
                                     flushTunnel()
                                 } else {
-                                    val flushEvery = when {
-                                        streams.size <= 2 -> 4
-                                        streams.size <= 4 -> 8
-                                        else              -> 16
-                                    }
-                                    if (nextStreamId.get() % flushEvery == 0) {
-                                        Thread.yield()
-                                        flushTunnel()
-                                    }
+                                    Thread.yield()
+                                    flushTunnel()
                                 }
                             }
                         } catch (_: Exception) {}
