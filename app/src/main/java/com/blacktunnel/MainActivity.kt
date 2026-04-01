@@ -43,6 +43,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         wifiDirectPasswordState.value = BtWifiDirect.getSavedPassword(this)
+        TunnelPrefs.setProfile(this, "normal")
 
         setContent {
             BlackTunnelTheme {
@@ -56,12 +57,7 @@ class MainActivity : ComponentActivity() {
                     else -> VpnState.IDLE
                 }
 
-                var isPerformance by rememberSaveable {
-                    mutableStateOf(TunnelPrefs.getProfile(this).equals("performance", true))
-                }
-                var isHotspot by rememberSaveable {
-                    mutableStateOf(TunnelPrefs.isHotspotProxyEnabled(this))
-                }
+                var isHotspot by rememberSaveable { mutableStateOf(TunnelPrefs.isHotspotProxyEnabled(this)) }
                 var isWifiDirect by wifiDirectEnabledState
                 var wifiPass by wifiDirectPasswordState
 
@@ -71,23 +67,19 @@ class MainActivity : ComponentActivity() {
                     daysLeft = session.daysLeft,
                     latencyMs = session.latencyMs,
                     status = session.status,
+                    connectedSince = session.connectedSince,
                     logEntries = logEntries,
                     onConnectClick = {
                         if (vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING) {
                             stopVpn()
-                            logVm.add("⏹", "Desconectando túnel", LogViewModel.LogLevel.INFO)
+                            logVm.add("⏹", "Desconectando túnel", LogLevel.INFO)
                         } else {
                             logVm.clear()
-                            logVm.add("▶", "Iniciando túnel", LogViewModel.LogLevel.INFO)
+                            logVm.add("▶", "Iniciando túnel", LogLevel.INFO)
                             startVpnWithPermission()
                         }
                     },
                     onCopyClientId = { copyClientId() },
-                    isPerformance = isPerformance,
-                    onModeChange = { perf ->
-                        isPerformance = perf
-                        TunnelPrefs.setProfile(this, if (perf) "performance" else "normal")
-                    },
                     isHotspotEnabled = isHotspot,
                     onHotspotToggle = { enabled ->
                         val ip = BtProxy.getHotspotIp()

@@ -9,7 +9,8 @@ data class TunnelSessionSnapshot(
     val status: String = "-",
     val name: String = "-",
     val daysLeft: String = "-",
-    val latencyMs: Long = -1L
+    val latencyMs: Long = -1L,
+    val connectedSince: Long = 0L
 )
 
 object TunnelSessionStore {
@@ -20,7 +21,17 @@ object TunnelSessionStore {
     private val listeners = mutableSetOf<(TunnelSessionSnapshot) -> Unit>()
 
     fun setState(state: String) {
-        synchronized(lock) { snapshot = snapshot.copy(state = state) }
+        synchronized(lock) {
+            snapshot = snapshot.copy(
+                state = state,
+                connectedSince = when (state) {
+                    "CONNECTED" -> System.currentTimeMillis()
+                    "CONNECTING" -> 0L
+                    "DISCONNECTED", "ERROR" -> 0L
+                    else -> snapshot.connectedSince
+                }
+            )
+        }
         notifyListeners()
     }
 

@@ -103,8 +103,10 @@ object BtProxy {
     private fun scheduleReconnect() {
         if (!running) return
         reconnectAttempts++
+        LogSink.add("⟳", "Reconectando (intento $reconnectAttempts)...", LogLevel.WARN)
         if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
             TunnelSessionStore.setState("ERROR")
+            LogSink.add("✗", "No se pudo reconectar", LogLevel.ERROR)
             return
         }
         val delay = (reconnectAttempts * RECONNECT_DELAY_MS).coerceAtMost(30000L)
@@ -346,6 +348,7 @@ object BtProxy {
     private fun openTunnel(protectSocket: (Socket) -> Unit): Socket? {
         if (currentClientId.isBlank()) return null
         return try {
+            LogSink.add("🔍", "Resolviendo DNS...", LogLevel.INFO)
             val socket = openProxySocket(protectSocket) ?: return null
             socket.tcpNoDelay = true
 
@@ -357,9 +360,11 @@ object BtProxy {
                 "Action: tunnel\r\nX-Client-Id: $currentClientId\r\n\r\n"
 
             out.write(p1.toByteArray()); out.flush()
+            LogSink.add("→", "P1 enviado", LogLevel.INFO)
             Thread.sleep(10)
             val pingStart = System.currentTimeMillis()
             out.write(p2.toByteArray()); out.flush()
+            LogSink.add("→", "P2 enviado", LogLevel.INFO)
 
             socket.soTimeout = 8000
             val raw = StringBuilder()
@@ -378,13 +383,16 @@ object BtProxy {
             if (handshake == null || handshake.statusCode != 101) {
                 runCatching { socket.close() }
                 TunnelSessionStore.setState("CONNECTING")
+                LogSink.add("✗", "Handshake inválido", LogLevel.ERROR)
                 return null
             }
+            LogSink.add("✓", "P1/P2 OK", LogLevel.OK)
 
             val authState = handshake.headers["x-auth-state"] ?: handshake.headers["x-status"] ?: ""
             if (authState.isNotBlank() && !authState.equals("VALID", ignoreCase = true)) {
                 runCatching { socket.close() }
                 TunnelSessionStore.setState("ERROR")
+                LogSink.add("✗", "Credenciales inválidas", LogLevel.ERROR)
                 return null
             }
 
@@ -395,10 +403,12 @@ object BtProxy {
             ))
             TunnelSessionStore.setLatency(System.currentTimeMillis() - pingStart)
             TunnelSessionStore.setState("CONNECTED")
+            LogSink.add("🔒", "Conectado · ${System.currentTimeMillis() - pingStart}ms", LogLevel.SUCCESS)
             socket.soTimeout = 0
             socket
         } catch (_: Exception) {
             TunnelSessionStore.setState("CONNECTING")
+            LogSink.add("✗", "Timeout de conexión", LogLevel.ERROR)
             null
         }
     }
