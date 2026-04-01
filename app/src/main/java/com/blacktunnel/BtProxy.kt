@@ -26,13 +26,19 @@ object BtProxy {
     private const val TYPE_DATA: Byte = 0x02
     private const val TYPE_CLOSE: Byte = 0x03
 
+    private const val RECONNECT_DELAY_MS = 6000L
+    private const val MAX_RECONNECT_ATTEMPTS = 10
+
     @Volatile private var running = false
     @Volatile private var currentClientId = ""
     @Volatile private var xrayProcess: Process? = null
     @Volatile private var bridgeServer: ServerSocket? = null
     @Volatile private var tunnelSocket: Socket? = null
     @Volatile private var tunnelOut: DataOutputStream? = null
-    @Volatile var onTunnelDied: (() -> Unit)? = null
+    @Volatile private var reconnectAttempts = 0
+    @Volatile private var savedCtx: Context? = null
+    @Volatile private var savedProtect: ((Socket) -> Unit)? = null
+
     private val nextStreamId = AtomicInteger(1)
     private val streams = ConcurrentHashMap<Int, Socket>()
     private val tunnelLock = Any()
@@ -43,19 +49,20 @@ object BtProxy {
         protectSocket: (Socket) -> Unit
     ) {
         currentClientId = clientId.trim()
+        savedCtx = ctx
+        savedProtect = protectSocket
         running = true
+        reconnectAttempts = 0
         thread(isDaemon = true, name = "btproxy-init") {
-            val tunnel = openTunnel(protectSocket) ?: return@thread
-            tunnelSocket = tunnel
-            tunnelOut = DataOutputStream(java.io.BufferedOutputStream(tunnel.getOutputStream(), 65536))
-            startTunnelReader(tunnel)
-            startTunnelBridge()
-            startXray(ctx)
+            connectTunnel(ctx, protectSocket)
         }
     }
 
     fun stop() {
         running = false
+        savedCtx = null
+        savedProtect = null
+        reconnectAttempts = 0
         runCatching { bridgeServer?.close() }
         bridgeServer = null
         streams.values.forEach { runCatching { it.close() } }
@@ -69,6 +76,43 @@ object BtProxy {
         }
         xrayProcess = null
         TunnelSessionStore.reset()
+    }
+
+    private fun connectTunnel(ctx: Context, protectSocket: (Socket) -> Unit) {
+        val tunnel = openTunnel(protectSocket)
+        if (tunnel == null) {
+            scheduleReconnect()
+            return
+        }
+        reconnectAttempts = 0
+        tunnelSocket = tunnel
+        tunnelOut = DataOutputStream(java.io.BufferedOutputStream(tunnel.getOutputStream(), 65536))
+        startTunnelReader(tunnel, ctx, protectSocket)
+        if (bridgeServer == null) {
+            startTunnelBridge()
+            startXray(ctx)
+        }
+    }
+
+    private fun scheduleReconnect() {
+        if (!running) return
+        reconnectAttempts++
+        if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+            TunnelSessionStore.setState("ERROR")
+            return
+        }
+        val delay = (reconnectAttempts * RECONNECT_DELAY_MS).coerceAtMost(30000L)
+        TunnelSessionStore.setState("CONNECTING")
+        thread(isDaemon = true, name = "btproxy-reconnect") {
+            Thread.sleep(delay)
+            if (!running) return@thread
+            val ctx = savedCtx ?: return@thread
+            val protect = savedProtect ?: return@thread
+            runCatching { tunnelSocket?.close() }
+            tunnelSocket = null
+            tunnelOut = null
+            connectTunnel(ctx, protect)
+        }
     }
 
     private fun writeFrame(type: Byte, streamId: Int, data: ByteArray = ByteArray(0), flush: Boolean = true) {
@@ -88,7 +132,7 @@ object BtProxy {
         }
     }
 
-    private fun startTunnelReader(tunnel: Socket) {
+    private fun startTunnelReader(tunnel: Socket, ctx: Context, protectSocket: (Socket) -> Unit) {
         thread(isDaemon = true, name = "tunnel-reader") {
             try {
                 val inp = DataInputStream(tunnel.getInputStream())
@@ -105,7 +149,12 @@ object BtProxy {
                     when (type) {
                         TYPE_DATA -> {
                             val client = streams[streamId] ?: continue
-                            runCatching { client.getOutputStream().write(data) }
+                            runCatching {
+                                client.getOutputStream().apply {
+                                    write(data)
+                                    flush()
+                                }
+                            }
                         }
                         TYPE_CLOSE -> {
                             val client = streams.remove(streamId)
@@ -115,8 +164,8 @@ object BtProxy {
                 }
             } catch (_: Exception) {
                 if (running) {
-                    TunnelSessionStore.setState("DISCONNECTED")
-                    onTunnelDied?.invoke()
+                    TunnelSessionStore.setState("CONNECTING")
+                    scheduleReconnect()
                 }
             }
         }
@@ -133,9 +182,7 @@ object BtProxy {
                     val client = server.accept().also { it.tcpNoDelay = true }
                     val streamId = nextStreamId.getAndIncrement()
                     streams[streamId] = client
-
                     writeFrame(TYPE_OPEN, streamId)
-
                     thread(isDaemon = true, name = "stream-$streamId") {
                         val buf = ByteArray(65536)
                         try {
@@ -337,7 +384,7 @@ object BtProxy {
             val handshake = parseTunnelHandshake(raw.toString())
             if (handshake == null || handshake.statusCode != 101) {
                 runCatching { socket.close() }
-                TunnelSessionStore.setState("ERROR")
+                TunnelSessionStore.setState("CONNECTING")
                 return null
             }
 
@@ -358,7 +405,7 @@ object BtProxy {
             socket.soTimeout = 0
             socket
         } catch (_: Exception) {
-            TunnelSessionStore.setState("ERROR")
+            TunnelSessionStore.setState("CONNECTING")
             null
         }
     }
@@ -367,7 +414,7 @@ object BtProxy {
         val candidates = linkedSetOf<InetAddress>()
         runCatching { candidates += InetAddress.getByName(PROXY_IPV6) }
         runCatching { candidates += InetAddress.getAllByName(PROXY_HOST).toList() }
-        if (candidates.isEmpty()) { TunnelSessionStore.setState("ERROR"); return null }
+        if (candidates.isEmpty()) return null
 
         for (address in candidates) {
             val socket = runCatching {
@@ -380,7 +427,6 @@ object BtProxy {
             }.getOrNull()
             if (socket != null) return socket
         }
-        TunnelSessionStore.setState("ERROR")
         return null
     }
 
