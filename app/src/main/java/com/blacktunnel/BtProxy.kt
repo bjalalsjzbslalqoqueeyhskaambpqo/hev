@@ -469,10 +469,26 @@ object BtProxy {
             val handshake = parseTunnelHandshake(raw.toString())
             if (handshake == null || handshake.statusCode != 101) {
                 runCatching { socket.close() }
-                TunnelSessionStore.setState("CONNECTING")
-                LogSink.add("✗", "Handshake inválido", LogLevel.ERROR)
-                // Limpiar cache si falla — puede ser IP inválida
-                clearDnsCache()
+                val rejection = parseRejection(raw.toString())
+                val status = rejection?.get("x-status") ?: rejection?.get("x-auth-state") ?: ""
+                when {
+                    status.equals("EXPIRED", ignoreCase = true) -> {
+                        TunnelSessionStore.setState("ERROR")
+                        authFatalError = true
+                        LogSink.add("✗", "Usuario expirado", LogLevel.ERROR)
+                    }
+                    status.equals("UNKNOWN", ignoreCase = true) ||
+                    status.equals("INVALID", ignoreCase = true) -> {
+                        TunnelSessionStore.setState("ERROR")
+                        authFatalError = true
+                        LogSink.add("✗", "Usuario no registrado", LogLevel.ERROR)
+                    }
+                    else -> {
+                        TunnelSessionStore.setState("CONNECTING")
+                        LogSink.add("✗", "Handshake inválido", LogLevel.ERROR)
+                        clearDnsCache()
+                    }
+                }
                 return null
             }
             LogSink.add("✓", "P1/P2 OK", LogLevel.OK)
@@ -535,6 +551,16 @@ object BtProxy {
         val start = raw.indexOf(marker).takeIf { it >= 0 } ?: return null
         val end = raw.indexOf("\r\n\r\n", start).takeIf { it >= 0 } ?: return null
         return raw.substring(start, end)
+    }
+
+    private fun parseRejection(raw: String): Map<String, String>? {
+        val block = findHttpBlock(raw, 403) ?: return null
+        val lines = block.split("\r\n")
+        return lines.drop(1).mapNotNull { line ->
+            val sep = line.indexOf(':')
+            if (sep <= 0) return@mapNotNull null
+            line.substring(0, sep).trim().lowercase() to line.substring(sep + 1).trim()
+        }.toMap()
     }
 
     private fun parseTunnelHandshake(raw: String): HandshakeResult? {
