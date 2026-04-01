@@ -200,8 +200,12 @@ object BtProxy {
                                 val n = cin.read(buf)
                                 if (n < 0) break
                                 writeFrame(TYPE_DATA, streamId, buf.copyOfRange(0, n), flush = false)
-                                if (isPerformanceMode || streams.size <= 1) flushTunnel()
-                                else Thread.yield()
+                                if (isPerformanceMode || streams.size <= 1) {
+                                    flushTunnel()
+                                } else {
+                                    Thread.yield()
+                                    flushTunnel()
+                                }
                             }
                         } catch (_: Exception) {}
                         writeFrame(TYPE_CLOSE, streamId)
@@ -272,8 +276,8 @@ object BtProxy {
             "system": {
               "udpTimeout": 0,
               "connIdle": 600,
-              "downlinkOnly": 10,
-              "uplinkOnly": 10
+              "downlinkOnly": 30,
+              "uplinkOnly": 30
             }
           },
           "inbounds": [
