@@ -9,7 +9,7 @@ Aplicación Android de gestión preconfigurada para usuarios finales.
 
 ## Interfaz
 
-- Pestaña **Crear**: crear cliente, sumar días, eliminar.
+- Pestaña **Crear**: bloque de gestión **VLESS** (crear/sumar días/eliminar) y bloque de gestión **SSH** (crear/actualizar/eliminar/listar).
 - Pestaña **Listar**: buscar, filtrar, ordenar y menú de acciones por cliente.
 
 ## Red y permisos

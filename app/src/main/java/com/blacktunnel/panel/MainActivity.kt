@@ -37,6 +37,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var clientIdInput: EditText
     private lateinit var clientNameInput: EditText
     private lateinit var daysInput: EditText
+    private lateinit var sshUserInput: EditText
+    private lateinit var sshPasswordInput: EditText
+    private lateinit var sshNameInput: EditText
+    private lateinit var sshDaysInput: EditText
     private lateinit var searchInput: EditText
     private lateinit var statusText: TextView
     private lateinit var expiringText: TextView
@@ -72,6 +76,10 @@ class MainActivity : AppCompatActivity() {
         clientIdInput = findViewById(R.id.inputClientId)
         clientNameInput = findViewById(R.id.inputClientName)
         daysInput = findViewById(R.id.inputDays)
+        sshUserInput = findViewById(R.id.inputSshUser)
+        sshPasswordInput = findViewById(R.id.inputSshPassword)
+        sshNameInput = findViewById(R.id.inputSshName)
+        sshDaysInput = findViewById(R.id.inputSshDays)
         searchInput = findViewById(R.id.inputSearch)
         statusText = findViewById(R.id.textStatus)
         expiringText = findViewById(R.id.textExpiring)
@@ -109,6 +117,10 @@ class MainActivity : AppCompatActivity() {
         findViewById<MaterialButton>(R.id.btnCreate).setOnClickListener { createClient() }
         findViewById<MaterialButton>(R.id.btnAddDays).setOnClickListener { addDays() }
         findViewById<MaterialButton>(R.id.btnDelete).setOnClickListener { deleteClient() }
+        findViewById<MaterialButton>(R.id.btnCreateSsh).setOnClickListener { createSshUser() }
+        findViewById<MaterialButton>(R.id.btnUpdateSsh).setOnClickListener { updateSshUser() }
+        findViewById<MaterialButton>(R.id.btnDeleteSsh).setOnClickListener { deleteSshUser() }
+        findViewById<MaterialButton>(R.id.btnListSsh).setOnClickListener { listSshUsers() }
         findViewById<MaterialButton>(R.id.btnList).setOnClickListener { refreshClients() }
         findViewById<MaterialButton>(R.id.btnSortDays).setOnClickListener {
             sortAsc = !sortAsc
@@ -172,6 +184,59 @@ class MainActivity : AppCompatActivity() {
             )
         }
         applyFilters()
+    }
+
+    private fun createSshUser() {
+        val user = sshUserInput.text.toString().trim()
+        val password = sshPasswordInput.text.toString().trim()
+        if (user.isBlank() || password.isBlank()) return showStatus("SSH: usuario y password requeridos", false)
+        val name = sshNameInput.text.toString().trim().ifBlank { user }
+        val days = sshDaysInput.text.toString().trim().toIntOrNull() ?: 30
+        request("POST", "/ssh/create", JSONObject().put("user", user).put("password", password).put("name", name).put("days", days)) {
+            showStatus("SSH creado", true)
+            listSshUsers()
+        }
+    }
+
+    private fun updateSshUser() {
+        val user = sshUserInput.text.toString().trim()
+        val days = sshDaysInput.text.toString().trim().toIntOrNull() ?: 0
+        if (user.isBlank() || days <= 0) return showStatus("SSH: usuario o días inválidos", false)
+        request("POST", "/ssh/update", JSONObject().put("user", user).put("days", days)) {
+            showStatus("SSH actualizado", true)
+            listSshUsers()
+        }
+    }
+
+    private fun deleteSshUser() {
+        val user = sshUserInput.text.toString().trim()
+        if (user.isBlank()) return showStatus("SSH: falta usuario", false)
+        request("POST", "/ssh/delete", JSONObject().put("user", user)) {
+            showStatus("SSH eliminado", true)
+            listSshUsers()
+        }
+    }
+
+    private fun listSshUsers() = request("GET", "/ssh/users", null) { json ->
+        val arr = json.optJSONArray("users") ?: JSONArray()
+        val rows = mutableListOf<String>()
+        for (i in 0 until arr.length()) {
+            val it = arr.getJSONObject(i)
+            val user = it.optString("user")
+            val name = it.optString("name", user)
+            val daysLeft = it.optInt("days_left", it.optInt("days", 0))
+            rows += "$user ($name) · días restantes: $daysLeft"
+        }
+        if (rows.isEmpty()) {
+            showStatus("SSH sin usuarios", true)
+            return@request
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Usuarios SSH")
+            .setMessage(rows.joinToString("\n"))
+            .setPositiveButton("OK", null)
+            .show()
+        showStatus("SSH listados: ${rows.size}", true)
     }
 
     private fun applyFilters() {
@@ -262,7 +327,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun disableAllActions() {
-        listOf(R.id.btnCreate, R.id.btnAddDays, R.id.btnDelete, R.id.btnList, R.id.btnSortDays, R.id.btnFilterAll, R.id.btnFilterExp3, R.id.btnFilterExp7)
+        listOf(
+            R.id.btnCreate, R.id.btnAddDays, R.id.btnDelete, R.id.btnCreateSsh, R.id.btnUpdateSsh, R.id.btnDeleteSsh, R.id.btnListSsh,
+            R.id.btnList, R.id.btnSortDays, R.id.btnFilterAll, R.id.btnFilterExp3, R.id.btnFilterExp7
+        )
             .forEach { findViewById<MaterialButton>(it).isEnabled = false }
     }
 
