@@ -202,7 +202,7 @@ class MainActivity : AppCompatActivity() {
         val user = sshUserInput.text.toString().trim()
         val days = sshDaysInput.text.toString().trim().toIntOrNull() ?: 0
         if (user.isBlank() || days <= 0) return showStatus("SSH: usuario o días inválidos", false)
-        request("POST", "/ssh/update", JSONObject().put("user", user).put("days", days)) {
+        request("POST", "/ssh/update", JSONObject().put("user", user).put("set_days", days).put("days", days)) {
             showStatus("SSH actualizado", true)
             listSshUsers()
         }

@@ -20,3 +20,7 @@ Aplicación Android de gestión preconfigurada para usuarios finales.
 ## CI
 
 - Build release arm64 firmado en CI.
+
+## Script servidor
+
+- Se agregó `scripts/install_btserver.sh` con actualización de `panel.py` para gestión SSH real a nivel sistema (crear/actualizar/eliminar/listar), compatibilidad con `days`/`set_days` en `/ssh/update` y corrección de shell/desbloqueo para autenticación interna por dropbear. 
