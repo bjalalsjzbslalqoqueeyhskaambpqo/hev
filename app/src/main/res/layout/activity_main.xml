@@ -31,7 +31,17 @@
     </LinearLayout>
 
     <com.google.android.material.tabs.TabLayout
-        android:id="@+id/tabLayout"
+        android:id="@+id/tabService"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#111827"
+        app:tabIndicatorColor="#60A5FA"
+        app:tabIndicatorFullWidth="true"
+        app:tabSelectedTextColor="#FFFFFF"
+        app:tabTextColor="#9CA3AF" />
+
+    <com.google.android.material.tabs.TabLayout
+        android:id="@+id/tabSection"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="#111827"
@@ -45,7 +55,7 @@
         android:layout_weight="1">
 
         <ScrollView
-            android:id="@+id/panelCreate"
+            android:id="@+id/panelCreateVless"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:padding="12dp">
@@ -136,7 +146,7 @@
         </ScrollView>
 
         <LinearLayout
-            android:id="@+id/panelList"
+            android:id="@+id/panelListVless"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:orientation="vertical"
@@ -222,6 +232,204 @@
 
             <androidx.recyclerview.widget.RecyclerView
                 android:id="@+id/recyclerClients"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_marginTop="8dp"
+                android:layout_weight="1" />
+        </LinearLayout>
+
+        <ScrollView
+            android:id="@+id/panelCreateSsh"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:padding="12dp"
+            android:visibility="gone">
+
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                app:cardBackgroundColor="#111827"
+                app:strokeColor="#1F2937">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="12dp">
+
+                    <com.google.android.material.textfield.TextInputLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:hint="Usuario">
+
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/inputSshUser"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:textColor="#FFFFFF" />
+                    </com.google.android.material.textfield.TextInputLayout>
+
+                    <com.google.android.material.textfield.TextInputLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:hint="Contraseña">
+
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/inputSshPassword"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:textColor="#FFFFFF" />
+                    </com.google.android.material.textfield.TextInputLayout>
+
+                    <com.google.android.material.textfield.TextInputLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:hint="Nombre">
+
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/inputSshName"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:textColor="#FFFFFF" />
+                    </com.google.android.material.textfield.TextInputLayout>
+
+                    <com.google.android.material.textfield.TextInputLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:hint="Días">
+
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/inputSshDays"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:inputType="number"
+                            android:textColor="#FFFFFF" />
+                    </com.google.android.material.textfield.TextInputLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btnCreateSsh"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Crear" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btnAddDaysSsh"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:layout_weight="1"
+                            android:text="+ Días" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btnDeleteSsh"
+                            style="@style/Widget.Material3.Button.OutlinedButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:layout_weight="1"
+                            android:text="Eliminar" />
+                    </LinearLayout>
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+        </ScrollView>
+
+        <LinearLayout
+            android:id="@+id/panelListSsh"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:padding="12dp"
+            android:visibility="gone">
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Buscar por usuario o nombre">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/inputSearchSsh"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textColor="#FFFFFF" />
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="horizontal">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnListSsh"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Actualizar" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnSortDaysSsh"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:text="Días ↑" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="horizontal">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnFilterAllSsh"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Todos" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnFilterExp3Ssh"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:layout_weight="1"
+                    android:text="3 días" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnFilterExp7Ssh"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:layout_weight="1"
+                    android:text="7 días" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/textExpiringSsh"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Por expirar (≤7 días): 0"
+                android:textColor="#FBBF24"
+                android:textStyle="bold" />
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/recyclerClientsSsh"
                 android:layout_width="match_parent"
                 android:layout_height="0dp"
                 android:layout_marginTop="8dp"
