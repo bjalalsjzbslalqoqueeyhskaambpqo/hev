@@ -110,7 +110,8 @@ class BtVpnService : VpnService() {
             isStopping = false
 
             if (pfd != null) {
-                TunnelSessionStore.setState("CONNECTED")
+                // Si ya existe TUN, no forzar estado CONNECTED aquí.
+                // El estado final lo publica BtProxy cuando el túnel real queda listo.
                 return
             }
 
