@@ -29,12 +29,6 @@
         </activity>
 
         <service
-            android:name=".TunnelCoreService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync"
-            android:stopWithTask="false" />
-
-        <service
             android:name=".BtVpnService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice|specialUse"
