@@ -1702,11 +1702,11 @@ private fun Orb(state: VpnState) {
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
-            .size(170.dp)
+            .size(230.dp)
             .clip(CircleShape)
-            .background(Brush.radialGradient(listOf(tint.copy(0.25f), Color.Transparent)))
+            .background(Brush.radialGradient(listOf(tint.copy(0.32f), Color.Transparent)))
     ) {
-        BrandLogo(modifier = Modifier.size(92.dp))
+        BrandLogo(modifier = Modifier.size(132.dp))
     }
 }
 
