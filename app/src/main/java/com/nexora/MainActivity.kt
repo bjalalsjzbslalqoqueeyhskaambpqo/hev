@@ -105,11 +105,11 @@ class MainActivity : ComponentActivity() {
 
     private fun startVpn() {
         TunnelSessionStore.setState("CONNECTING")
-        startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_START))
+        startService(Intent(this, TunnelCoreService::class.java).setAction(TunnelCoreService.ACTION_START))
     }
 
     private fun stopVpn() {
-        startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
+        startService(Intent(this, TunnelCoreService::class.java).setAction(TunnelCoreService.ACTION_STOP))
     }
 
     private fun copyClientId() {

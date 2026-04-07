@@ -1,6 +1,5 @@
 package com.nexora
 
-import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -11,7 +10,6 @@ import android.net.ConnectivityManager
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
-import android.os.SystemClock
 import android.system.OsConstants
 import androidx.core.app.NotificationCompat
 import kotlin.concurrent.thread
@@ -27,23 +25,6 @@ class BtVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
-        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
-            android.util.Log.e("BTCRASH", "Crash en ${thread.name}: ${throwable.message}")
-            if (desiredRunning && !isStopping) {
-                val restartIntent = Intent(applicationContext, BtVpnService::class.java)
-                    .setAction(ACTION_START)
-                val pending = PendingIntent.getService(
-                    applicationContext, 99, restartIntent,
-                    PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
-                )
-                val alarm = getSystemService(ALARM_SERVICE) as AlarmManager
-                alarm.setExactAndAllowWhileIdle(
-                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                    SystemClock.elapsedRealtime() + 3000,
-                    pending
-                )
-            }
-        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -51,15 +32,13 @@ class BtVpnService : VpnService() {
             when (intent?.action) {
                 ACTION_STOP -> {
                     desiredRunning = false
-                    TunnelPrefs.setWasConnected(this, false)
                     stopTunnel()
                     START_NOT_STICKY
                 }
                 else -> {
-                    desiredRunning = true
-                    TunnelPrefs.setWasConnected(this, true)
+                    desiredRunning = false
                     startTunnel()
-                    START_STICKY
+                    START_NOT_STICKY
                 }
             }
         }.getOrElse {
@@ -70,37 +49,9 @@ class BtVpnService : VpnService() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         runCatching { super.onTaskRemoved(rootIntent) }
-        if (!desiredRunning) return
-        runCatching {
-            val restartIntent = Intent(applicationContext, BtVpnService::class.java)
-                .setAction(ACTION_START)
-            val pending = PendingIntent.getService(
-                this, 1, restartIntent,
-                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
-            )
-            val alarm = getSystemService(ALARM_SERVICE) as AlarmManager
-            alarm.set(AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                SystemClock.elapsedRealtime() + 1000, pending)
-        }
     }
 
     override fun onDestroy() {
-        runCatching {
-            if (desiredRunning) {
-                val restartIntent = Intent(applicationContext, BtVpnService::class.java)
-                    .setAction(ACTION_START)
-                val pending = PendingIntent.getService(
-                    this, 2, restartIntent,
-                    PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
-                )
-                val alarm = getSystemService(ALARM_SERVICE) as AlarmManager
-                alarm.setExactAndAllowWhileIdle(
-                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                    SystemClock.elapsedRealtime() + 2000,
-                    pending
-                )
-            }
-        }
         runCatching { stopTunnel() }
         runCatching { super.onDestroy() }
     }
