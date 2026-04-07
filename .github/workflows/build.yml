@@ -44,6 +44,23 @@ jobs:
               -o app/src/main/assets/branding_v2/nexora_icon.png
           fi
 
+          mkdir -p app/src/main/res/drawable-nodpi
+          if curl -fL --retry 3 --retry-delay 2 "https://raw.githubusercontent.com/bjalalsjzbslalqoqueeyhskaambpqo/hev/refs/heads/main/61d61403-98b2-48b6-8603-8d633affa3de.png" \
+            -o app/src/main/res/drawable-nodpi/nexora_icon.png; then
+            cat > app/src/main/res/drawable/ic_launcher_foreground.xml <<'ICON_XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <inset xmlns:android="http://schemas.android.com/apk/res/android"
+              android:inset="18dp">
+              <bitmap
+                  android:antialias="true"
+                  android:gravity="center"
+                  android:src="@drawable/nexora_icon" />
+          </inset>
+          ICON_XML
+          else
+            echo "Icon download failed, keeping repository fallback launcher foreground." >&2
+          fi
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
