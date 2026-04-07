@@ -10,10 +10,16 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pManager
 import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.system.OsConstants
@@ -26,6 +32,8 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,8 +46,8 @@ class BtVpnService : VpnService() {
     private var rawTunFd: Int? = null
     @Volatile private var isStopping = false
     @Volatile private var desiredRunning = false
-    private var networkReceiverRegistered = false
-    private val networkChangeReceiver = NetworkChangeReceiver()
+    private var networkCallbackRegistered = false
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -141,7 +149,7 @@ class BtVpnService : VpnService() {
                                 }
 
                                 pfd = established
-                                runCatching { registerNetworkReceiver() }
+                                runCatching { registerNetworkCallback() }
 
                                 val rawFd = runCatching {
                                     ParcelFileDescriptor.dup(established.fileDescriptor).detachFd()
@@ -227,22 +235,49 @@ class BtVpnService : VpnService() {
         runCatching { closeRawTunFd() }
         runCatching { pfd?.close() }
         pfd = null
-        runCatching {
-            if (networkReceiverRegistered) {
-                unregisterReceiver(networkChangeReceiver)
-                networkReceiverRegistered = false
-            }
-        }
+        runCatching { unregisterNetworkCallback() }
         runCatching { TunnelSessionStore.setState("DISCONNECTED") }
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         runCatching { stopSelf() }
     }
 
-    private fun registerNetworkReceiver() {
-        if (networkReceiverRegistered) return
-        val filter = IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION)
-        registerReceiver(networkChangeReceiver, filter)
-        networkReceiverRegistered = true
+    private fun registerNetworkCallback() {
+        if (networkCallbackRegistered) return
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                if (!TunnelPrefs.wasConnected(this@BtVpnService)) return
+                val vpnIntent = startIntent(this@BtVpnService)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(vpnIntent)
+                else startService(vpnIntent)
+            }
+            override fun onLost(network: Network) {
+                android.util.Log.w("BTCRASH", "Red perdida, túnel puede caer pronto")
+            }
+            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                val validated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                if (!validated) android.util.Log.w("BTCRASH", "Red sin validación aún")
+            }
+        }
+        networkCallback = cb
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            runCatching { cm.registerDefaultNetworkCallback(cb) }
+        } else {
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            runCatching { cm.registerNetworkCallback(request, cb) }
+        }
+        networkCallbackRegistered = true
+    }
+
+    private fun unregisterNetworkCallback() {
+        val cb = networkCallback ?: return
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        runCatching { cm.unregisterNetworkCallback(cb) }
+        networkCallback = null
+        networkCallbackRegistered = false
     }
 
     private fun closeRawTunFd() {
@@ -316,13 +351,12 @@ object BtProxy {
     private const val TYPE_DATA: Byte = 0x02
     private const val TYPE_CLOSE: Byte = 0x03
 
-    private const val RECONNECT_BASE_MS = 3000L
-    private const val RECONNECT_MAX_MS = 30000L
-    private const val NETWORK_WAIT_TIMEOUT_MS = 120_000L
+    private const val RECONNECT_BASE_MS = 2000L
+    private const val RECONNECT_MAX_MS = 20000L
     private const val KEEPALIVE_INTERVAL_MS = 20_000L
-    private const val KEEPALIVE_TIMEOUT_MS = 15_000L
     private const val SOCKET_CONNECT_TIMEOUT_MS = 10_000
     private const val HANDSHAKE_TIMEOUT_MS = 8000L
+    private const val NETWORK_WAIT_TIMEOUT_MS = 120_000L
 
     private const val DNS_TTL_MS = 30 * 60 * 1000L
     @Volatile private var cachedAddresses: List<InetAddress> = emptyList()
@@ -359,6 +393,9 @@ object BtProxy {
     private val tunnelLock = Any()
     private val reconnectLock = Any()
     @Volatile private var reconnectScheduled = false
+
+    private val workerThread = HandlerThread("btproxy-worker").also { it.start() }
+    private val workerHandler = Handler(workerThread.looper)
 
     fun signalTunLayerDied() {
         if (!running || authFatalError) return
@@ -431,7 +468,9 @@ object BtProxy {
     private fun startKeepalive() {
         thread(isDaemon = true, name = "tunnel-keepalive") {
             while (running && tunnelSocket?.isConnected == true && !tunnelSocket!!.isClosed) {
-                Thread.sleep(KEEPALIVE_INTERVAL_MS)
+                val latch = CountDownLatch(1)
+                workerHandler.postDelayed({ latch.countDown() }, KEEPALIVE_INTERVAL_MS)
+                latch.await()
                 if (!running) break
                 val out = synchronized(tunnelLock) { tunnelOut } ?: break
                 val currentSocket = tunnelSocket ?: break
@@ -464,33 +503,30 @@ object BtProxy {
         }
         reconnectAttempts++
         val delay = (reconnectAttempts * RECONNECT_BASE_MS).coerceAtMost(RECONNECT_MAX_MS)
-        LogSink.add("⟳", "Reconectando (intento $reconnectAttempts) en ${delay/1000}s...", LogLevel.WARN)
+        LogSink.add("⟳", "Reconectando (intento $reconnectAttempts) en ${delay / 1000}s...", LogLevel.WARN)
         TunnelSessionStore.setState("CONNECTING")
 
-        thread(isDaemon = true, name = "btproxy-reconnect-$reconnectAttempts") {
-            runCatching {
-                Thread.sleep(delay)
-                if (!running) return@thread
+        workerHandler.postDelayed({
+            if (!running) return@postDelayed
+            synchronized(reconnectLock) { reconnectScheduled = false }
+            runCatching { tunnelSocket?.close() }
+            tunnelSocket = null
+            tunnelOut = null
 
-                synchronized(reconnectLock) { reconnectScheduled = false }
+            val ctx = savedCtx ?: return@postDelayed
+            val protect = savedProtect ?: return@postDelayed
 
-                runCatching { tunnelSocket?.close() }
-                tunnelSocket = null
-                tunnelOut = null
-
-                val ctx = savedCtx ?: return@thread
-                val protect = savedProtect ?: return@thread
-
-                waitForNetwork(ctx)
-                if (!running) return@thread
-
-                connectTunnel(ctx, protect)
-            }.onFailure { e ->
-                android.util.Log.e("BTCRASH", "btproxy-reconnect crash: ${e.message}")
-                synchronized(reconnectLock) { reconnectScheduled = false }
-                if (running && !authFatalError) scheduleReconnect()
+            thread(isDaemon = true, name = "btproxy-reconnect-$reconnectAttempts") {
+                runCatching {
+                    waitForNetwork(ctx)
+                    if (!running) return@thread
+                    connectTunnel(ctx, protect)
+                }.onFailure { e ->
+                    android.util.Log.e("BTCRASH", "btproxy-reconnect crash: ${e.message}")
+                    if (running && !authFatalError) scheduleReconnect()
+                }
             }
-        }
+        }, delay)
     }
 
     private fun writeFrame(type: Byte, streamId: Int, data: ByteArray = ByteArray(0)) {
@@ -665,13 +701,13 @@ object BtProxy {
             }
     }.getOrNull()
 
-    private fun isNetworkValidated(cm: android.net.ConnectivityManager): Boolean {
+    private fun isNetworkValidated(cm: ConnectivityManager): Boolean {
         return runCatching {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 val net = cm.activeNetwork ?: return false
                 val caps = cm.getNetworkCapabilities(net) ?: return false
-                caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                    caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
             } else {
                 @Suppress("DEPRECATION")
                 val info = cm.activeNetworkInfo
@@ -681,54 +717,50 @@ object BtProxy {
     }
 
     private fun waitForNetwork(ctx: Context) {
-        val cm = ctx.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
-
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         if (isNetworkValidated(cm)) return
 
         LogSink.add("📡", "Sin red · esperando señal...", LogLevel.WARN)
         TunnelSessionStore.setState("CONNECTING")
 
-        val deadline = System.currentTimeMillis() + NETWORK_WAIT_TIMEOUT_MS
+        val latch = CountDownLatch(1)
 
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-            val latch = java.util.concurrent.CountDownLatch(1)
-            val callback = object : android.net.ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: android.net.Network) {}
-                override fun onCapabilitiesChanged(
-                    network: android.net.Network,
-                    caps: android.net.NetworkCapabilities
-                ) {
-                    if (caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                        caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            val callback = object : ConnectivityManager.NetworkCallback() {
+                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                    if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
                         latch.countDown()
                     }
                 }
-                override fun onLost(network: android.net.Network) {}
+                override fun onAvailable(network: Network) {
+                    if (isNetworkValidated(cm)) latch.countDown()
+                }
             }
-            val request = android.net.NetworkRequest.Builder()
-                .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                 .build()
             runCatching { cm.registerNetworkCallback(request, callback) }
             try {
-                while (running && latch.count > 0 && System.currentTimeMillis() < deadline) {
-                    latch.await(3, java.util.concurrent.TimeUnit.SECONDS)
-                    if (latch.count > 0 && isNetworkValidated(cm)) latch.countDown()
-                }
-                if (latch.count > 0 && !running) {
-                    android.util.Log.w("BTCRASH", "waitForNetwork: detenido por flag running=false")
-                } else if (latch.count > 0) {
-                    android.util.Log.w("BTCRASH", "waitForNetwork: timeout de ${NETWORK_WAIT_TIMEOUT_MS/1000}s, continuando igual")
-                }
+                latch.await(NETWORK_WAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             } finally {
                 runCatching { cm.unregisterNetworkCallback(callback) }
             }
         } else {
-            while (running && !isNetworkValidated(cm) && System.currentTimeMillis() < deadline) {
-                Thread.sleep(2000)
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context, intent: Intent) {
+                    @Suppress("DEPRECATION")
+                    if (cm.activeNetworkInfo?.isConnected == true) latch.countDown()
+                }
+            }
+            val filter = IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION)
+            ctx.registerReceiver(receiver, filter)
+            try {
+                latch.await(NETWORK_WAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            } finally {
+                runCatching { ctx.unregisterReceiver(receiver) }
             }
         }
-
-        if (running) Thread.sleep(800)
     }
 
     private fun openTunnel(protectSocket: (Socket) -> Unit): Socket? {
@@ -749,13 +781,13 @@ object BtProxy {
 
             out.write(p1.toByteArray()); out.flush()
             LogSink.add("→", "P1 enviado", LogLevel.INFO)
-            Thread.sleep(10)
 
             val pingStart = System.currentTimeMillis()
             out.write(p2.toByteArray()); out.flush()
             LogSink.add("→", "P2 enviado", LogLevel.INFO)
 
             socket.soTimeout = HANDSHAKE_TIMEOUT_MS.toInt()
+
             val raw = StringBuilder()
             val deadline = System.currentTimeMillis() + HANDSHAKE_TIMEOUT_MS
             while (System.currentTimeMillis() < deadline) {
@@ -1075,9 +1107,13 @@ object BtWifiDirect {
                 }
             }
         }
-        appCtx.registerReceiver(receiver, IntentFilter().apply {
+        val filter = IntentFilter().apply {
             addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
-        })
+            addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
+            addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION)
+            addAction(WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION)
+        }
+        appCtx.registerReceiver(receiver, filter)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val config = WifiP2pConfig.Builder()
@@ -1119,8 +1155,15 @@ class NetworkChangeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (!TunnelPrefs.wasConnected(context)) return
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        @Suppress("DEPRECATION")
-        val isConnected = cm.activeNetworkInfo?.isConnected == true
+        val isConnected = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val net = cm.activeNetwork ?: return
+            val caps = cm.getNetworkCapabilities(net) ?: return
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        } else {
+            @Suppress("DEPRECATION")
+            cm.activeNetworkInfo?.isConnected == true
+        }
         if (!isConnected) return
         val vpnIntent = BtVpnService.startIntent(context)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(vpnIntent)
@@ -1132,8 +1175,10 @@ class NetworkChangeReceiver : BroadcastReceiver() {
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val validActions = setOf(
-            Intent.ACTION_BOOT_COMPLETED, Intent.ACTION_LOCKED_BOOT_COMPLETED,
-            "android.intent.action.QUICKBOOT_POWERON", "com.htc.intent.action.QUICKBOOT_POWERON",
+            Intent.ACTION_BOOT_COMPLETED,
+            Intent.ACTION_LOCKED_BOOT_COMPLETED,
+            "android.intent.action.QUICKBOOT_POWERON",
+            "com.htc.intent.action.QUICKBOOT_POWERON",
             "android.intent.action.ACTION_BOOT_COMPLETED"
         )
         if (intent.action !in validActions) return
