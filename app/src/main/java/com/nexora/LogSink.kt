@@ -1,6 +1,6 @@
-package com.blacktunnel
+package com.nexora
 
-import com.blacktunnel.ui.screens.LogEntry
+import com.nexora.ui.screens.LogEntry
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 

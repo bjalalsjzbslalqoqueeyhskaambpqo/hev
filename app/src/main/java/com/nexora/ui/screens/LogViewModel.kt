@@ -1,8 +1,8 @@
-package com.blacktunnel.ui.screens
+package com.nexora.ui.screens
 
 import androidx.lifecycle.viewModelScope
-import com.blacktunnel.LogLevel
-import com.blacktunnel.LogSink
+import com.nexora.LogLevel
+import com.nexora.LogSink
 import androidx.lifecycle.ViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn

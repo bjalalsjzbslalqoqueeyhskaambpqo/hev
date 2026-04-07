@@ -25,7 +25,7 @@
         android:icon="@drawable/ic_xtunnel_logo"
         android:roundIcon="@drawable/ic_xtunnel_logo"
         android:label="@string/app_name"
-        android:theme="@style/Theme.XTunnel">
+        android:theme="@style/Theme.Nexora">
         <activity
             android:name=".MainActivity"
             android:exported="true">

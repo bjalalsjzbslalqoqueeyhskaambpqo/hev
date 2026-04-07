@@ -1,4 +1,4 @@
-package com.blacktunnel
+package com.nexora
 
 import android.Manifest
 import android.app.AlertDialog
@@ -23,10 +23,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.blacktunnel.ui.screens.LogViewModel
-import com.blacktunnel.ui.screens.MainScreen
-import com.blacktunnel.ui.screens.VpnState
-import com.blacktunnel.ui.theme.BlackTunnelTheme
+import com.nexora.ui.screens.LogViewModel
+import com.nexora.ui.screens.MainScreen
+import com.nexora.ui.screens.VpnState
+import com.nexora.ui.theme.NexoraTheme
 
 class MainActivity : ComponentActivity() {
 
@@ -48,7 +48,7 @@ class MainActivity : ComponentActivity() {
         requestBatteryExemptionIfNeeded()
 
         setContent {
-            BlackTunnelTheme {
+            NexoraTheme {
                 val session by TunnelSessionStore.stateFlow.collectAsStateWithLifecycle()
                 val logEntries by logVm.entries.collectAsStateWithLifecycle()
 
@@ -231,12 +231,12 @@ class MainActivity : ComponentActivity() {
 
     private fun getBatteryInstructionsByBrand(): String {
         return when (Build.MANUFACTURER.lowercase()) {
-            "motorola" -> "Ajustes → Batería → Gestión de batería → XTunnel → Sin restricciones"
-            "xiaomi", "redmi", "poco" -> "Ajustes → Aplicaciones → XTunnel → Batería → Sin restricciones"
-            "samsung" -> "Ajustes → Batería → Optimización de batería → XTunnel → No optimizar"
-            "huawei", "honor" -> "Ajustes → Batería → Inicio de aplicaciones → XTunnel → Activar manualmente"
-            "oppo", "realme", "oneplus" -> "Ajustes → Batería → Optimización de batería → XTunnel → No optimizar"
-            else -> "Ajustes → Batería → Optimización de batería → XTunnel → No optimizar"
+            "motorola" -> "Ajustes → Batería → Gestión de batería → Nexora → Sin restricciones"
+            "xiaomi", "redmi", "poco" -> "Ajustes → Aplicaciones → Nexora → Batería → Sin restricciones"
+            "samsung" -> "Ajustes → Batería → Optimización de batería → Nexora → No optimizar"
+            "huawei", "honor" -> "Ajustes → Batería → Inicio de aplicaciones → Nexora → Activar manualmente"
+            "oppo", "realme", "oneplus" -> "Ajustes → Batería → Optimización de batería → Nexora → No optimizar"
+            else -> "Ajustes → Batería → Optimización de batería → Nexora → No optimizar"
         }
     }
 

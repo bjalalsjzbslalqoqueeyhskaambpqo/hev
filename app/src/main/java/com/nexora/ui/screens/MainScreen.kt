@@ -1,8 +1,9 @@
-package com.blacktunnel.ui.screens
+package com.nexora.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,13 +20,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CopyAll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Divider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -46,7 +43,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.blacktunnel.R
+import com.nexora.R
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -77,78 +74,31 @@ fun MainScreen(
 ) {
     var showAdvanced by remember { mutableStateOf(false) }
 
-    Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Brush.verticalGradient(listOf(Color(0xFF030A18), Color(0xFF081228), Color(0xFF030816))))
+    ) {
         if (state == VpnState.CONNECTED || state == VpnState.ERROR) {
             Image(
                 painter = painterResource(id = R.drawable.bg_connected),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
-                alpha = if (state == VpnState.CONNECTED) 0.06f else 0.045f,
+                alpha = if (state == VpnState.CONNECTED) 0.07f else 0.05f,
                 modifier = Modifier.fillMaxSize()
             )
         }
-
-        val glowColor = when (state) {
-            VpnState.CONNECTED -> MaterialTheme.colorScheme.primary.copy(0.16f)
-            VpnState.ERROR -> MaterialTheme.colorScheme.error.copy(0.14f)
-            VpnState.CONNECTING -> Color(0xFFFBBF24).copy(0.12f)
-            else -> Color.Transparent
-        }
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(300.dp)
-                .background(Brush.radialGradient(listOf(glowColor, Color.Transparent)))
-        )
 
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("XTunnel", color = MaterialTheme.colorScheme.onSurface, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                IconButton(onClick = onCopyClientId) {
-                    Icon(Icons.Default.CopyAll, contentDescription = "Copiar ID", tint = MaterialTheme.colorScheme.primary)
-                }
-            }
-
-            Spacer(Modifier.height(16.dp))
-            Orb(state)
-            Spacer(Modifier.height(14.dp))
-
-            val stateLabel = when (state) {
-                VpnState.CONNECTED -> "Conectado"
-                VpnState.CONNECTING -> "Conectando..."
-                VpnState.ERROR -> "Error"
-                VpnState.IDLE -> "Desconectado"
-            }
-            Text(stateLabel, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.SemiBold)
-
-            if (state == VpnState.CONNECTED && connectedSince > 0) {
-                Text(formatConnectedSince(connectedSince), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(0.7f))
-            }
-
-            Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                InfoChip("⚡", if (latencyMs >= 0) "${latencyMs}ms" else "-")
-                InfoChip("📅", "$daysLeft días")
-                InfoChip("👤", clientName.ifBlank { "-" })
-            }
-
-            Spacer(Modifier.height(16.dp))
-            Button(
-                onClick = onConnectClick,
-                enabled = state != VpnState.CONNECTING,
-                modifier = Modifier.fillMaxWidth().height(56.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-            ) {
-                Text(if (state == VpnState.CONNECTED) "DESCONECTAR" else "CONECTAR", fontWeight = FontWeight.Bold)
-            }
-
-            Spacer(Modifier.height(16.dp))
+            HeaderSection(onCopyClientId)
+            ConnectionPanel(state, latencyMs, daysLeft, clientName, connectedSince, onConnectClick)
+            SessionPreviewRow()
             AdvancedSection(
                 expanded = showAdvanced,
                 onToggle = { showAdvanced = !showAdvanced },
@@ -161,9 +111,101 @@ fun MainScreen(
                 onWifiDirectPasswordChange = onWifiDirectPasswordChange,
                 onIgnoreBatteryClick = onIgnoreBatteryClick
             )
+            LogPanel(logEntries = logEntries, fallbackStatus = status)
+        }
+    }
+}
+
+@Composable
+private fun HeaderSection(onCopyClientId: () -> Unit) {
+    Surface(
+        color = Color(0xFF06162F),
+        shape = RoundedCornerShape(18.dp),
+        modifier = Modifier.fillMaxWidth(),
+        tonalElevation = 6.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Image(
+                    painter = painterResource(R.drawable.ic_xtunnel_logo),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .border(1.dp, Color(0xFF0077FF), RoundedCornerShape(10.dp))
+                )
+                Spacer(Modifier.width(10.dp))
+                Column {
+                    Text("NEXORA", fontWeight = FontWeight.Black, color = Color(0xFFE7F2FF), fontSize = 24.sp)
+                    Text("Conectividad que te da ventaja", color = Color(0xFF00D4FF), fontSize = 12.sp)
+                }
+            }
+            Text(
+                "ID",
+                color = Color(0xFF00D4FF),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onCopyClientId)
+                    .border(1.dp, Color(0xFF00D4FF), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 14.dp, vertical = 7.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun ConnectionPanel(
+    state: VpnState,
+    latencyMs: Long,
+    daysLeft: String,
+    clientName: String,
+    connectedSince: Long,
+    onConnectClick: () -> Unit
+) {
+    Surface(
+        color = Color(0xFF081B33),
+        shape = RoundedCornerShape(22.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Orb(state)
+            Spacer(Modifier.height(10.dp))
+            val stateLabel = when (state) {
+                VpnState.CONNECTED -> "CONECTADO"
+                VpnState.CONNECTING -> "CONECTANDO"
+                VpnState.ERROR -> "ERROR"
+                VpnState.IDLE -> "DESCONECTADO"
+            }
+            Text(stateLabel, color = Color(0xFF00E5FF), fontSize = 26.sp, fontWeight = FontWeight.Bold)
+            if (state == VpnState.CONNECTED && connectedSince > 0) {
+                Text(formatConnectedSince(connectedSince), fontSize = 12.sp, color = Color(0xFF94A9C7))
+            }
+
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                InfoChip("⚡", if (latencyMs >= 0) "${latencyMs}ms" else "-")
+                InfoChip("📅", "$daysLeft días")
+                InfoChip("👤", clientName.ifBlank { "mi cuenta" })
+            }
 
             Spacer(Modifier.height(14.dp))
-            LogPanel(logEntries = logEntries, fallbackStatus = status)
+            Button(
+                onClick = onConnectClick,
+                enabled = state != VpnState.CONNECTING,
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF008DFF))
+            ) {
+                Text(if (state == VpnState.CONNECTED) "DESCONECTAR" else "CONECTAR", fontWeight = FontWeight.Bold)
+            }
         }
     }
 }
@@ -171,42 +213,70 @@ fun MainScreen(
 @Composable
 private fun Orb(state: VpnState) {
     val tint = when (state) {
-        VpnState.CONNECTED -> MaterialTheme.colorScheme.primary
+        VpnState.CONNECTED -> Color(0xFF00D4FF)
         VpnState.ERROR -> MaterialTheme.colorScheme.error
         VpnState.CONNECTING -> Color(0xFFFBBF24)
-        else -> MaterialTheme.colorScheme.onSurface.copy(0.3f)
+        else -> Color(0xFF4A5D7A)
     }
 
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
-            .size(170.dp)
+            .size(200.dp)
             .clip(CircleShape)
-            .background(Brush.radialGradient(listOf(tint.copy(0.25f), Color.Transparent)))
+            .background(Brush.radialGradient(listOf(tint.copy(0.28f), Color.Transparent)))
+            .border(2.dp, tint.copy(0.7f), CircleShape)
     ) {
         Image(
             painter = painterResource(id = R.drawable.ic_xtunnel_logo),
             contentDescription = null,
-            modifier = Modifier.size(92.dp)
+            modifier = Modifier.size(90.dp)
         )
     }
 }
 
 @Composable
 private fun InfoChip(icon: String, label: String) {
-    Surface(
-        modifier = Modifier,
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface
-    ) {
+    Surface(shape = RoundedCornerShape(12.dp), color = Color(0xFF0C243F), modifier = Modifier.weight(1f)) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 9.dp),
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(icon)
-            Spacer(Modifier.width(6.dp))
-            Text(label, fontSize = 12.sp, maxLines = 1)
+            Spacer(Modifier.width(4.dp))
+            Text(label, fontSize = 12.sp, color = Color(0xFFE4EAF5), maxLines = 1)
+        }
+    }
+}
+
+@Composable
+private fun SessionPreviewRow() {
+    Surface(color = Color(0xFF06162E), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("SESIONES DE LA APP", color = Color(0xFF00D4FF), fontWeight = FontWeight.Bold)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                listOf("Principal", "Servidores", "Ajustes", "Estadísticas", "Acerca").forEachIndexed { i, item ->
+                    Surface(
+                        color = if (i == 0) Color(0xFF008DFF) else Color(0xFF0A223C),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(
+                            text = item,
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(vertical = 8.dp),
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+            Text(
+                "Nuevos apartados visuales añadidos (sin lógica): Servidores, Estadísticas y Acerca de.",
+                fontSize = 12.sp,
+                color = Color(0xFF95A9C2)
+            )
         }
     }
 }
@@ -214,15 +284,15 @@ private fun InfoChip(icon: String, label: String) {
 @Composable
 fun LogPanel(logEntries: List<LogEntry>, fallbackStatus: String) {
     var expanded by remember { mutableStateOf(false) }
-    Surface(modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(12.dp)) {
+    Surface(modifier = Modifier.fillMaxWidth(), color = Color(0xFF081B33), shape = RoundedCornerShape(14.dp)) {
         Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Log de conexión", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(0.8f), fontWeight = FontWeight.SemiBold)
-                Text(if (expanded) "Ocultar" else "Ver todo", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                Text("Log de conexión", fontSize = 12.sp, color = Color(0xFFEAF2FF), fontWeight = FontWeight.SemiBold)
+                Text(if (expanded) "Ocultar" else "Ver todo", fontSize = 11.sp, color = Color(0xFF00D4FF))
             }
             val entries = if (logEntries.isNotEmpty()) logEntries.takeLast(6) else listOf(LogEntry("ℹ", fallbackStatus, Color(0xFF94A3B8)))
             val visibleEntries = if (expanded) entries else listOf(entries.last())
@@ -237,7 +307,7 @@ fun LogPanel(logEntries: List<LogEntry>, fallbackStatus: String) {
                 ) {
                     Box(modifier = Modifier.width(3.dp).height(18.dp).background(entry.color))
                     Spacer(Modifier.width(8.dp))
-                    Text("${entry.icon}  ${entry.text}", color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp)
+                    Text("${entry.icon}  ${entry.text}", color = Color(0xFFEAF2FF), fontSize = 12.sp)
                 }
             }
         }
@@ -257,29 +327,29 @@ private fun AdvancedSection(
     onWifiDirectPasswordChange: (String) -> Unit,
     onIgnoreBatteryClick: () -> Unit
 ) {
-    Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surface) {
+    Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), color = Color(0xFF081B33)) {
         Column(Modifier.padding(14.dp)) {
             Text(
                 text = if (expanded) "▲ Ajustes avanzados" else "▼ Ajustes avanzados",
                 modifier = Modifier.clickable { onToggle() },
-                color = MaterialTheme.colorScheme.onSurface
+                color = Color(0xFFEAF2FF)
             )
 
             AnimatedVisibility(visible = expanded) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Spacer(Modifier.height(8.dp))
-                    Divider()
+                    Divider(color = Color(0xFF143255))
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text("🔥 Compartir Wi‑Fi por proxy")
+                        Text("🔥 Compartir internet por proxy", color = Color(0xFFEAF2FF))
                         Switch(checked = isHotspotEnabled, onCheckedChange = onHotspotToggle)
                     }
                     if (isHotspotEnabled && hotspotIp != null) {
-                        Text("SOCKS5: $hotspotIp:1080", fontSize = 12.sp)
-                        Text("HTTP: $hotspotIp:8282", fontSize = 12.sp)
+                        Text("SOCKS5: $hotspotIp:1080", fontSize = 12.sp, color = Color(0xFF92A7C4))
+                        Text("HTTP: $hotspotIp:8282", fontSize = 12.sp, color = Color(0xFF92A7C4))
                     }
-                    Divider()
+                    Divider(color = Color(0xFF143255))
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text("📺 WiFi Direct para Smart TV")
+                        Text("📺 WiFi Direct para Smart TV", color = Color(0xFFEAF2FF))
                         Switch(checked = isWifiDirectEnabled, onCheckedChange = onWifiDirectToggle)
                     }
                     if (isWifiDirectEnabled) {
@@ -290,10 +360,10 @@ private fun AdvancedSection(
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
-                    Divider()
+                    Divider(color = Color(0xFF143255))
                     Text(
                         text = "🔋 Quitar restricción de batería",
-                        color = MaterialTheme.colorScheme.primary,
+                        color = Color(0xFF00D4FF),
                         modifier = Modifier.clickable(onClick = onIgnoreBatteryClick)
                     )
                 }

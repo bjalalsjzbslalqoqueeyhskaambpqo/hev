@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22.1)
-project("blacktunnel")
+project("nexora")
 
 add_library(hev-jni SHARED hev_jni.cpp)
 

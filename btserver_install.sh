@@ -514,7 +514,7 @@ chmod +x /opt/btserver/panel.py
 
 cat > /etc/systemd/system/btserver.service << 'SVCEOF'
 [Unit]
-Description=BlackTunnel Server
+Description=Nexora Server
 After=network.target xray.service
 
 [Service]
@@ -529,7 +529,7 @@ SVCEOF
 
 cat > /etc/systemd/system/btpanel.service << 'SVCEOF'
 [Unit]
-Description=BlackTunnel Panel API
+Description=Nexora Panel API
 After=network.target
 
 [Service]

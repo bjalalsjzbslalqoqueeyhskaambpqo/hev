@@ -1,4 +1,4 @@
-package com.blacktunnel
+package com.nexora
 
 import android.app.AlarmManager
 import android.app.Notification
@@ -122,7 +122,7 @@ class BtVpnService : VpnService() {
                     val clientId = TunnelPrefs.getOrCreateClientId(this@BtVpnService)
 
                     val builder = Builder()
-                        .setSession("XTunnel")
+                        .setSession("Nexora")
                         .addAddress("198.18.0.1", 30)
                         .addAddress("fc00::1", 126)
                         .addRoute("0.0.0.0", 0)
@@ -187,7 +187,7 @@ class BtVpnService : VpnService() {
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val channel = NotificationChannel(
-                    VPN_CHANNEL_ID, "XTunnel VPN",
+                    VPN_CHANNEL_ID, "Nexora VPN",
                     NotificationManager.IMPORTANCE_LOW
                 ).apply {
                     description = "Servicio VPN activo"
@@ -208,7 +208,7 @@ class BtVpnService : VpnService() {
             )
             val notification = NotificationCompat.Builder(this, VPN_CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_lock_lock)
-                .setContentTitle("XTunnel activo")
+                .setContentTitle("Nexora activo")
                 .setContentText("Conexión protegida")
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setOngoing(true)
@@ -295,8 +295,8 @@ class BtVpnService : VpnService() {
     }
 
     companion object {
-        const val ACTION_START = "com.blacktunnel.START"
-        const val ACTION_STOP = "com.blacktunnel.STOP"
+        const val ACTION_START = "com.nexora.START"
+        const val ACTION_STOP = "com.nexora.STOP"
         private const val VPN_CHANNEL_ID = "vpn_channel"
         private const val VPN_NOTIFICATION_ID = 1
     }
