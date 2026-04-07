@@ -16,6 +16,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nexora.ui.screens.LogViewModel
 import com.nexora.ui.screens.MainScreen
@@ -39,8 +43,8 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             NexoraTheme {
-                val session = TunnelSessionStore.stateFlow.collectAsStateWithLifecycle().value
-                val logEntries = logVm.entries.collectAsStateWithLifecycle().value
+                val session by TunnelSessionStore.stateFlow.collectAsStateWithLifecycle()
+                val logEntries by logVm.entries.collectAsStateWithLifecycle()
 
                 val vpnState = when (session.state) {
                     "CONNECTED" -> VpnState.CONNECTED
@@ -48,6 +52,8 @@ class MainActivity : ComponentActivity() {
                     "ERROR" -> VpnState.ERROR
                     else -> VpnState.IDLE
                 }
+
+                var isHotspot by rememberSaveable { mutableStateOf(TunnelPrefs.isHotspotProxyEnabled(this)) }
 
                 MainScreen(
                     state = vpnState,
@@ -68,6 +74,17 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onCopyClientId = { copyClientId() },
+                    isHotspotEnabled = isHotspot,
+                    onHotspotToggle = { enabled ->
+                        val ip = BtProxy.getHotspotIp()
+                        if (enabled && ip == null) {
+                            Toast.makeText(this, getString(R.string.hotspot_enable_first), Toast.LENGTH_SHORT).show()
+                        } else {
+                            isHotspot = enabled
+                            TunnelPrefs.setHotspotProxyEnabled(this, enabled)
+                        }
+                    },
+                    hotspotIp = BtProxy.getHotspotIp(),
                     onIgnoreBatteryClick = {
                         val requested = requestBatteryOptimizationExemption()
                         if (!requested) openBatterySettings()

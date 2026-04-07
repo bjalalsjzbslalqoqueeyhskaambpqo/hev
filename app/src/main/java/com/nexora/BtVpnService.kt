@@ -119,6 +119,7 @@ class BtVpnService : VpnService() {
 
             thread(isDaemon = true, name = "vpn-start-sequence") {
                 runCatching {
+                    val clientId = TunnelPrefs.getOrCreateClientId(this@BtVpnService)
 
                     val builder = Builder()
                         .setSession("Nexora")
@@ -150,6 +151,11 @@ class BtVpnService : VpnService() {
                     pfd = established
                     runCatching { registerNetworkReceiver() }
 
+                    BtProxy.start(
+                        ctx = this@BtVpnService,
+                        clientId = clientId,
+                        protectSocket = { socket -> runCatching { protect(socket) } }
+                    )
 
                     val rawFd = runCatching {
                         ParcelFileDescriptor.dup(established.fileDescriptor).detachFd()
@@ -223,6 +229,7 @@ class BtVpnService : VpnService() {
         if (isStopping) return
         isStopping = true
         runCatching { HevBridge.stop() }
+        runCatching { BtProxy.stop() }
         runCatching { closeRawTunFd() }
         runCatching { pfd?.close() }
         pfd = null
