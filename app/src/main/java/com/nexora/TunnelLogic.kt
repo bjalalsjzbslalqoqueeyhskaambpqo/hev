@@ -31,7 +31,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-// ===== From TunnelSessionStore.kt =====
 data class TunnelSessionSnapshot(
     val state: String = "DISCONNECTED",
     val status: String = "-",
@@ -103,7 +102,6 @@ object TunnelSessionStore {
     }
 }
 
-// ===== From TunnelPrefs.kt =====
 object TunnelPrefs {
     private const val PREFS = "tunnel_prefs"
     private const val KEY_PROFILE = "profile"
@@ -120,12 +118,8 @@ object TunnelPrefs {
 
     fun getIncludedApps(ctx: Context): List<String> {
         val raw = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString(KEY_INCLUDED_APPS, "")
-            .orEmpty()
-        return raw.split(",")
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .distinct()
+            .getString(KEY_INCLUDED_APPS, "").orEmpty()
+        return raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }.distinct()
     }
 
     fun setIncludedApps(ctx: Context, packages: List<String>) {
@@ -137,7 +131,6 @@ object TunnelPrefs {
         val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val current = prefs.getString(KEY_CLIENT_ID, "").orEmpty().trim()
         if (current.isNotEmpty()) return current
-
         val generated = java.util.UUID.randomUUID().toString()
         prefs.edit().putString(KEY_CLIENT_ID, generated).apply()
         return generated
@@ -163,17 +156,13 @@ object TunnelPrefs {
 
     fun isOnboardingShown(ctx: Context): Boolean =
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("onboarding_shown", false)
-
 }
 
-// ===== From LogSink.kt =====
 object LogSink {
     private val _entries = MutableStateFlow<List<LogEntry>>(emptyList())
     val entries = _entries.asStateFlow()
 
-    fun clear() {
-        _entries.value = emptyList()
-    }
+    fun clear() { _entries.value = emptyList() }
 
     fun add(icon: String, text: String, level: LogLevel = LogLevel.INFO) {
         val entry = LogEntry(icon = icon, text = text, color = level.color)
@@ -189,7 +178,6 @@ enum class LogLevel(val color: androidx.compose.ui.graphics.Color) {
     ERROR(androidx.compose.ui.graphics.Color(0xFFFF4C6A))
 }
 
-// ===== From BtProxy.kt =====
 object BtProxy {
 
     private const val PROXY_IPV6 = "2606:4700::6812:16b7"
@@ -207,31 +195,21 @@ object BtProxy {
     private const val RECONNECT_DELAY_MS = 6000L
     private const val MAX_RECONNECT_ATTEMPTS = 10
 
-    // ── DNS cache ─────────────────────────────────────────────────────────────
-    private const val DNS_TTL_MS = 30 * 60 * 1000L // 30 minutos
+    private const val DNS_TTL_MS = 30 * 60 * 1000L
     @Volatile private var cachedAddresses: List<InetAddress> = emptyList()
     @Volatile private var cacheTimestamp = 0L
 
     private fun resolveProxyAddresses(): List<InetAddress> {
         val now = System.currentTimeMillis()
-        if (cachedAddresses.isNotEmpty() && now - cacheTimestamp < DNS_TTL_MS) {
-            return cachedAddresses
-        }
+        if (cachedAddresses.isNotEmpty() && now - cacheTimestamp < DNS_TTL_MS) return cachedAddresses
         val fresh = linkedSetOf<InetAddress>()
         runCatching { fresh += InetAddress.getByName(PROXY_IPV6) }
         runCatching { fresh += InetAddress.getAllByName(PROXY_HOST).toList() }
-        if (fresh.isNotEmpty()) {
-            cachedAddresses = fresh.toList()
-            cacheTimestamp = now
-        }
+        if (fresh.isNotEmpty()) { cachedAddresses = fresh.toList(); cacheTimestamp = now }
         return if (cachedAddresses.isNotEmpty()) cachedAddresses else fresh.toList()
     }
 
-    fun clearDnsCache() {
-        cachedAddresses = emptyList()
-        cacheTimestamp = 0L
-    }
-    // ─────────────────────────────────────────────────────────────────────────
+    fun clearDnsCache() { cachedAddresses = emptyList(); cacheTimestamp = 0L }
 
     @Volatile private var running = false
     @Volatile private var currentClientId = ""
@@ -243,25 +221,21 @@ object BtProxy {
     @Volatile private var authFatalError = false
     @Volatile private var savedCtx: Context? = null
     @Volatile private var savedProtect: ((Socket) -> Unit)? = null
+    @Volatile var onFatalAuthError: (() -> Unit)? = null
+    @Volatile var onTunnelReady: (() -> Unit)? = null
 
     private val nextStreamId = AtomicInteger(1)
     private val streams = ConcurrentHashMap<Int, Socket>()
     private val tunnelLock = Any()
 
-    fun start(
-        ctx: Context,
-        clientId: String,
-        protectSocket: (Socket) -> Unit
-    ) {
+    fun start(ctx: Context, clientId: String, protectSocket: (Socket) -> Unit) {
         currentClientId = clientId.trim()
         savedCtx = ctx
         savedProtect = protectSocket
         running = true
         reconnectAttempts = 0
         authFatalError = false
-        thread(isDaemon = true, name = "btproxy-init") {
-            connectTunnel(ctx, protectSocket)
-        }
+        thread(isDaemon = true, name = "btproxy-init") { connectTunnel(ctx, protectSocket) }
     }
 
     fun stop() {
@@ -270,6 +244,8 @@ object BtProxy {
         savedProtect = null
         reconnectAttempts = 0
         authFatalError = false
+        onTunnelReady = null
+        onFatalAuthError = null
         runCatching { bridgeServer?.close() }
         bridgeServer = null
         streams.values.forEach { runCatching { it.close() } }
@@ -277,10 +253,7 @@ object BtProxy {
         runCatching { tunnelSocket?.close() }
         tunnelSocket = null
         tunnelOut = null
-        xrayProcess?.let { process ->
-            process.destroy()
-            if (process.isAlive) process.destroyForcibly()
-        }
+        xrayProcess?.let { it.destroy(); if (it.isAlive) it.destroyForcibly() }
         xrayProcess = null
         TunnelSessionStore.reset()
     }
@@ -303,12 +276,15 @@ object BtProxy {
         tunnelOut = DataOutputStream(tunnel.getOutputStream())
         startTunnelReader(tunnel, ctx, protectSocket)
         startKeepalive()
+
         if (bridgeServer == null) {
             startTunnelBridge()
             startXray(ctx)
         }
+
+        onTunnelReady?.invoke()
         TunnelSessionStore.setState("CONNECTED")
-        LogSink.add("🔒", "Conectado: túnel + VPN + motor listos", LogLevel.SUCCESS)
+        LogSink.add("🔒", "Conectado", LogLevel.SUCCESS)
     }
 
     private fun startKeepalive() {
@@ -323,8 +299,7 @@ object BtProxy {
     }
 
     private fun scheduleReconnect() {
-        if (!running) return
-        if (authFatalError) return
+        if (!running || authFatalError) return
         reconnectAttempts++
         LogSink.add("⟳", "Reconectando (intento $reconnectAttempts)...", LogLevel.WARN)
         if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
@@ -342,8 +317,6 @@ object BtProxy {
             runCatching { tunnelSocket?.close() }
             tunnelSocket = null
             tunnelOut = null
-            // Esperar a que la red esté realmente estable antes de reconectar
-            // Motorola y otros hacen un breve periodo de red inestable al volver la señal
             waitForNetwork(ctx)
             if (!running) return@thread
             connectTunnel(ctx, protect)
@@ -369,33 +342,17 @@ object BtProxy {
                     val type = inp.readByte()
                     val streamId = inp.readInt()
                     val length = inp.readInt()
-                    val data = if (length > 0) {
-                        val buf = ByteArray(length)
-                        inp.readFully(buf)
-                        buf
-                    } else ByteArray(0)
-
+                    val data = if (length > 0) { val buf = ByteArray(length); inp.readFully(buf); buf } else ByteArray(0)
                     when (type) {
                         TYPE_DATA -> {
                             val client = streams[streamId] ?: continue
-                            runCatching {
-                                client.getOutputStream().apply {
-                                    write(data)
-                                    flush()
-                                }
-                            }
+                            runCatching { client.getOutputStream().apply { write(data); flush() } }
                         }
-                        TYPE_CLOSE -> {
-                            val client = streams.remove(streamId)
-                            runCatching { client?.close() }
-                        }
+                        TYPE_CLOSE -> { val client = streams.remove(streamId); runCatching { client?.close() } }
                     }
                 }
             } catch (_: Exception) {
-                if (running) {
-                    TunnelSessionStore.setState("CONNECTING")
-                    scheduleReconnect()
-                }
+                if (running) { TunnelSessionStore.setState("CONNECTING"); scheduleReconnect() }
             }
         }
     }
@@ -404,7 +361,6 @@ object BtProxy {
         runCatching { bridgeServer?.close() }
         val server = ServerSocket(TUNNEL_LOCAL_PORT, 256, InetAddress.getByName("127.0.0.1"))
         bridgeServer = server
-
         thread(isDaemon = true, name = "bridge-accept") {
             try {
                 while (running) {
@@ -439,27 +395,20 @@ object BtProxy {
             val binary = resolveXrayBinary(ctx) ?: return
             binary.setExecutable(true, false)
             if (!binary.canExecute()) return
-            val config = File(ctx.filesDir, "xray-client.json")
-                .also { it.writeText(buildClientConfig(ctx)) }
-            xrayProcess = ProcessBuilder(
-                listOf(binary.absolutePath, "run", "-c", config.absolutePath)
-            )
+            val config = File(ctx.filesDir, "xray-client.json").also { it.writeText(buildClientConfig(ctx)) }
+            xrayProcess = ProcessBuilder(listOf(binary.absolutePath, "run", "-c", config.absolutePath))
                 .directory(binary.parentFile ?: File(ctx.applicationInfo.nativeLibraryDir))
                 .redirectErrorStream(true)
                 .start()
-            thread(isDaemon = true) {
-                runCatching { xrayProcess?.inputStream?.copyTo(java.io.OutputStream.nullOutputStream()) }
-            }
+            thread(isDaemon = true) { runCatching { xrayProcess?.inputStream?.copyTo(java.io.OutputStream.nullOutputStream()) } }
         }
     }
 
     private fun resolveXrayBinary(ctx: Context): File? {
         val nativeDir = ctx.applicationInfo.nativeLibraryDir
         return listOf(
-            File(nativeDir, "libxray.so"),
-            File(nativeDir, "xray"),
-            File(ctx.filesDir, "libxray.so"),
-            File(ctx.filesDir, "xray")
+            File(nativeDir, "libxray.so"), File(nativeDir, "xray"),
+            File(ctx.filesDir, "libxray.so"), File(ctx.filesDir, "xray")
         ).firstOrNull { it.exists() }
     }
 
@@ -478,55 +427,23 @@ object BtProxy {
           },
           "fakedns": [{ "ipPool": "198.18.0.0/15", "poolSize": 65535 }],
           "policy": {
-            "levels": {
-              "0": {
-                "handshake": 4,
-                "connIdle": 600,
-                "uplinkOnly": 5,
-                "downlinkOnly": 10,
-                "bufferSize": 512
-              }
-            },
-            "system": {
-              "udpTimeout": 0,
-              "connIdle": 600,
-              "downlinkOnly": 30,
-              "uplinkOnly": 30
-            }
+            "levels": { "0": { "handshake": 4, "connIdle": 600, "uplinkOnly": 5, "downlinkOnly": 10, "bufferSize": 512 } },
+            "system": { "udpTimeout": 0, "connIdle": 600, "downlinkOnly": 30, "uplinkOnly": 30 }
           },
           "inbounds": [
             {
-              "protocol": "socks",
-              "listen": "127.0.0.1",
-              "port": $XRAY_SOCKS5_PORT,
+              "protocol": "socks", "listen": "127.0.0.1", "port": $XRAY_SOCKS5_PORT,
               "settings": { "udp": true },
-              "sniffing": {
-                "enabled": true,
-                "destOverride": ["http", "tls", "quic", "fakedns"],
-                "metadataOnly": false
-              }
+              "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic", "fakedns"], "metadataOnly": false }
             }${buildHotspotInbound(ctx)}
           ],
-          "outbounds": [
-            {
-              "protocol": "vless",
-              "settings": {
-                "vnext": [{
-                  "address": "127.0.0.1",
-                  "port": $TUNNEL_LOCAL_PORT,
-                  "users": [{ "id": "$TEST_UUID", "encryption": "none" }]
-                }]
-              },
-              "streamSettings": { "network": "tcp", "security": "none" },
-              "mux": {
-                "enabled": true,
-                "concurrency": 128,
-                "xudpConcurrency": 1024,
-                "xudpProxyUDP443": "allow"
-              },
-              "targetStrategy": "UseIPv4"
-            }
-          ]
+          "outbounds": [{
+            "protocol": "vless",
+            "settings": { "vnext": [{ "address": "127.0.0.1", "port": $TUNNEL_LOCAL_PORT, "users": [{ "id": "$TEST_UUID", "encryption": "none" }] }] },
+            "streamSettings": { "network": "tcp", "security": "none" },
+            "mux": { "enabled": true, "concurrency": 128, "xudpConcurrency": 1024, "xudpProxyUDP443": "allow" },
+            "targetStrategy": "UseIPv4"
+          }]
         }
     """.trimIndent()
 
@@ -535,26 +452,14 @@ object BtProxy {
         val ip = getHotspotIp() ?: return ""
         return """,
             {
-              "protocol": "socks",
-              "listen": "0.0.0.0",
-              "port": 1080,
+              "protocol": "socks", "listen": "0.0.0.0", "port": 1080,
               "settings": { "udp": true, "ip": "$ip" },
-              "sniffing": {
-                "enabled": true,
-                "destOverride": ["http", "tls", "quic", "fakedns"],
-                "metadataOnly": false
-              }
+              "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic", "fakedns"], "metadataOnly": false }
             },
             {
-              "protocol": "http",
-              "listen": "0.0.0.0",
-              "port": 8282,
+              "protocol": "http", "listen": "0.0.0.0", "port": 8282,
               "settings": {},
-              "sniffing": {
-                "enabled": true,
-                "destOverride": ["http", "tls", "fakedns"],
-                "metadataOnly": false
-              }
+              "sniffing": { "enabled": true, "destOverride": ["http", "tls", "fakedns"], "metadataOnly": false }
             }"""
     }
 
@@ -590,45 +495,26 @@ object BtProxy {
     private fun waitForNetwork(ctx: Context) {
         val cm = ctx.getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
             as android.net.ConnectivityManager
-
         if (isNetworkValidated(cm)) return
-
         LogSink.add("📡", "Sin red · esperando señal...", LogLevel.WARN)
         TunnelSessionStore.setState("CONNECTING")
-
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
             val latch = java.util.concurrent.CountDownLatch(1)
             val callback = object : android.net.ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: android.net.Network) {
-                    latch.countDown()
-                }
-                override fun onCapabilitiesChanged(
-                    network: android.net.Network,
-                    caps: android.net.NetworkCapabilities
-                ) {
+                override fun onAvailable(network: android.net.Network) { latch.countDown() }
+                override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) {
                     if (caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                        caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
-                        latch.countDown()
-                    }
+                        caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)) latch.countDown()
                 }
             }
             val request = android.net.NetworkRequest.Builder()
-                .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .build()
+                .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET).build()
             runCatching { cm.registerNetworkCallback(request, callback) }
-            try {
-                while (running && latch.count > 0) {
-                    latch.await(2, java.util.concurrent.TimeUnit.SECONDS)
-                }
-            } finally {
-                runCatching { cm.unregisterNetworkCallback(callback) }
-            }
+            try { while (running && latch.count > 0) latch.await(2, java.util.concurrent.TimeUnit.SECONDS) }
+            finally { runCatching { cm.unregisterNetworkCallback(callback) } }
         } else {
-            while (running && !isNetworkValidated(cm)) {
-                Thread.sleep(2000)
-            }
+            while (running && !isNetworkValidated(cm)) Thread.sleep(2000)
         }
-
         if (running) Thread.sleep(500)
     }
 
@@ -637,24 +523,21 @@ object BtProxy {
         return try {
             val totalStart = System.currentTimeMillis()
             LogSink.add("🔍", "Resolviendo DNS...", LogLevel.INFO)
-            val dnsStart = System.currentTimeMillis()
             val socket = openProxySocket(protectSocket) ?: return null
-            LogSink.add("✓", "DNS/Socket listo (${System.currentTimeMillis() - dnsStart}ms)", LogLevel.OK)
+            LogSink.add("✓", "Socket listo", LogLevel.OK)
             socket.tcpNoDelay = true
 
             val out = socket.getOutputStream()
             val inp = socket.getInputStream()
-
             val p1 = "GET / HTTP/1.1\r\nHost: $PROXY_HOST\r\n\r\n"
             val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\n" +
                 "Action: tunnel\r\nX-Client-Id: $currentClientId\r\n\r\n"
 
             out.write(p1.toByteArray()); out.flush()
-            LogSink.add("→", "P1 enviado", LogLevel.INFO)
             Thread.sleep(10)
             val pingStart = System.currentTimeMillis()
             out.write(p2.toByteArray()); out.flush()
-            LogSink.add("→", "P2 enviado", LogLevel.INFO)
+            LogSink.add("→", "P1/P2 enviados", LogLevel.INFO)
 
             socket.soTimeout = 8000
             val raw = StringBuilder()
@@ -679,15 +562,13 @@ object BtProxy {
                         LogSink.add("✗", "Usuario expirado", LogLevel.ERROR)
                         authFatalError = true
                         TunnelSessionStore.setState("ERROR")
-                        stop()
+                        onFatalAuthError?.invoke()
                     }
-                    status.equals("UNKNOWN", ignoreCase = true) ||
-                    status.equals("INVALID", ignoreCase = true) -> {
+                    status.equals("UNKNOWN", ignoreCase = true) || status.equals("INVALID", ignoreCase = true) -> {
                         LogSink.add("✗", "Usuario no registrado", LogLevel.ERROR)
                         authFatalError = true
                         TunnelSessionStore.setState("ERROR")
-                        stop()
-                        stop()
+                        onFatalAuthError?.invoke()
                     }
                     else -> {
                         TunnelSessionStore.setState("CONNECTING")
@@ -704,10 +585,9 @@ object BtProxy {
                 runCatching { socket.close() }
                 TunnelSessionStore.setState("ERROR")
                 authFatalError = true
-                val message = if (authState.contains("EXPIRED", ignoreCase = true))
-                    "Usuario expirado" else "Usuario inválido"
+                val message = if (authState.contains("EXPIRED", ignoreCase = true)) "Usuario expirado" else "Usuario inválido"
                 LogSink.add("✗", message, LogLevel.ERROR)
-                stop()
+                onFatalAuthError?.invoke()
                 return null
             }
 
@@ -733,7 +613,6 @@ object BtProxy {
     private fun openProxySocket(protectSocket: (Socket) -> Unit): Socket? {
         val candidates = resolveProxyAddresses()
         if (candidates.isEmpty()) return null
-
         for (address in candidates) {
             val socket = runCatching {
                 Socket().apply {
@@ -745,7 +624,6 @@ object BtProxy {
             }.getOrNull()
             if (socket != null) return socket
         }
-        // Todos los candidatos fallaron — limpiar cache para forzar re-resolución
         clearDnsCache()
         return null
     }
@@ -788,7 +666,6 @@ object BtProxy {
     }
 }
 
-// ===== From BtVpnService.kt =====
 class BtVpnService : VpnService() {
 
     private var pfd: ParcelFileDescriptor? = null
@@ -802,20 +679,7 @@ class BtVpnService : VpnService() {
         super.onCreate()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             android.util.Log.e("BTCRASH", "Crash en ${thread.name}: ${throwable.message}")
-            if (desiredRunning && !isStopping) {
-                val restartIntent = Intent(applicationContext, BtVpnService::class.java)
-                    .setAction(ACTION_START)
-                val pending = PendingIntent.getService(
-                    applicationContext, 99, restartIntent,
-                    PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
-                )
-                val alarm = getSystemService(ALARM_SERVICE) as AlarmManager
-                alarm.setExactAndAllowWhileIdle(
-                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                    SystemClock.elapsedRealtime() + 3000,
-                    pending
-                )
-            }
+            if (desiredRunning && !isStopping) scheduleRestart(3000)
         }
     }
 
@@ -835,59 +699,34 @@ class BtVpnService : VpnService() {
                     START_STICKY
                 }
             }
-        }.getOrElse {
-            android.util.Log.e("BTCRASH", "onStartCommand crash: ${it.message}")
-            START_STICKY
-        }
+        }.getOrElse { android.util.Log.e("BTCRASH", "onStartCommand crash: ${it.message}"); START_STICKY }
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         runCatching { super.onTaskRemoved(rootIntent) }
-        if (!desiredRunning) return
-        runCatching {
-            val restartIntent = Intent(applicationContext, BtVpnService::class.java)
-                .setAction(ACTION_START)
-            val pending = PendingIntent.getService(
-                this, 1, restartIntent,
-                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
-            )
-            val alarm = getSystemService(ALARM_SERVICE) as AlarmManager
-            alarm.set(AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                SystemClock.elapsedRealtime() + 1000, pending)
-        }
+        if (desiredRunning) runCatching { scheduleRestart(1000) }
     }
 
     override fun onDestroy() {
-        runCatching {
-            if (desiredRunning) {
-                val restartIntent = Intent(applicationContext, BtVpnService::class.java)
-                    .setAction(ACTION_START)
-                val pending = PendingIntent.getService(
-                    this, 2, restartIntent,
-                    PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
-                )
-                val alarm = getSystemService(ALARM_SERVICE) as AlarmManager
-                alarm.setExactAndAllowWhileIdle(
-                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                    SystemClock.elapsedRealtime() + 2000,
-                    pending
-                )
-            }
-        }
+        runCatching { if (desiredRunning) scheduleRestart(2000) }
         runCatching { stopTunnel() }
         runCatching { super.onDestroy() }
+    }
+
+    private fun scheduleRestart(delayMs: Long) {
+        val intent = Intent(applicationContext, BtVpnService::class.java).setAction(ACTION_START)
+        val pending = PendingIntent.getService(
+            applicationContext, 99, intent,
+            PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val alarm = getSystemService(ALARM_SERVICE) as AlarmManager
+        alarm.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + delayMs, pending)
     }
 
     private fun startTunnel() {
         runCatching {
             isStopping = false
-
-            if (pfd != null) {
-                // Si ya existe TUN, no forzar estado CONNECTED aquí.
-                // El estado final lo publica BtProxy cuando el túnel real queda listo.
-                return
-            }
-
+            if (pfd != null) return
             TunnelSessionStore.setState("CONNECTING")
             startVpnForeground()
 
@@ -895,35 +734,64 @@ class BtVpnService : VpnService() {
                 runCatching {
                     val clientId = TunnelPrefs.getOrCreateClientId(this@BtVpnService)
 
-                    val builder = Builder()
-                        .setSession("Nexora")
-                        .addAddress("198.18.0.1", 30)
-                        .addAddress("fc00::1", 126)
-                        .addRoute("0.0.0.0", 0)
-                        .addRoute("::", 0)
-                        .addDnsServer("8.8.8.8")
-                        .addDnsServer("1.1.1.1")
-                        .addDnsServer("2001:4860:4860::8888")
-                        .addDnsServer("2606:4700:4700::1111")
-                        .setMtu(1300)
-
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        runCatching { builder.allowFamily(OsConstants.AF_INET) }
-                        runCatching { builder.allowFamily(OsConstants.AF_INET6) }
+                    BtProxy.onFatalAuthError = {
+                        runCatching { stopTunnel() }
                     }
 
-                    runCatching { configureAllowedApplications(builder) }
+                    BtProxy.onTunnelReady = {
+                        thread(isDaemon = true, name = "vpn-establish") {
+                            runCatching {
+                                val builder = Builder()
+                                    .setSession("Nexora")
+                                    .addAddress("198.18.0.1", 30)
+                                    .addAddress("fc00::1", 126)
+                                    .addRoute("0.0.0.0", 0)
+                                    .addRoute("::", 0)
+                                    .addDnsServer("8.8.8.8")
+                                    .addDnsServer("1.1.1.1")
+                                    .addDnsServer("2001:4860:4860::8888")
+                                    .addDnsServer("2606:4700:4700::1111")
+                                    .setMtu(1300)
 
-                    val established = runCatching { builder.establish() }.getOrNull()
-                    if (established == null) {
-                        TunnelSessionStore.setState("ERROR")
-                        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
-                        runCatching { stopSelf() }
-                        return@runCatching
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                    runCatching { builder.allowFamily(OsConstants.AF_INET) }
+                                    runCatching { builder.allowFamily(OsConstants.AF_INET6) }
+                                }
+
+                                runCatching { configureAllowedApplications(builder) }
+
+                                val established = runCatching { builder.establish() }.getOrNull()
+                                if (established == null) {
+                                    TunnelSessionStore.setState("ERROR")
+                                    runCatching { BtProxy.stop() }
+                                    runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+                                    runCatching { stopSelf() }
+                                    return@runCatching
+                                }
+
+                                pfd = established
+                                runCatching { registerNetworkReceiver() }
+
+                                val rawFd = runCatching {
+                                    ParcelFileDescriptor.dup(established.fileDescriptor).detachFd()
+                                }.getOrNull() ?: run {
+                                    TunnelSessionStore.setState("ERROR")
+                                    return@runCatching
+                                }
+
+                                rawTunFd = rawFd
+                                val configFile = runCatching { writeHevConfig() }.getOrNull() ?: return@runCatching
+
+                                thread(isDaemon = true, name = "hev-main") {
+                                    runCatching { HevBridge.start(configFile.absolutePath, rawFd) }
+                                    runCatching { closeRawTunFd() }
+                                }
+                            }.onFailure { e ->
+                                android.util.Log.e("BTCRASH", "vpn-establish crash: ${e.message}")
+                                TunnelSessionStore.setState("ERROR")
+                            }
+                        }
                     }
-
-                    pfd = established
-                    runCatching { registerNetworkReceiver() }
 
                     BtProxy.start(
                         ctx = this@BtVpnService,
@@ -931,22 +799,6 @@ class BtVpnService : VpnService() {
                         protectSocket = { socket -> runCatching { protect(socket) } }
                     )
 
-                    val rawFd = runCatching {
-                        ParcelFileDescriptor.dup(established.fileDescriptor).detachFd()
-                    }.getOrNull()
-
-                    if (rawFd == null) {
-                        TunnelSessionStore.setState("ERROR")
-                        return@runCatching
-                    }
-
-                    rawTunFd = rawFd
-                    val configFile = runCatching { writeHevConfig() }.getOrNull() ?: return@runCatching
-
-                    thread(isDaemon = true, name = "hev-main") {
-                        runCatching { HevBridge.start(configFile.absolutePath, rawFd) }
-                        runCatching { closeRawTunFd() }
-                    }
                 }.onFailure { e ->
                     android.util.Log.e("BTCRASH", "vpn-start-sequence crash: ${e.message}")
                     TunnelSessionStore.setState("ERROR")
@@ -960,26 +812,15 @@ class BtVpnService : VpnService() {
     private fun startVpnForeground() {
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val channel = NotificationChannel(
-                    VPN_CHANNEL_ID, "Nexora VPN",
-                    NotificationManager.IMPORTANCE_LOW
-                ).apply {
+                val channel = NotificationChannel(VPN_CHANNEL_ID, "Nexora VPN", NotificationManager.IMPORTANCE_LOW).apply {
                     description = "Servicio VPN activo"
                     setShowBadge(false)
                     lockscreenVisibility = Notification.VISIBILITY_PUBLIC
                 }
-                getSystemService(NotificationManager::class.java)
-                    .createNotificationChannel(channel)
+                getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
             }
-            val openAppIntent = PendingIntent.getActivity(
-                this, 0, Intent(this, MainActivity::class.java),
-                PendingIntent.FLAG_IMMUTABLE
-            )
-            val disconnectIntent = PendingIntent.getService(
-                this, 0,
-                Intent(this, BtVpnService::class.java).setAction(ACTION_STOP),
-                PendingIntent.FLAG_IMMUTABLE
-            )
+            val openAppIntent = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+            val disconnectIntent = PendingIntent.getService(this, 0, Intent(this, BtVpnService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE)
             val notification = NotificationCompat.Builder(this, VPN_CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_lock_lock)
                 .setContentTitle("Nexora activo")
@@ -990,10 +831,7 @@ class BtVpnService : VpnService() {
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
                 .setContentIntent(openAppIntent)
-                .addAction(
-                    android.R.drawable.ic_menu_close_clear_cancel,
-                    "Desconectar", disconnectIntent
-                )
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Desconectar", disconnectIntent)
                 .build()
             startForeground(VPN_NOTIFICATION_ID, notification)
         }
@@ -1007,12 +845,7 @@ class BtVpnService : VpnService() {
         runCatching { closeRawTunFd() }
         runCatching { pfd?.close() }
         pfd = null
-        runCatching {
-            if (networkReceiverRegistered) {
-                unregisterReceiver(networkChangeReceiver)
-                networkReceiverRegistered = false
-            }
-        }
+        runCatching { if (networkReceiverRegistered) { unregisterReceiver(networkChangeReceiver); networkReceiverRegistered = false } }
         runCatching { TunnelSessionStore.setState("DISCONNECTED") }
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         runCatching { stopSelf() }
@@ -1040,8 +873,7 @@ class BtVpnService : VpnService() {
         }
         if (includedApps.isEmpty()) {
             packageManager.getInstalledApplications(0)
-                .map { it.packageName }
-                .filter { it != packageName }
+                .map { it.packageName }.filter { it != packageName }
                 .forEach { pkg -> runCatching { builder.addDisallowedApplication(pkg) } }
             return
         }
@@ -1050,8 +882,7 @@ class BtVpnService : VpnService() {
 
     private fun writeHevConfig(): java.io.File {
         val file = java.io.File(filesDir, "hev.yml")
-        file.writeText(
-            """
+        file.writeText("""
             tunnel:
               name: trehev
               mtu: 1300
@@ -1063,8 +894,7 @@ class BtVpnService : VpnService() {
               udp: 'udp'
             misc:
               log-level: warn
-            """.trimIndent()
-        )
+            """.trimIndent())
         return file
     }
 
@@ -1076,35 +906,28 @@ class BtVpnService : VpnService() {
     }
 }
 
-// ===== From BootReceiver.kt =====
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val validActions = setOf(
-            Intent.ACTION_BOOT_COMPLETED,
-            Intent.ACTION_LOCKED_BOOT_COMPLETED,
-            "android.intent.action.QUICKBOOT_POWERON",
-            "com.htc.intent.action.QUICKBOOT_POWERON",
+            Intent.ACTION_BOOT_COMPLETED, Intent.ACTION_LOCKED_BOOT_COMPLETED,
+            "android.intent.action.QUICKBOOT_POWERON", "com.htc.intent.action.QUICKBOOT_POWERON",
             "android.intent.action.ACTION_BOOT_COMPLETED"
         )
         if (intent.action !in validActions) return
         if (!TunnelPrefs.wasConnected(context)) return
-
         val vpnIntent = Intent(context, BtVpnService::class.java).setAction(BtVpnService.ACTION_START)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(vpnIntent)
         else context.startService(vpnIntent)
     }
 }
 
-// ===== From NetworkChangeReceiver.kt =====
 class NetworkChangeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (!TunnelPrefs.wasConnected(context)) return
-
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         @Suppress("DEPRECATION")
         val isConnected = cm.activeNetworkInfo?.isConnected == true
         if (!isConnected) return
-
         val vpnIntent = Intent(context, BtVpnService::class.java).setAction(BtVpnService.ACTION_START)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(vpnIntent)
         else context.startService(vpnIntent)
