@@ -600,10 +600,7 @@ class BtVpnService : VpnService() {
                     BtProxy.onFatalError = { runCatching { stopTunnel() } }
 
                     BtProxy.onTunnelLost = {
-                        runCatching {
-                            tearDownTun()
-                            TunnelSessionStore.setState("CONNECTING")
-                        }
+                        runCatching { TunnelSessionStore.setState("CONNECTING") }
                     }
 
                     BtProxy.onTunnelConnected = {
@@ -611,11 +608,15 @@ class BtVpnService : VpnService() {
                             if (pfd == null) {
                                 thread(isDaemon = true, name = "vpn-establish") {
                                     runCatching { establishTun() }
-                                        .onFailure { e -> android.util.Log.e("BTCRASH", "vpn-establish: ${e.message}"); TunnelSessionStore.setState("ERROR") }
+                                        .onFailure { e ->
+                                            android.util.Log.e("BTCRASH", "vpn-establish: ${e.message}")
+                                            TunnelSessionStore.setState("ERROR")
+                                        }
                                 }
+                            } else {
+                                TunnelSessionStore.setState("CONNECTED")
+                                LogSink.add("🔒", "Conectado", LogLevel.SUCCESS)
                             }
-                            TunnelSessionStore.setState("CONNECTED")
-                            LogSink.add("🔒", "Conectado", LogLevel.SUCCESS)
                         }
                     }
 
@@ -653,6 +654,8 @@ class BtVpnService : VpnService() {
             runCatching { HevBridge.start(configFile.absolutePath, rawFd) }
             runCatching { closeRawTunFd() }
         }
+        TunnelSessionStore.setState("CONNECTED")
+        LogSink.add("🔒", "Conectado", LogLevel.SUCCESS)
     }
 
     private fun tearDownTun() {
