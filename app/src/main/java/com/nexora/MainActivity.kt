@@ -1,12 +1,10 @@
 package com.nexora
 
-import android.Manifest
 import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.VpnService
 import android.os.Build
@@ -18,10 +16,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nexora.ui.screens.LogViewModel
 import com.nexora.ui.screens.MainScreen
@@ -31,9 +25,6 @@ import com.nexora.ui.theme.NexoraTheme
 class MainActivity : ComponentActivity() {
 
     private val logVm: LogViewModel by viewModels()
-    private var pendingWifiDirectStart = false
-    private val wifiDirectEnabledState = mutableStateOf(BtWifiDirect.isActive)
-    private val wifiDirectPasswordState = mutableStateOf("")
 
     private val vpnPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -43,14 +34,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        wifiDirectPasswordState.value = BtWifiDirect.getSavedPassword(this)
         TunnelPrefs.setProfile(this, "normal")
         requestBatteryExemptionIfNeeded()
 
         setContent {
             NexoraTheme {
-                val session by TunnelSessionStore.stateFlow.collectAsStateWithLifecycle()
-                val logEntries by logVm.entries.collectAsStateWithLifecycle()
+                val session = TunnelSessionStore.stateFlow.collectAsStateWithLifecycle().value
+                val logEntries = logVm.entries.collectAsStateWithLifecycle().value
 
                 val vpnState = when (session.state) {
                     "CONNECTED" -> VpnState.CONNECTED
@@ -58,10 +48,6 @@ class MainActivity : ComponentActivity() {
                     "ERROR" -> VpnState.ERROR
                     else -> VpnState.IDLE
                 }
-
-                var isHotspot by rememberSaveable { mutableStateOf(TunnelPrefs.isHotspotProxyEnabled(this)) }
-                var isWifiDirect by wifiDirectEnabledState
-                var wifiPass by wifiDirectPasswordState
 
                 MainScreen(
                     state = vpnState,
@@ -82,38 +68,6 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onCopyClientId = { copyClientId() },
-                    isHotspotEnabled = isHotspot,
-                    onHotspotToggle = { enabled ->
-                        val ip = BtProxy.getHotspotIp()
-                        if (enabled && ip == null) {
-                            Toast.makeText(this, getString(R.string.hotspot_enable_first), Toast.LENGTH_SHORT).show()
-                        } else {
-                            isHotspot = enabled
-                            TunnelPrefs.setHotspotProxyEnabled(this, enabled)
-                        }
-                    },
-                    hotspotIp = BtProxy.getHotspotIp(),
-                    isWifiDirectEnabled = isWifiDirect,
-                    onWifiDirectToggle = { enabled ->
-                        if (enabled) {
-                            if (wifiPass.length < WIFI_DIRECT_MIN_PASSWORD_LEN) {
-                                Toast.makeText(this, getString(R.string.wifi_direct_password_min), Toast.LENGTH_SHORT).show()
-                            } else {
-                                BtWifiDirect.savePassword(this, wifiPass)
-                                requestWifiDirectPermissionOrStart {
-                                    BtWifiDirect.start(this) { ok -> isWifiDirect = ok }
-                                }
-                            }
-                        } else {
-                            BtWifiDirect.stop(this)
-                            isWifiDirect = false
-                        }
-                    },
-                    wifiDirectPassword = wifiPass,
-                    onWifiDirectPasswordChange = { pwd ->
-                        wifiPass = pwd
-                        if (pwd.length >= WIFI_DIRECT_MIN_PASSWORD_LEN) BtWifiDirect.savePassword(this, pwd)
-                    },
                     onIgnoreBatteryClick = {
                         val requested = requestBatteryOptimizationExemption()
                         if (!requested) openBatterySettings()
@@ -121,26 +75,6 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
-    }
-
-    @Deprecated("Deprecated in Java")
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode != REQ_WIFI_DIRECT_PERMISSION) return
-
-        val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
-        if (granted && pendingWifiDirectStart) {
-            pendingWifiDirectStart = false
-            BtWifiDirect.start(this) { ok -> wifiDirectEnabledState.value = ok }
-            return
-        }
-
-        pendingWifiDirectStart = false
-        Toast.makeText(this, getString(R.string.wifi_direct_permission_required), Toast.LENGTH_SHORT).show()
     }
 
     private fun startVpnWithPermission() {
@@ -166,21 +100,6 @@ class MainActivity : ComponentActivity() {
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText("client_id", clientId))
         Toast.makeText(this, getString(R.string.client_id_copied), Toast.LENGTH_SHORT).show()
-    }
-
-    private fun requestWifiDirectPermissionOrStart(onGranted: () -> Unit) {
-        val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            Manifest.permission.NEARBY_WIFI_DEVICES
-        } else {
-            Manifest.permission.ACCESS_FINE_LOCATION
-        }
-        val granted = checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
-        if (granted) {
-            onGranted()
-            return
-        }
-        pendingWifiDirectStart = true
-        requestPermissions(arrayOf(permission), REQ_WIFI_DIRECT_PERMISSION)
     }
 
     private fun requestBatteryOptimizationExemption(): Boolean {
@@ -238,10 +157,5 @@ class MainActivity : ComponentActivity() {
             "oppo", "realme", "oneplus" -> "Ajustes → Batería → Optimización de batería → Nexora → No optimizar"
             else -> "Ajustes → Batería → Optimización de batería → Nexora → No optimizar"
         }
-    }
-
-    companion object {
-        private const val WIFI_DIRECT_MIN_PASSWORD_LEN = 8
-        private const val REQ_WIFI_DIRECT_PERMISSION = 3101
     }
 }

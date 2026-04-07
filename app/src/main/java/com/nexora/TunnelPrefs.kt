@@ -7,7 +7,7 @@ object TunnelPrefs {
     private const val KEY_PROFILE = "profile"
     private const val KEY_INCLUDED_APPS = "included_apps"
     private const val KEY_CLIENT_ID = "client_id"
-    private const val KEY_HOTSPOT_PROXY = "hotspot_proxy"
+
 
     fun getProfile(ctx: Context): String =
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_PROFILE, "normal") ?: "normal"
@@ -41,12 +41,6 @@ object TunnelPrefs {
         return generated
     }
 
-    fun isHotspotProxyEnabled(ctx: Context): Boolean =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_HOTSPOT_PROXY, false)
-
-    fun setHotspotProxyEnabled(ctx: Context, enabled: Boolean) {
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_HOTSPOT_PROXY, enabled).apply()
-    }
 
     fun setWasConnected(ctx: Context, value: Boolean) {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean("was_connected", value).apply()

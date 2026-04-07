@@ -24,9 +24,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -63,13 +61,6 @@ fun MainScreen(
     logEntries: List<LogEntry>,
     onConnectClick: () -> Unit,
     onCopyClientId: () -> Unit,
-    isHotspotEnabled: Boolean,
-    onHotspotToggle: (Boolean) -> Unit,
-    hotspotIp: String?,
-    isWifiDirectEnabled: Boolean,
-    onWifiDirectToggle: (Boolean) -> Unit,
-    wifiDirectPassword: String,
-    onWifiDirectPasswordChange: (String) -> Unit,
     onIgnoreBatteryClick: () -> Unit
 ) {
     var showAdvanced by remember { mutableStateOf(false) }
@@ -102,13 +93,6 @@ fun MainScreen(
             AdvancedSection(
                 expanded = showAdvanced,
                 onToggle = { showAdvanced = !showAdvanced },
-                isHotspotEnabled = isHotspotEnabled,
-                onHotspotToggle = onHotspotToggle,
-                hotspotIp = hotspotIp,
-                isWifiDirectEnabled = isWifiDirectEnabled,
-                onWifiDirectToggle = onWifiDirectToggle,
-                wifiDirectPassword = wifiDirectPassword,
-                onWifiDirectPasswordChange = onWifiDirectPasswordChange,
                 onIgnoreBatteryClick = onIgnoreBatteryClick
             )
             LogPanel(logEntries = logEntries, fallbackStatus = status)
@@ -133,7 +117,7 @@ private fun HeaderSection(onCopyClientId: () -> Unit) {
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Image(
-                    painter = painterResource(R.drawable.ic_xtunnel_logo),
+                    painter = painterResource(R.drawable.ic_nexora_logo),
                     contentDescription = null,
                     modifier = Modifier
                         .size(42.dp)
@@ -228,7 +212,7 @@ private fun Orb(state: VpnState) {
             .border(2.dp, tint.copy(0.7f), CircleShape)
     ) {
         Image(
-            painter = painterResource(id = R.drawable.ic_xtunnel_logo),
+            painter = painterResource(id = R.drawable.ic_nexora_logo),
             contentDescription = null,
             modifier = Modifier.size(90.dp)
         )
@@ -273,7 +257,7 @@ private fun SessionPreviewRow() {
                 }
             }
             Text(
-                "Nuevos apartados visuales añadidos (sin lógica): Servidores, Estadísticas y Acerca de.",
+                "Apartados añadidos de forma visual para flujo de navegación y branding Nexora.",
                 fontSize = 12.sp,
                 color = Color(0xFF95A9C2)
             )
@@ -318,13 +302,6 @@ fun LogPanel(logEntries: List<LogEntry>, fallbackStatus: String) {
 private fun AdvancedSection(
     expanded: Boolean,
     onToggle: () -> Unit,
-    isHotspotEnabled: Boolean,
-    onHotspotToggle: (Boolean) -> Unit,
-    hotspotIp: String?,
-    isWifiDirectEnabled: Boolean,
-    onWifiDirectToggle: (Boolean) -> Unit,
-    wifiDirectPassword: String,
-    onWifiDirectPasswordChange: (String) -> Unit,
     onIgnoreBatteryClick: () -> Unit
 ) {
     Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), color = Color(0xFF081B33)) {
@@ -339,27 +316,9 @@ private fun AdvancedSection(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Spacer(Modifier.height(8.dp))
                     Divider(color = Color(0xFF143255))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text("🔥 Compartir internet por proxy", color = Color(0xFFEAF2FF))
-                        Switch(checked = isHotspotEnabled, onCheckedChange = onHotspotToggle)
-                    }
-                    if (isHotspotEnabled && hotspotIp != null) {
-                        Text("SOCKS5: $hotspotIp:1080", fontSize = 12.sp, color = Color(0xFF92A7C4))
-                        Text("HTTP: $hotspotIp:8282", fontSize = 12.sp, color = Color(0xFF92A7C4))
-                    }
-                    Divider(color = Color(0xFF143255))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text("📺 WiFi Direct para Smart TV", color = Color(0xFFEAF2FF))
-                        Switch(checked = isWifiDirectEnabled, onCheckedChange = onWifiDirectToggle)
-                    }
-                    if (isWifiDirectEnabled) {
-                        OutlinedTextField(
-                            value = wifiDirectPassword,
-                            onValueChange = onWifiDirectPasswordChange,
-                            label = { Text("Contraseña WiFi") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
+                    Text("• Protocolo: VLESS (Optimizado)", color = Color(0xFF92A7C4))
+                    Text("• Modo: Automático", color = Color(0xFF92A7C4))
+                    Text("• Reconexión automática: Activada", color = Color(0xFF92A7C4))
                     Divider(color = Color(0xFF143255))
                     Text(
                         text = "🔋 Quitar restricción de batería",
