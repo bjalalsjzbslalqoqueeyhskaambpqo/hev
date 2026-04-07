@@ -94,7 +94,6 @@ fun MainScreen(
         ) {
             HeaderSection(onCopyClientId)
             ConnectionPanel(state, latencyMs, daysLeft, clientName, connectedSince, onConnectClick)
-            ServersPreviewCard()
             AdvancedSection(
                 expanded = showAdvanced,
                 onToggle = { showAdvanced = !showAdvanced },
@@ -238,35 +237,6 @@ private fun RowScope.InfoChip(icon: String, label: String) {
             Text(icon)
             Spacer(Modifier.width(4.dp))
             Text(label, fontSize = 12.sp, color = Color(0xFFE4EAF5), maxLines = 1)
-        }
-    }
-}
-
-@Composable
-private fun ServersPreviewCard() {
-    Surface(color = Color(0xFF06162E), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("SERVIDORES", color = Color(0xFF00D4FF), fontWeight = FontWeight.Bold)
-            Text("Vista previa visual (sin funcionalidad aún)", color = Color(0xFF95A9C2), fontSize = 12.sp)
-
-            listOf(
-                "Nexora Ultra 01" to "62ms",
-                "Nexora Ultra 02" to "75ms",
-                "Nexora Ultra 03" to "88ms"
-            ).forEach { (name, ping) ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0xFF0A223C))
-                        .padding(horizontal = 10.dp, vertical = 9.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(name, color = Color(0xFFEAF2FF), fontSize = 12.sp)
-                    Text(ping, color = Color(0xFF7DE1FF), fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                }
-            }
         }
     }
 }
