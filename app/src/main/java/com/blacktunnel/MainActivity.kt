@@ -84,7 +84,7 @@ class MainActivity : ComponentActivity() {
                     onCopyClientId = { copyClientId() },
                     isHotspotEnabled = isHotspot,
                     onHotspotToggle = { enabled ->
-                        val ip = BtProxy.getHotspotIp()
+                        val ip = BtVpnService.resolveHotspotIp()
                         if (enabled && ip == null) {
                             Toast.makeText(this, getString(R.string.hotspot_enable_first), Toast.LENGTH_SHORT).show()
                         } else {
@@ -92,7 +92,7 @@ class MainActivity : ComponentActivity() {
                             TunnelPrefs.setHotspotProxyEnabled(this, enabled)
                         }
                     },
-                    hotspotIp = BtProxy.getHotspotIp(),
+                    hotspotIp = BtVpnService.resolveHotspotIp(),
                     isWifiDirectEnabled = isWifiDirect,
                     onWifiDirectToggle = { enabled ->
                         if (enabled) {
@@ -154,11 +154,11 @@ class MainActivity : ComponentActivity() {
 
     private fun startVpn() {
         TunnelSessionStore.setState("CONNECTING")
-        startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_START))
+        startService(BtVpnService.startIntent(this))
     }
 
     private fun stopVpn() {
-        startService(Intent(this, BtVpnService::class.java).setAction(BtVpnService.ACTION_STOP))
+        startService(BtVpnService.stopIntent(this))
     }
 
     private fun copyClientId() {

@@ -17,7 +17,7 @@ class BootReceiver : BroadcastReceiver() {
         if (intent.action !in validActions) return
         if (!TunnelPrefs.wasConnected(context)) return
 
-        val vpnIntent = Intent(context, BtVpnService::class.java).setAction(BtVpnService.ACTION_START)
+        val vpnIntent = BtVpnService.startIntent(context)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(vpnIntent)
         else context.startService(vpnIntent)
     }
