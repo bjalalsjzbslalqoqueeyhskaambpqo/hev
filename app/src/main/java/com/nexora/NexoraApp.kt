@@ -76,8 +76,11 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.ViewModel
@@ -1598,7 +1601,30 @@ fun MainScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("Nexora", color = MaterialTheme.colorScheme.onSurface, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Column {
+                    Text(
+                        "NEXORA",
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 30.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        letterSpacing = 0.08.em,
+                        style = TextStyle(
+                            shadow = androidx.compose.ui.graphics.Shadow(
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+                                blurRadius = 22f
+                            )
+                        )
+                    )
+                    Text(
+                        "CONECTIVIDAD QUE TE DA VENTAJA",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 0.04.em,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
                 IconButton(onClick = onCopyClientId) {
                     Icon(Icons.Default.CopyAll, contentDescription = "Copiar ID", tint = MaterialTheme.colorScheme.primary)
                 }
@@ -1801,10 +1827,11 @@ private fun formatConnectedSince(connectedSince: Long): String {
 
 // ===== from app/src/main/java/com/blacktunnel/ui/theme/Theme.kt =====
 val NexoraDark = darkColorScheme(
-    primary = Color(0xFF00E5FF),
-    background = Color(0xFF0A0E1A),
-    surface = Color(0xFF111827),
-    onSurface = Color(0xFFE2E8F0),
+    primary = Color(0xFF00D4FF),
+    background = Color(0xFF0B1220),
+    surface = Color(0xFF121A2B),
+    onSurface = Color(0xFFE6ECF5),
+    onSurfaceVariant = Color(0xFF8A94A6),
     error = Color(0xFFFF4C6A)
 )
 
