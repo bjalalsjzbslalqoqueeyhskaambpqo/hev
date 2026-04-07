@@ -418,16 +418,21 @@ object BtProxy {
         val delay = (reconnectAttempts * RECONNECT_DELAY_MS).coerceAtMost(30000L)
         TunnelSessionStore.setState("CONNECTING")
         thread(isDaemon = true, name = "btproxy-reconnect") {
-            Thread.sleep(delay)
-            if (!running) return@thread
-            val ctx = savedCtx ?: return@thread
-            val protect = savedProtect ?: return@thread
-            runCatching { tunnelSocket?.close() }
-            tunnelSocket = null
-            tunnelOut = null
-            waitForNetwork(ctx)
-            if (!running) return@thread
-            connectTunnel(ctx, protect)
+            runCatching {
+                Thread.sleep(delay)
+                if (!running) return@thread
+                val ctx = savedCtx ?: return@thread
+                val protect = savedProtect ?: return@thread
+                runCatching { tunnelSocket?.close() }
+                tunnelSocket = null
+                tunnelOut = null
+                waitForNetwork(ctx)
+                if (!running) return@thread
+                connectTunnel(ctx, protect)
+            }.onFailure { e ->
+                android.util.Log.e("BTCRASH", "btproxy-reconnect crash: ${e.message}")
+                if (running && !authFatalError) scheduleReconnect()
+            }
         }
     }
 
@@ -605,26 +610,50 @@ object BtProxy {
 
     private fun waitForNetwork(ctx: Context) {
         val cm = ctx.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+
+        // Verificar si ya hay red antes de esperar
         if (isNetworkValidated(cm)) return
+
         LogSink.add("📡", "Sin red · esperando señal...", LogLevel.WARN)
         TunnelSessionStore.setState("CONNECTING")
+
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
             val latch = java.util.concurrent.CountDownLatch(1)
             val callback = object : android.net.ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: android.net.Network) { latch.countDown() }
-                override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) {
+                override fun onAvailable(network: android.net.Network) {
+                    // No contar down aquí — esperar a que esté VALIDATED
+                }
+                override fun onCapabilitiesChanged(
+                    network: android.net.Network,
+                    caps: android.net.NetworkCapabilities
+                ) {
                     if (caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                        caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)) latch.countDown()
+                        caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                        latch.countDown()
+                    }
+                }
+                override fun onLost(network: android.net.Network) {
+                    // Red perdida — seguir esperando
                 }
             }
             val request = android.net.NetworkRequest.Builder()
-                .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET).build()
+                .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
             runCatching { cm.registerNetworkCallback(request, callback) }
-            try { while (running && latch.count > 0) latch.await(2, java.util.concurrent.TimeUnit.SECONDS) }
-            finally { runCatching { cm.unregisterNetworkCallback(callback) } }
+            try {
+                // Polling de respaldo cada 3s por si el callback no dispara
+                // (caso de datos apagados/prendidos en Android < 9)
+                while (running && latch.count > 0) {
+                    latch.await(3, java.util.concurrent.TimeUnit.SECONDS)
+                    if (latch.count > 0 && isNetworkValidated(cm)) latch.countDown()
+                }
+            } finally {
+                runCatching { cm.unregisterNetworkCallback(callback) }
+            }
         } else {
             while (running && !isNetworkValidated(cm)) Thread.sleep(2000)
         }
+
         if (running) Thread.sleep(500)
     }
 
