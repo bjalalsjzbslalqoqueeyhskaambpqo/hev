@@ -5,16 +5,20 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.net.ConnectivityManager
 import android.net.VpnService
+import android.net.wifi.p2p.WifiP2pConfig
+import android.net.wifi.p2p.WifiP2pManager
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.system.OsConstants
 import androidx.core.app.NotificationCompat
+import com.blacktunnel.ui.screens.LogEntry
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
@@ -25,6 +29,9 @@ import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 class BtVpnService : VpnService() {
 
@@ -926,4 +933,299 @@ object HevBridge {
 
     external fun start(configPath: String, tunFd: Int): Int
     external fun stop()
+}
+
+
+object TunnelPrefs {
+    private const val PREFS = "tunnel_prefs"
+    private const val KEY_PROFILE = "profile"
+    private const val KEY_INCLUDED_APPS = "included_apps"
+    private const val KEY_CLIENT_ID = "client_id"
+    private const val KEY_HOTSPOT_PROXY = "hotspot_proxy"
+
+    fun getProfile(ctx: Context): String =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_PROFILE, "normal") ?: "normal"
+
+    fun setProfile(ctx: Context, profile: String) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_PROFILE, profile).apply()
+    }
+
+    fun getIncludedApps(ctx: Context): List<String> {
+        val raw = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_INCLUDED_APPS, "")
+            .orEmpty()
+        return raw.split(",")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+    }
+
+    fun setIncludedApps(ctx: Context, packages: List<String>) {
+        val raw = packages.map { it.trim() }.filter { it.isNotEmpty() }.distinct().joinToString(",")
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_INCLUDED_APPS, raw).apply()
+    }
+
+    fun getOrCreateClientId(ctx: Context): String {
+        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val current = prefs.getString(KEY_CLIENT_ID, "").orEmpty().trim()
+        if (current.isNotEmpty()) return current
+
+        val generated = java.util.UUID.randomUUID().toString()
+        prefs.edit().putString(KEY_CLIENT_ID, generated).apply()
+        return generated
+    }
+
+    fun isHotspotProxyEnabled(ctx: Context): Boolean =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_HOTSPOT_PROXY, false)
+
+    fun setHotspotProxyEnabled(ctx: Context, enabled: Boolean) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_HOTSPOT_PROXY, enabled).apply()
+    }
+
+    fun setWasConnected(ctx: Context, value: Boolean) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean("was_connected", value).apply()
+    }
+
+    fun wasConnected(ctx: Context): Boolean =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("was_connected", false)
+
+    fun setOnboardingShown(ctx: Context) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean("onboarding_shown", true).apply()
+    }
+
+    fun isOnboardingShown(ctx: Context): Boolean =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("onboarding_shown", false)
+
+}
+
+
+data class TunnelSessionSnapshot(
+    val state: String = "DISCONNECTED",
+    val status: String = "-",
+    val name: String = "-",
+    val daysLeft: String = "-",
+    val latencyMs: Long = -1L,
+    val connectedSince: Long = 0L
+)
+
+object TunnelSessionStore {
+    private val lock = Any()
+    private var snapshot = TunnelSessionSnapshot()
+    private val _stateFlow = MutableStateFlow(snapshot)
+    val stateFlow: StateFlow<TunnelSessionSnapshot> = _stateFlow.asStateFlow()
+    private val listeners = mutableSetOf<(TunnelSessionSnapshot) -> Unit>()
+
+    fun setState(state: String) {
+        synchronized(lock) {
+            snapshot = snapshot.copy(
+                state = state,
+                connectedSince = when (state) {
+                    "CONNECTED" -> System.currentTimeMillis()
+                    "CONNECTING" -> 0L
+                    "DISCONNECTED", "ERROR" -> 0L
+                    else -> snapshot.connectedSince
+                }
+            )
+        }
+        notifyListeners()
+    }
+
+    fun setLatency(latencyMs: Long) {
+        synchronized(lock) { snapshot = snapshot.copy(latencyMs = latencyMs) }
+        notifyListeners()
+    }
+
+    fun updateFromHeaders(headers: Map<String, String>) {
+        synchronized(lock) {
+            snapshot = snapshot.copy(
+                status = headers["X-Status"] ?: snapshot.status,
+                name = headers["X-Name"] ?: snapshot.name,
+                daysLeft = headers["X-Days-Left"] ?: snapshot.daysLeft
+            )
+        }
+        notifyListeners()
+    }
+
+    fun reset() {
+        synchronized(lock) { snapshot = TunnelSessionSnapshot() }
+        notifyListeners()
+    }
+
+    fun current(): TunnelSessionSnapshot = synchronized(lock) { snapshot }
+
+    fun addListener(listener: (TunnelSessionSnapshot) -> Unit) {
+        synchronized(lock) { listeners.add(listener) }
+        listener(current())
+    }
+
+    fun removeListener(listener: (TunnelSessionSnapshot) -> Unit) {
+        synchronized(lock) { listeners.remove(listener) }
+    }
+
+    private fun notifyListeners() {
+        val current = current()
+        _stateFlow.value = current
+        val activeListeners = synchronized(lock) { listeners.toList() }
+        activeListeners.forEach { it(current) }
+    }
+}
+
+
+object LogSink {
+    private val _entries = MutableStateFlow<List<LogEntry>>(emptyList())
+    val entries = _entries.asStateFlow()
+
+    fun clear() {
+        _entries.value = emptyList()
+    }
+
+    fun add(icon: String, text: String, level: LogLevel = LogLevel.INFO) {
+        val entry = LogEntry(icon = icon, text = text, color = level.color)
+        _entries.value = (_entries.value + entry).takeLast(10)
+    }
+}
+
+enum class LogLevel(val color: androidx.compose.ui.graphics.Color) {
+    INFO(androidx.compose.ui.graphics.Color(0xFF94A3B8)),
+    OK(androidx.compose.ui.graphics.Color(0xFFE2E8F0)),
+    SUCCESS(androidx.compose.ui.graphics.Color(0xFF4ADE80)),
+    WARN(androidx.compose.ui.graphics.Color(0xFFFBBF24)),
+    ERROR(androidx.compose.ui.graphics.Color(0xFFFF4C6A))
+}
+
+
+object BtWifiDirect {
+
+    private const val GATEWAY_IP = "192.168.49.1"
+    private const val SOCKS5_PORT = 1080
+    private const val HTTP_PORT = 8282
+
+    @Volatile
+    var isActive = false
+        private set
+
+    private var manager: WifiP2pManager? = null
+    private var channel: WifiP2pManager.Channel? = null
+    private var receiver: BroadcastReceiver? = null
+
+    fun getSavedPassword(ctx: Context): String {
+        return ctx.getSharedPreferences("bt_prefs", Context.MODE_PRIVATE)
+            .getString("wifidirect_pass", "12345678") ?: "12345678"
+    }
+
+    fun savePassword(ctx: Context, password: String) {
+        ctx.getSharedPreferences("bt_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .putString("wifidirect_pass", password)
+            .apply()
+    }
+
+    fun start(ctx: Context, onResult: (success: Boolean) -> Unit) {
+        val appCtx = ctx.applicationContext
+        manager = appCtx.getSystemService(Context.WIFI_P2P_SERVICE) as WifiP2pManager
+        channel = manager?.initialize(appCtx, appCtx.mainLooper, null)
+        val activeChannel = channel ?: run {
+            isActive = false
+            onResult(false)
+            return
+        }
+
+        receiver?.let {
+            runCatching { appCtx.unregisterReceiver(it) }
+        }
+        receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action == WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION) {
+                    manager?.requestGroupInfo(activeChannel) { group ->
+                        isActive = group != null && group.isGroupOwner
+                    }
+                }
+            }
+        }
+        appCtx.registerReceiver(receiver, IntentFilter().apply {
+            addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
+        })
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val config = WifiP2pConfig.Builder()
+                .setNetworkName("DIRECT-XTunnel")
+                .setPassphrase(getSavedPassword(appCtx))
+                .build()
+            manager?.createGroup(activeChannel, config, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    isActive = true
+                    onResult(true)
+                }
+
+                override fun onFailure(reason: Int) {
+                    isActive = false
+                    onResult(false)
+                }
+            })
+        } else {
+            manager?.createGroup(activeChannel, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    isActive = true
+                    onResult(true)
+                }
+
+                override fun onFailure(reason: Int) {
+                    isActive = false
+                    onResult(false)
+                }
+            })
+        }
+    }
+
+    fun stop(ctx: Context) {
+        val appCtx = ctx.applicationContext
+        val activeChannel = channel
+        if (activeChannel != null) manager?.removeGroup(activeChannel, null)
+        receiver?.let { runCatching { appCtx.unregisterReceiver(it) } }
+        receiver = null
+        isActive = false
+    }
+
+    fun getConnectionInfo(ctx: Context) = mapOf(
+        "ssid" to "DIRECT-XTunnel",
+        "password" to getSavedPassword(ctx),
+        "ip" to GATEWAY_IP,
+        "socks5" to SOCKS5_PORT,
+        "http" to HTTP_PORT
+    )
+}
+
+
+class NetworkChangeReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (!TunnelPrefs.wasConnected(context)) return
+
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        @Suppress("DEPRECATION")
+        val isConnected = cm.activeNetworkInfo?.isConnected == true
+        if (!isConnected) return
+
+        val vpnIntent = BtVpnService.startIntent(context)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(vpnIntent)
+        else context.startService(vpnIntent)
+    }
+}
+
+
+class BootReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val validActions = setOf(
+            Intent.ACTION_BOOT_COMPLETED,
+            Intent.ACTION_LOCKED_BOOT_COMPLETED,
+            "android.intent.action.QUICKBOOT_POWERON",
+            "com.htc.intent.action.QUICKBOOT_POWERON",
+            "android.intent.action.ACTION_BOOT_COMPLETED"
+        )
+        if (intent.action !in validActions) return
+        if (!TunnelPrefs.wasConnected(context)) return
+
+        val vpnIntent = BtVpnService.startIntent(context)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(vpnIntent)
+        else context.startService(vpnIntent)
+    }
 }
