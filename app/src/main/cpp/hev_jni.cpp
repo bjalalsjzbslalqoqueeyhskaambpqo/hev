@@ -18,7 +18,7 @@ static bool load_hev() {
     return fn_main && fn_quit;
 }
 
-extern "C" JNIEXPORT jint JNICALL Java_com_blacktunnel_HevBridge_start(JNIEnv *env, jclass,
+extern "C" JNIEXPORT jint JNICALL Java_com_nexora_HevBridge_start(JNIEnv *env, jclass,
                                                                           jstring path,
                                                                           jint fd) {
     if (!load_hev()) return -1;
@@ -29,6 +29,6 @@ extern "C" JNIEXPORT jint JNICALL Java_com_blacktunnel_HevBridge_start(JNIEnv *e
     return r;
 }
 
-extern "C" JNIEXPORT void JNICALL Java_com_blacktunnel_HevBridge_stop(JNIEnv *, jclass) {
+extern "C" JNIEXPORT void JNICALL Java_com_nexora_HevBridge_stop(JNIEnv *, jclass) {
     if (fn_quit) fn_quit();
 }

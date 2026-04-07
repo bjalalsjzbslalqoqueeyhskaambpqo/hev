@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.blacktunnel"
+    namespace = "com.nexora"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.blacktunnel"
+        applicationId = "com.nexora"
         minSdk = 26
         targetSdk = 34
         versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1

@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "BlackTunnel"
+rootProject.name = "Nexora"
 include(":app")
