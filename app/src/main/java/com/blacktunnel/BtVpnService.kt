@@ -192,6 +192,7 @@ class BtVpnService : VpnService() {
     }
 
     internal fun tearDownTunLayer() {
+        TunnelSessionStore.setState("CONNECTING")
         runCatching { HevBridge.stop() }
         runCatching { closeRawTunFd() }
         runCatching { pfd?.close() }
@@ -247,6 +248,7 @@ class BtVpnService : VpnService() {
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 if (!TunnelPrefs.wasConnected(this@BtVpnService)) return
+                if (pfd != null) return
                 val vpnIntent = startIntent(this@BtVpnService)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(vpnIntent)
                 else startService(vpnIntent)
@@ -357,6 +359,7 @@ object BtProxy {
     private const val SOCKET_CONNECT_TIMEOUT_MS = 10_000
     private const val HANDSHAKE_TIMEOUT_MS = 8000L
     private const val NETWORK_WAIT_TIMEOUT_MS = 120_000L
+    private const val NETWORK_POLL_INTERVAL_MS = 2_000L
 
     private const val DNS_TTL_MS = 30 * 60 * 1000L
     @Volatile private var cachedAddresses: List<InetAddress> = emptyList()
@@ -727,14 +730,14 @@ object BtProxy {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             val callback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    if (isNetworkValidated(cm)) latch.countDown()
+                }
                 override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
                     if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
                         caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
                         latch.countDown()
                     }
-                }
-                override fun onAvailable(network: Network) {
-                    if (isNetworkValidated(cm)) latch.countDown()
                 }
             }
             val request = NetworkRequest.Builder()
@@ -742,7 +745,11 @@ object BtProxy {
                 .build()
             runCatching { cm.registerNetworkCallback(request, callback) }
             try {
-                latch.await(NETWORK_WAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                val deadline = System.currentTimeMillis() + NETWORK_WAIT_TIMEOUT_MS
+                while (System.currentTimeMillis() < deadline && running) {
+                    if (latch.await(NETWORK_POLL_INTERVAL_MS, TimeUnit.MILLISECONDS)) break
+                    if (isNetworkValidated(cm)) break
+                }
             } finally {
                 runCatching { cm.unregisterNetworkCallback(callback) }
             }
@@ -750,13 +757,17 @@ object BtProxy {
             val receiver = object : BroadcastReceiver() {
                 override fun onReceive(context: Context, intent: Intent) {
                     @Suppress("DEPRECATION")
-                    if (cm.activeNetworkInfo?.isConnected == true) latch.countDown()
+                    if (cm.activeNetworkInfo?.isConnected == true && isNetworkValidated(cm)) latch.countDown()
                 }
             }
             val filter = IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION)
             ctx.registerReceiver(receiver, filter)
             try {
-                latch.await(NETWORK_WAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                val deadline = System.currentTimeMillis() + NETWORK_WAIT_TIMEOUT_MS
+                while (System.currentTimeMillis() < deadline && running) {
+                    if (latch.await(NETWORK_POLL_INTERVAL_MS, TimeUnit.MILLISECONDS)) break
+                    if (isNetworkValidated(cm)) break
+                }
             } finally {
                 runCatching { ctx.unregisterReceiver(receiver) }
             }
@@ -992,6 +1003,7 @@ object TunnelSessionStore {
     private var snapshot = TunnelSessionSnapshot()
     private val _stateFlow = MutableStateFlow(snapshot)
     val stateFlow: StateFlow<TunnelSessionSnapshot> = _stateFlow.asStateFlow()
+
     private val listeners = mutableSetOf<(TunnelSessionSnapshot) -> Unit>()
 
     fun setState(state: String) {
