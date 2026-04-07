@@ -108,6 +108,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 
+
 // ===== from app/src/main/java/com/blacktunnel/BootReceiver.kt =====
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -146,8 +147,8 @@ object BtProxy {
     private const val RECONNECT_DELAY_MS = 6000L
     private const val MAX_RECONNECT_ATTEMPTS = 10
 
-    // ── DNS cache ─────────────────────────────────────────────────────────────
-    private const val DNS_TTL_MS = 30 * 60 * 1000L // 30 minutos
+    private const val DNS_TTL_MS = 30 * 60 * 1000L
+
     @Volatile private var cachedAddresses: List<InetAddress> = emptyList()
     @Volatile private var cacheTimestamp = 0L
 
@@ -170,7 +171,6 @@ object BtProxy {
         cachedAddresses = emptyList()
         cacheTimestamp = 0L
     }
-    // ─────────────────────────────────────────────────────────────────────────
 
     @Volatile private var running = false
     @Volatile private var currentClientId = ""
@@ -224,6 +224,19 @@ object BtProxy {
         TunnelSessionStore.reset()
     }
 
+    private fun killSubprocesses() {
+        xrayProcess?.let { process ->
+            process.destroy()
+            if (process.isAlive) process.destroyForcibly()
+        }
+        xrayProcess = null
+        runCatching { bridgeServer?.close() }
+        bridgeServer = null
+        streams.values.forEach { runCatching { it.close() } }
+        streams.clear()
+        nextStreamId.set(1)
+    }
+
     private fun connectTunnel(ctx: Context, protectSocket: (Socket) -> Unit) {
         val tunnel = openTunnel(protectSocket)
         if (tunnel == null) {
@@ -242,6 +255,7 @@ object BtProxy {
         tunnelOut = DataOutputStream(tunnel.getOutputStream())
         startTunnelReader(tunnel, ctx, protectSocket)
         startKeepalive()
+
         if (bridgeServer == null) {
             startTunnelBridge()
             startXray(ctx)
@@ -271,6 +285,9 @@ object BtProxy {
         }
         val delay = (reconnectAttempts * RECONNECT_DELAY_MS).coerceAtMost(30000L)
         TunnelSessionStore.setState("CONNECTING")
+
+        killSubprocesses()
+
         thread(isDaemon = true, name = "btproxy-reconnect") {
             Thread.sleep(delay)
             if (!running) return@thread
@@ -279,8 +296,6 @@ object BtProxy {
             runCatching { tunnelSocket?.close() }
             tunnelSocket = null
             tunnelOut = null
-            // Esperar a que la red esté realmente estable antes de reconectar
-            // Motorola y otros hacen un breve periodo de red inestable al volver la señal
             waitForNetwork(ctx)
             if (!running) return@thread
             connectTunnel(ctx, protect)
@@ -624,7 +639,6 @@ object BtProxy {
                         authFatalError = true
                         TunnelSessionStore.setState("ERROR")
                         stop()
-                        stop()
                     }
                     else -> {
                         TunnelSessionStore.setState("CONNECTING")
@@ -683,7 +697,6 @@ object BtProxy {
             }.getOrNull()
             if (socket != null) return socket
         }
-        // Todos los candidatos fallaron — limpiar cache para forzar re-resolución
         clearDnsCache()
         return null
     }
@@ -822,7 +835,6 @@ class BtVpnService : VpnService() {
             isStopping = false
 
             if (pfd != null) {
-                TunnelSessionStore.setState("CONNECTED")
                 return
             }
 
@@ -1450,7 +1462,6 @@ object TunnelPrefs {
 
     fun isOnboardingShown(ctx: Context): Boolean =
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("onboarding_shown", false)
-
 }
 
 
