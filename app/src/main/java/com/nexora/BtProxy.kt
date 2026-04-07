@@ -129,6 +129,8 @@ object BtProxy {
             startTunnelBridge()
             startXray(ctx)
         }
+        TunnelSessionStore.setState("CONNECTED")
+        LogSink.add("🔒", "Conectado: túnel + VPN + motor listos", LogLevel.SUCCESS)
     }
 
     private fun startKeepalive() {
@@ -539,8 +541,7 @@ object BtProxy {
             val latencyMs = System.currentTimeMillis() - pingStart
             val totalMs = System.currentTimeMillis() - totalStart
             TunnelSessionStore.setLatency(latencyMs)
-            TunnelSessionStore.setState("CONNECTED")
-            LogSink.add("🔒", "Conectado · ${latencyMs}ms · Total ${totalMs}ms", LogLevel.SUCCESS)
+            LogSink.add("🔐", "Túnel autenticado · ${latencyMs}ms · Total ${totalMs}ms", LogLevel.OK)
             socket.soTimeout = 0
             socket
         } catch (_: Exception) {
