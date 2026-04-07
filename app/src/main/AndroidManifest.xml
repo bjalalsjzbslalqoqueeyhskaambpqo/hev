@@ -22,8 +22,8 @@
     <application
         android:allowBackup="true"
         android:extractNativeLibs="true"
-        android:icon="@drawable/ic_xtunnel_logo"
-        android:roundIcon="@drawable/ic_xtunnel_logo"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:theme="@style/Theme.Nexora">
         <activity

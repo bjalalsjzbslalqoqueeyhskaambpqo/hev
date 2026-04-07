@@ -1674,7 +1674,7 @@ private fun Orb(state: VpnState) {
             .background(Brush.radialGradient(listOf(tint.copy(0.25f), Color.Transparent)))
     ) {
         Image(
-            painter = painterResource(id = R.drawable.ic_xtunnel_logo),
+            painter = painterResource(id = R.drawable.ic_nexora_logo),
             contentDescription = null,
             modifier = Modifier.size(92.dp)
         )
