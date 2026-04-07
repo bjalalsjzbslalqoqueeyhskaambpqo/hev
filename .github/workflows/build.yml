@@ -29,6 +29,21 @@ jobs:
           curl -L "https://github.com/bjalalsjzbslalqoqueeyhskaambpqo/hev/blob/release-arm64/libxray.so?raw=1" \
             -o app/src/main/jniLibs/arm64-v8a/libxray.so
 
+      - name: Download Nexora branding assets (first run + self-heal)
+        run: |
+          mkdir -p app/src/main/assets/branding
+          mkdir -p app/src/main/assets/branding_v2
+
+          if [ ! -s app/src/main/assets/branding/nexora_logo_transparent.png ]; then
+            curl -fL "https://chatgpt.com/backend-api/estuary/public_content/enc/eyJpZCI6Im1fNjlkNTdiMGZmNTk4ODE5MWJkMTFiYmU2MDMzYzE2MGY6ZmlsZV8wMDAwMDAwMGVlYWM3MWY1OTU1YTM1ZjExNzRmNjhhZiIsInRzIjoiMjA1NTAiLCJwIjoicHlpIiwiY2lkIjoiMSIsInNpZyI6IjljNzRmMjQ2NzA0NWQ3N2U0Yzk3NzBiNjE0NzA4MWMwNmYwMmEyNThkZThkZmRlZjgwN2I5OGMzYjA4MjYzYjQiLCJ2IjoiMCIsImdpem1vX2lkIjpudWxsLCJjcyI6bnVsbCwiY2RuIjpudWxsLCJjcCI6bnVsbCwibWEiOm51bGx9" \
+              -o app/src/main/assets/branding/nexora_logo_transparent.png
+          fi
+
+          if [ ! -s app/src/main/assets/branding_v2/nexora_icon.png ] || [ "$(wc -c < app/src/main/assets/branding_v2/nexora_icon.png)" -lt 4096 ]; then
+            curl -fL --retry 3 --retry-delay 2 "https://raw.githubusercontent.com/bjalalsjzbslalqoqueeyhskaambpqo/hev/refs/heads/main/61d61403-98b2-48b6-8603-8d633affa3de.png" \
+              -o app/src/main/assets/branding_v2/nexora_icon.png
+          fi
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
