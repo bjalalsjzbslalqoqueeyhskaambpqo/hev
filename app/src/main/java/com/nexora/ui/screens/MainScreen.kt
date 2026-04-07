@@ -94,7 +94,7 @@ fun MainScreen(
         ) {
             HeaderSection(onCopyClientId)
             ConnectionPanel(state, latencyMs, daysLeft, clientName, connectedSince, onConnectClick)
-            SessionPreviewRow()
+            ServersPreviewCard()
             AdvancedSection(
                 expanded = showAdvanced,
                 onToggle = { showAdvanced = !showAdvanced },
@@ -243,32 +243,30 @@ private fun RowScope.InfoChip(icon: String, label: String) {
 }
 
 @Composable
-private fun SessionPreviewRow() {
+private fun ServersPreviewCard() {
     Surface(color = Color(0xFF06162E), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("SESIONES DE LA APP", color = Color(0xFF00D4FF), fontWeight = FontWeight.Bold)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                listOf("Principal", "Servidores", "Ajustes", "Estadísticas", "Acerca").forEachIndexed { i, item ->
-                    Surface(
-                        color = if (i == 0) Color(0xFF008DFF) else Color(0xFF0A223C),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(
-                            text = item,
-                            color = Color.White,
-                            fontSize = 11.sp,
-                            modifier = Modifier.padding(vertical = 8.dp),
-                            maxLines = 1
-                        )
-                    }
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("SERVIDORES", color = Color(0xFF00D4FF), fontWeight = FontWeight.Bold)
+            Text("Vista previa visual (sin funcionalidad aún)", color = Color(0xFF95A9C2), fontSize = 12.sp)
+
+            listOf(
+                "Nexora Ultra 01" to "62ms",
+                "Nexora Ultra 02" to "75ms",
+                "Nexora Ultra 03" to "88ms"
+            ).forEach { (name, ping) ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFF0A223C))
+                        .padding(horizontal = 10.dp, vertical = 9.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(name, color = Color(0xFFEAF2FF), fontSize = 12.sp)
+                    Text(ping, color = Color(0xFF7DE1FF), fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
                 }
             }
-            Text(
-                "Nuevos apartados visuales añadidos (sin lógica): Servidores, Estadísticas y Acerca de.",
-                fontSize = 12.sp,
-                color = Color(0xFF95A9C2)
-            )
         }
     }
 }
