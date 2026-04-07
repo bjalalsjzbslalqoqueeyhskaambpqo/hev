@@ -14,6 +14,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.net.ConnectivityManager
 import android.net.Uri
 import android.net.VpnService
@@ -74,7 +75,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -1601,29 +1604,33 @@ fun MainScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Column {
-                    Text(
-                        "NEXORA",
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontSize = 30.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        letterSpacing = 0.08.em,
-                        style = TextStyle(
-                            shadow = androidx.compose.ui.graphics.Shadow(
-                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
-                                blurRadius = 22f
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    BrandLogo(modifier = Modifier.size(34.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Column {
+                        Text(
+                            "NEXORA",
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontSize = 30.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            letterSpacing = 0.08.em,
+                            style = TextStyle(
+                                shadow = androidx.compose.ui.graphics.Shadow(
+                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+                                    blurRadius = 22f
+                                )
                             )
                         )
-                    )
-                    Text(
-                        "CONECTIVIDAD QUE TE DA VENTAJA",
-                        color = MaterialTheme.colorScheme.primary,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        letterSpacing = 0.04.em,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                        Text(
+                            "CONECTIVIDAD QUE TE DA VENTAJA",
+                            color = MaterialTheme.colorScheme.primary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            letterSpacing = 0.04.em,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
                 IconButton(onClick = onCopyClientId) {
                     Icon(Icons.Default.CopyAll, contentDescription = "Copiar ID", tint = MaterialTheme.colorScheme.primary)
@@ -1699,10 +1706,27 @@ private fun Orb(state: VpnState) {
             .clip(CircleShape)
             .background(Brush.radialGradient(listOf(tint.copy(0.25f), Color.Transparent)))
     ) {
+        BrandLogo(modifier = Modifier.size(92.dp))
+    }
+}
+
+@Composable
+private fun BrandLogo(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val brandBitmap = remember {
+        runCatching {
+            context.assets.open("branding/nexora_logo_transparent.png").use { input ->
+                BitmapFactory.decodeStream(input)?.asImageBitmap()
+            }
+        }.getOrNull()
+    }
+    if (brandBitmap != null) {
+        Image(bitmap = brandBitmap, contentDescription = null, modifier = modifier)
+    } else {
         Image(
             painter = painterResource(id = R.drawable.ic_nexora_logo),
             contentDescription = null,
-            modifier = Modifier.size(92.dp)
+            modifier = modifier
         )
     }
 }
