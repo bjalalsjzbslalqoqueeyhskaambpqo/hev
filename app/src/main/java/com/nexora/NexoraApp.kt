@@ -1622,9 +1622,9 @@ fun MainScreen(
 
             Spacer(Modifier.height(14.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                InfoChip(label = if (latencyMs >= 0) "${latencyMs}ms" else "-")
-                InfoChip(label = "$daysLeft días")
-                InfoChip(label = clientName.ifBlank { "-" })
+                InfoChip("⚡", if (latencyMs >= 0) "${latencyMs}ms" else "-")
+                InfoChip("📅", "$daysLeft días")
+                InfoChip("👤", clientName.ifBlank { "-" })
             }
 
             Spacer(Modifier.height(16.dp))
@@ -1682,7 +1682,7 @@ private fun Orb(state: VpnState) {
 }
 
 @Composable
-private fun InfoChip(label: String) {
+private fun InfoChip(icon: String, label: String) {
     Surface(
         modifier = Modifier,
         shape = RoundedCornerShape(12.dp),
@@ -1693,11 +1693,7 @@ private fun InfoChip(label: String) {
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Image(
-                painter = painterResource(id = R.drawable.ic_xtunnel_logo),
-                contentDescription = null,
-                modifier = Modifier.size(14.dp)
-            )
+            Text(icon)
             Spacer(Modifier.width(6.dp))
             Text(label, fontSize = 12.sp, maxLines = 1)
         }
@@ -1763,7 +1759,7 @@ private fun AdvancedSection(
                     Spacer(Modifier.height(8.dp))
                     Divider()
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Row(verticalAlignment = Alignment.CenterVertically) { Image(painter = painterResource(id = R.drawable.ic_xtunnel_logo), contentDescription = null, modifier = Modifier.size(14.dp)); Spacer(Modifier.width(6.dp)); Text("Compartir Wi‑Fi por proxy") }
+                        Text("🔥 Compartir Wi‑Fi por proxy")
                         Switch(checked = isHotspotEnabled, onCheckedChange = onHotspotToggle)
                     }
                     if (isHotspotEnabled && hotspotIp != null) {
@@ -1772,7 +1768,7 @@ private fun AdvancedSection(
                     }
                     Divider()
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Row(verticalAlignment = Alignment.CenterVertically) { Image(painter = painterResource(id = R.drawable.ic_xtunnel_logo), contentDescription = null, modifier = Modifier.size(14.dp)); Spacer(Modifier.width(6.dp)); Text("WiFi Direct para Smart TV") }
+                        Text("📺 WiFi Direct para Smart TV")
                         Switch(checked = isWifiDirectEnabled, onCheckedChange = onWifiDirectToggle)
                     }
                     if (isWifiDirectEnabled) {
@@ -1785,7 +1781,7 @@ private fun AdvancedSection(
                     }
                     Divider()
                     Text(
-                        text = "Quitar restricción de batería",
+                        text = "🔋 Quitar restricción de batería",
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.clickable(onClick = onIgnoreBatteryClick)
                     )
