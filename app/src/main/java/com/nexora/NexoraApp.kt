@@ -570,8 +570,7 @@ class BtVpnService : VpnService() {
     private var rawTunFd: Int? = null
     @Volatile private var isStopping = false
     @Volatile private var desiredRunning = false
-    private var networkReceiverRegistered = false
-    private val networkChangeReceiver = NetworkChangeReceiver()
+
 
     override fun onCreate() {
         super.onCreate()
@@ -667,7 +666,6 @@ class BtVpnService : VpnService() {
             TunnelSessionStore.setState("ERROR"); return
         }
         pfd = established
-        runCatching { registerNetworkReceiver() }
         val rawFd = runCatching { ParcelFileDescriptor.dup(established.fileDescriptor).detachFd() }.getOrNull() ?: run {
             TunnelSessionStore.setState("ERROR"); return
         }
@@ -693,7 +691,7 @@ class BtVpnService : VpnService() {
         isStopping = true
         runCatching { BtProxy.stop() }
         tearDownTun()
-        runCatching { if (networkReceiverRegistered) { unregisterReceiver(networkChangeReceiver); networkReceiverRegistered = false } }
+
         runCatching { TunnelSessionStore.setState("DISCONNECTED") }
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         runCatching { stopSelf() }
@@ -721,11 +719,7 @@ class BtVpnService : VpnService() {
         }
     }
 
-    private fun registerNetworkReceiver() {
-        if (networkReceiverRegistered) return
-        registerReceiver(networkChangeReceiver, IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION))
-        networkReceiverRegistered = true
-    }
+
 
     private fun closeRawTunFd() {
         val fd = rawTunFd ?: return; rawTunFd = null
@@ -944,18 +938,7 @@ class MainActivity : ComponentActivity() {
 }
 
 
-class NetworkChangeReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-        if (!TunnelPrefs.wasConnected(context)) return
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        @Suppress("DEPRECATION")
-        val isConnected = cm.activeNetworkInfo?.isConnected == true
-        if (!isConnected) return
-        val vpnIntent = Intent(context, BtVpnService::class.java).setAction(BtVpnService.ACTION_START)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(vpnIntent)
-        else context.startService(vpnIntent)
-    }
-}
+
 
 
 object TunnelPrefs {
