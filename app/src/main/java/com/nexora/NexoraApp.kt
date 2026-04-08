@@ -583,7 +583,7 @@ class BtVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return runCatching {
             when (intent?.action) {
-                ACTION_STOP -> { desiredRunning = false; TunnelPrefs.setWasConnected(this, false); stopTunnel(); START_NOT_STICKY }
+                ACTION_STOP -> { TunnelPrefs.setWasConnected(this, false); stopTunnel(); START_NOT_STICKY }
                 else -> { desiredRunning = true; TunnelPrefs.setWasConnected(this, true); startTunnel(); START_STICKY }
             }
         }.getOrElse { android.util.Log.e("BTCRASH", "onStartCommand crash: ${it.message}"); START_STICKY }
@@ -592,6 +592,11 @@ class BtVpnService : VpnService() {
     override fun onTaskRemoved(rootIntent: Intent?) {
         runCatching { super.onTaskRemoved(rootIntent) }
         if (desiredRunning) runCatching { scheduleRestart(1000) }
+    }
+
+    override fun onRevoke() {
+        runCatching { stopTunnel() }
+        super.onRevoke()
     }
 
     override fun onDestroy() {
@@ -611,7 +616,11 @@ class BtVpnService : VpnService() {
     private fun startTunnel() {
         runCatching {
             isStopping = false
-            if (pfd != null) return
+            if (pfd != null) {
+                val state = TunnelSessionStore.current().state
+                if (state != "CONNECTED") TunnelSessionStore.setState("CONNECTED")
+                return
+            }
             TunnelSessionStore.setState("CONNECTING")
             startVpnForeground()
 
@@ -689,9 +698,9 @@ class BtVpnService : VpnService() {
     private fun stopTunnel() {
         if (isStopping) return
         isStopping = true
+        desiredRunning = false
         runCatching { BtProxy.stop() }
         tearDownTun()
-
         runCatching { TunnelSessionStore.setState("DISCONNECTED") }
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         runCatching { stopSelf() }
