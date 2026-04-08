@@ -413,26 +413,49 @@ object BtProxy {
         if (isNetworkValidated(cm)) return
         LogSink.add("📡", "Sin red · esperando señal...", LogLevel.WARN)
         TunnelSessionStore.setState("CONNECTING")
+
+        val latch = java.util.concurrent.CountDownLatch(1)
+
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-            val latch = java.util.concurrent.CountDownLatch(1)
             val callback = object : android.net.ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: android.net.Network) {}
+                override fun onAvailable(network: android.net.Network) {
+                    val caps = cm.getNetworkCapabilities(network)
+                    if (caps != null &&
+                        caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                        caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                        latch.countDown()
+                    }
+                }
                 override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) {
                     if (caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                        caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)) latch.countDown()
+                        caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                        latch.countDown()
+                    }
+                }
+                override fun onLost(network: android.net.Network) {}
+            }
+            runCatching {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    cm.registerDefaultNetworkCallback(callback)
+                } else {
+                    val request = android.net.NetworkRequest.Builder()
+                        .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                        .build()
+                    cm.registerNetworkCallback(request, callback)
                 }
             }
-            val request = android.net.NetworkRequest.Builder().addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET).build()
-            runCatching { cm.registerNetworkCallback(request, callback) }
             try {
                 while (running && latch.count > 0) {
-                    latch.await(3, java.util.concurrent.TimeUnit.SECONDS)
+                    latch.await(2, java.util.concurrent.TimeUnit.SECONDS)
                     if (latch.count > 0 && isNetworkValidated(cm)) latch.countDown()
                 }
-            } finally { runCatching { cm.unregisterNetworkCallback(callback) } }
+            } finally {
+                runCatching { cm.unregisterNetworkCallback(callback) }
+            }
         } else {
             while (running && !isNetworkValidated(cm)) Thread.sleep(2000)
         }
+
         if (running) Thread.sleep(500)
     }
 
