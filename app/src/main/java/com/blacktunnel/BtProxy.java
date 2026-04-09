@@ -169,7 +169,7 @@ public final class BtProxy {
 
             out.write(p1.getBytes()); out.flush();
             SimpleLog.i("P1 enviado");
-            Thread.sleep(10);
+            try { Thread.sleep(10); } catch (InterruptedException ignored) {}
             out.write(p2.getBytes()); out.flush();
             SimpleLog.i("P2 enviado");
 
@@ -201,6 +201,7 @@ public final class BtProxy {
             socket.setSoTimeout(0);
             return socket;
         } catch (Exception e) {
+            SimpleLog.i("openTunnel excepcion: " + e.getClass().getSimpleName() + " - " + e.getMessage());
             return null;
         }
     }
