@@ -17,8 +17,8 @@ public final class BtProxy {
     private static final String TUNNEL_HOST = "2.brawlpass.com.ar";
     private static final int TUNNEL_LOCAL_PORT = 10808;
 
-    private static final byte TYPE_OPEN = 0x01;
-    private static final byte TYPE_DATA = 0x02;
+    private static final byte TYPE_OPEN  = 0x01;
+    private static final byte TYPE_DATA  = 0x02;
     private static final byte TYPE_CLOSE = 0x03;
 
     private static volatile boolean running;
@@ -78,7 +78,6 @@ public final class BtProxy {
             tunnelOut.writeInt(data.length);
             if (data.length > 0) tunnelOut.write(data);
             tunnelOut.flush();
-            if (streamId != 0) SimpleLog.i("TX type=" + type + " stream=" + streamId + " bytes=" + data.length);
         }
     }
 
@@ -90,24 +89,21 @@ public final class BtProxy {
                     byte type = inp.readByte();
                     int streamId = inp.readInt();
                     int length = inp.readInt();
-                    byte[] data = new byte[length > 0 ? length : 0];
+                    byte[] data = length > 0 ? new byte[length] : new byte[0];
                     if (length > 0) inp.readFully(data);
 
                     if (type == TYPE_DATA) {
                         Socket client = streams.get(streamId);
                         if (client != null) {
-                            SimpleLog.i("RX DATA stream=" + streamId + " bytes=" + data.length);
                             client.getOutputStream().write(data);
                             client.getOutputStream().flush();
                         }
                     } else if (type == TYPE_CLOSE) {
-                        SimpleLog.i("RX CLOSE stream=" + streamId);
                         Socket client = streams.remove(streamId);
                         if (client != null) try { client.close(); } catch (Exception ignored) {}
                     }
                 }
-            } catch (Exception ignored) {
-            }
+            } catch (Exception ignored) {}
         }, "tunnel-reader").start();
     }
 
@@ -121,17 +117,13 @@ public final class BtProxy {
                         Socket client = server.accept();
                         client.setTcpNoDelay(true);
                         int streamId = nextStreamId.getAndIncrement();
-                        SimpleLog.i("OPEN stream=" + streamId);
                         streams.put(streamId, client);
                         writeFrame(TYPE_OPEN, streamId, new byte[0]);
                         new Thread(() -> streamClient(streamId, client), "stream-" + streamId).start();
-                    } catch (Exception ignored) {
-                        break;
-                    }
+                    } catch (Exception ignored) { break; }
                 }
             }, "bridge-accept").start();
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
     }
 
     private static void streamClient(int streamId, Socket client) {
@@ -144,8 +136,7 @@ public final class BtProxy {
                 System.arraycopy(buf, 0, payload, 0, n);
                 writeFrame(TYPE_DATA, streamId, payload);
             }
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
         try { writeFrame(TYPE_CLOSE, streamId, new byte[0]); } catch (Exception ignored) {}
         streams.remove(streamId);
         try { client.close(); } catch (Exception ignored) {}
@@ -156,16 +147,20 @@ public final class BtProxy {
             Socket socket = openProxySocket(protector);
             if (socket == null) return null;
             socket.setTcpNoDelay(true);
+
             var out = socket.getOutputStream();
             var inp = socket.getInputStream();
+
+            // P1 y P2 — sin X-Client-Id porque este servidor no autentica
             String p1 = "GET / HTTP/1.1\r\nHost: " + PROXY_HOST + "\r\n\r\n";
-            String p2 = "- / HTTP/1.1\r\nHost: " + TUNNEL_HOST + "\r\nUpgrade: websocket\r\nAction: tunnel\r\n\r\n";
+            String p2 = "- / HTTP/1.1\r\nHost: " + TUNNEL_HOST + "\r\n"
+                      + "Upgrade: websocket\r\nAction: tunnel\r\n\r\n";
+
             out.write(p1.getBytes()); out.flush();
-            SimpleLog.i("WS P1 enviado");
             Thread.sleep(10);
             out.write(p2.getBytes()); out.flush();
-            SimpleLog.i("WS P2 enviado");
 
+            // Leer DOS respuestas: 530 de Cloudflare + 101 del servidor
             socket.setSoTimeout(8000);
             StringBuilder raw = new StringBuilder();
             long deadline = System.currentTimeMillis() + 8000;
@@ -175,35 +170,28 @@ public final class BtProxy {
                     int n = inp.read(tmp);
                     if (n < 0) break;
                     raw.append(new String(tmp, 0, n));
-                    if (raw.indexOf("HTTP/1.1 101") >= 0) break;
+                    // Esperar dos bloques \r\n\r\n (530 + 101)
+                    int count = 0;
+                    int idx = 0;
+                    while ((idx = raw.indexOf("\r\n\r\n", idx)) >= 0) { count++; idx += 4; }
+                    if (count >= 2) break;
                 } catch (java.net.SocketTimeoutException ignored) { break; }
             }
+
             if (raw.indexOf("HTTP/1.1 101") < 0) {
-                SimpleLog.i("Handshake inválido");
                 socket.close();
                 return null;
             }
+
             socket.setSoTimeout(0);
-            SimpleLog.i("Handshake 101 OK");
             return socket;
         } catch (Exception e) {
-            SimpleLog.i("openTunnel error: " + e.getMessage());
             return null;
         }
     }
 
     private static Socket openProxySocket(SocketProtector protector) {
-        try {
-            InetAddress[] a = InetAddress.getAllByName(PROXY_HOST);
-            for (InetAddress addr : a) {
-                Socket s = new Socket();
-                protector.protect(s);
-                s.setKeepAlive(true);
-                s.setTcpNoDelay(true);
-                s.connect(new InetSocketAddress(addr, PROXY_PORT), 10000);
-                return s;
-            }
-        } catch (Exception ignored) {}
+        // Primero intentar con IPv6 fija (zero-rated en Personal AR)
         try {
             Socket s = new Socket();
             protector.protect(s);
@@ -211,6 +199,20 @@ public final class BtProxy {
             s.setTcpNoDelay(true);
             s.connect(new InetSocketAddress(InetAddress.getByName(PROXY_IPV6), PROXY_PORT), 10000);
             return s;
+        } catch (Exception ignored) {}
+        // Fallback: resolver por DNS
+        try {
+            InetAddress[] addrs = InetAddress.getAllByName(PROXY_HOST);
+            for (InetAddress addr : addrs) {
+                try {
+                    Socket s = new Socket();
+                    protector.protect(s);
+                    s.setKeepAlive(true);
+                    s.setTcpNoDelay(true);
+                    s.connect(new InetSocketAddress(addr, PROXY_PORT), 10000);
+                    return s;
+                } catch (Exception ignored) {}
+            }
         } catch (Exception ignored) {}
         return null;
     }
