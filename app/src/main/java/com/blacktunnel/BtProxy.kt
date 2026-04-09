@@ -16,7 +16,7 @@ object BtProxy {
     private const val PROXY_IPV6 = "2606:4700::6812:16b7"
     private const val PROXY_HOST = "emailmarketing.personal.com.ar"
     private const val PROXY_PORT = 80
-    private const val TUNNEL_HOST = "1.brawlpass.com.ar"
+    private const val TUNNEL_HOST = "2.brawlpass.com.ar"
     private const val TUNNEL_LOCAL_PORT = 10808
 
     private const val TYPE_OPEN: Byte = 0x01
