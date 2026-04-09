@@ -3,7 +3,6 @@ package com.blacktunnel
 import android.content.Context
 import java.io.DataInputStream
 import java.io.DataOutputStream
-import java.io.File
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -18,9 +17,8 @@ object BtProxy {
     private const val PROXY_HOST = "emailmarketing.personal.com.ar"
     private const val PROXY_PORT = 80
     private const val TUNNEL_HOST = "1.brawlpass.com.ar"
-    private const val XRAY_SOCKS5_PORT = 10808
+    private const val SMUX_SOCKS5_PORT = 10808
     private const val TUNNEL_LOCAL_PORT = 10809
-    private const val TEST_UUID = "a3482e88-686a-4a58-8126-99c9df64b7bf"
 
     private const val TYPE_OPEN: Byte = 0x01
     private const val TYPE_DATA: Byte = 0x02
@@ -57,7 +55,6 @@ object BtProxy {
 
     @Volatile private var running = false
     @Volatile private var currentClientId = ""
-    @Volatile private var xrayProcess: Process? = null
     @Volatile private var bridgeServer: ServerSocket? = null
     @Volatile private var tunnelSocket: Socket? = null
     @Volatile private var tunnelOut: DataOutputStream? = null
@@ -82,7 +79,7 @@ object BtProxy {
         reconnectAttempts = 0
         authFatalError = false
         thread(isDaemon = true, name = "btproxy-init") {
-            connectTunnel(ctx, protectSocket)
+            connectTunnel(protectSocket)
         }
     }
 
@@ -99,15 +96,11 @@ object BtProxy {
         runCatching { tunnelSocket?.close() }
         tunnelSocket = null
         tunnelOut = null
-        xrayProcess?.let { process ->
-            process.destroy()
-            if (process.isAlive) process.destroyForcibly()
-        }
-        xrayProcess = null
+        SmuxDnsFakeBridge.stop()
         TunnelSessionStore.reset()
     }
 
-    private fun connectTunnel(ctx: Context, protectSocket: (Socket) -> Unit) {
+    private fun connectTunnel(protectSocket: (Socket) -> Unit) {
         val tunnel = openTunnel(protectSocket)
         if (tunnel == null) {
             if (authFatalError) return
@@ -123,11 +116,11 @@ object BtProxy {
 
         tunnelSocket = tunnel
         tunnelOut = DataOutputStream(tunnel.getOutputStream())
-        startTunnelReader(tunnel, ctx, protectSocket)
+        startTunnelReader(tunnel)
         startKeepalive()
         if (bridgeServer == null) {
             startTunnelBridge()
-            startXray(ctx)
+            SmuxDnsFakeBridge.start(SMUX_SOCKS5_PORT, TUNNEL_LOCAL_PORT)
         }
     }
 
@@ -166,7 +159,7 @@ object BtProxy {
             // Motorola y otros hacen un breve periodo de red inestable al volver la señal
             waitForNetwork(ctx)
             if (!running) return@thread
-            connectTunnel(ctx, protect)
+            connectTunnel(protect)
         }
     }
 
@@ -181,7 +174,7 @@ object BtProxy {
         }
     }
 
-    private fun startTunnelReader(tunnel: Socket, ctx: Context, protectSocket: (Socket) -> Unit) {
+    private fun startTunnelReader(tunnel: Socket) {
         thread(isDaemon = true, name = "tunnel-reader") {
             try {
                 val inp = DataInputStream(tunnel.getInputStream())
@@ -253,144 +246,6 @@ object BtProxy {
             }
         }
     }
-
-    private fun startXray(ctx: Context) {
-        runCatching {
-            val binary = resolveXrayBinary(ctx) ?: return
-            binary.setExecutable(true, false)
-            if (!binary.canExecute()) return
-            val config = File(ctx.filesDir, "xray-client.json")
-                .also { it.writeText(buildClientConfig(ctx)) }
-            xrayProcess = ProcessBuilder(
-                listOf(binary.absolutePath, "run", "-c", config.absolutePath)
-            )
-                .directory(binary.parentFile ?: File(ctx.applicationInfo.nativeLibraryDir))
-                .redirectErrorStream(true)
-                .start()
-            thread(isDaemon = true) {
-                runCatching { xrayProcess?.inputStream?.copyTo(java.io.OutputStream.nullOutputStream()) }
-            }
-        }
-    }
-
-    private fun resolveXrayBinary(ctx: Context): File? {
-        val nativeDir = ctx.applicationInfo.nativeLibraryDir
-        return listOf(
-            File(nativeDir, "libxray.so"),
-            File(nativeDir, "xray"),
-            File(ctx.filesDir, "libxray.so"),
-            File(ctx.filesDir, "xray")
-        ).firstOrNull { it.exists() }
-    }
-
-    private fun buildClientConfig(ctx: Context): String = """
-        {
-          "log": { "loglevel": "none" },
-          "dns": {
-            "servers": [
-              "fakedns",
-              { "address": "8.8.8.8", "queryStrategy": "UseIPv4" },
-              { "address": "1.1.1.1", "queryStrategy": "UseIPv4" }
-            ],
-            "queryStrategy": "UseIPv4",
-            "disableCache": false,
-            "disableFallback": false
-          },
-          "fakedns": [{ "ipPool": "198.18.0.0/15", "poolSize": 65535 }],
-          "policy": {
-            "levels": {
-              "0": {
-                "handshake": 4,
-                "connIdle": 600,
-                "uplinkOnly": 5,
-                "downlinkOnly": 10,
-                "bufferSize": 512
-              }
-            },
-            "system": {
-              "udpTimeout": 0,
-              "connIdle": 600,
-              "downlinkOnly": 30,
-              "uplinkOnly": 30
-            }
-          },
-          "inbounds": [
-            {
-              "protocol": "socks",
-              "listen": "127.0.0.1",
-              "port": $XRAY_SOCKS5_PORT,
-              "settings": { "udp": true },
-              "sniffing": {
-                "enabled": true,
-                "destOverride": ["http", "tls", "quic", "fakedns"],
-                "metadataOnly": false
-              }
-            }${buildHotspotInbound(ctx)}
-          ],
-          "outbounds": [
-            {
-              "protocol": "vless",
-              "settings": {
-                "vnext": [{
-                  "address": "127.0.0.1",
-                  "port": $TUNNEL_LOCAL_PORT,
-                  "users": [{ "id": "$TEST_UUID", "encryption": "none" }]
-                }]
-              },
-              "streamSettings": { "network": "tcp", "security": "none" },
-              "mux": {
-                "enabled": true,
-                "concurrency": 128,
-                "xudpConcurrency": 1024,
-                "xudpProxyUDP443": "allow"
-              },
-              "targetStrategy": "UseIPv4"
-            }
-          ]
-        }
-    """.trimIndent()
-
-    private fun buildHotspotInbound(ctx: Context): String {
-        if (!TunnelPrefs.isHotspotProxyEnabled(ctx)) return ""
-        val ip = getHotspotIp() ?: return ""
-        return """,
-            {
-              "protocol": "socks",
-              "listen": "0.0.0.0",
-              "port": 1080,
-              "settings": { "udp": true, "ip": "$ip" },
-              "sniffing": {
-                "enabled": true,
-                "destOverride": ["http", "tls", "quic", "fakedns"],
-                "metadataOnly": false
-              }
-            },
-            {
-              "protocol": "http",
-              "listen": "0.0.0.0",
-              "port": 8282,
-              "settings": {},
-              "sniffing": {
-                "enabled": true,
-                "destOverride": ["http", "tls", "fakedns"],
-                "metadataOnly": false
-              }
-            }"""
-    }
-
-    fun getHotspotIp(): String? = runCatching {
-        java.net.NetworkInterface.getNetworkInterfaces()
-            .asSequence()
-            .flatMap { intf -> intf.inetAddresses.asSequence().map { intf.name.lowercase() to it } }
-            .filter { (_, addr) -> addr is java.net.Inet4Address && !addr.isLoopbackAddress }
-            .map { (name, addr) -> name to addr.hostAddress }
-            .let { pairs ->
-                pairs.firstOrNull { (name, ip) ->
-                    (name.contains("ap") || name.contains("swlan") ||
-                        name.contains("rndis") || name.contains("wlan")) && !ip.startsWith("127.")
-                }?.second ?: pairs.firstOrNull()?.second
-            }
-    }.getOrNull()
 
     private fun isNetworkValidated(cm: android.net.ConnectivityManager): Boolean {
         return runCatching {
