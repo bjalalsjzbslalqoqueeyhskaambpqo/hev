@@ -93,7 +93,10 @@ public class BtVpnService extends VpnService {
                   log-level: warn
                 """;
         try {
-            java.nio.file.Files.writeString(f.toPath(), yml.trim());
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(f, false);
+            fos.write(yml.trim().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            fos.flush();
+            fos.close();
         } catch (Exception e) {
             SimpleLog.i("Error escribiendo hev.yml: " + e.getMessage());
         }

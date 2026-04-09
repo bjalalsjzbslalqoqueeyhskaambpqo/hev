@@ -10,14 +10,15 @@ import android.widget.Button;
 import android.widget.TextView;
 
 import androidx.activity.ComponentActivity;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 
 public class SimpleModeActivity extends ComponentActivity {
-    private static final int REQ_VPN = 3001;
-
     private Button connectBtn;
     private TextView logView;
     private boolean connected = false;
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private ActivityResultLauncher<Intent> vpnPermissionLauncher;
 
     private final Runnable logTicker = new Runnable() {
         @Override
@@ -33,6 +34,13 @@ public class SimpleModeActivity extends ComponentActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_simple_mode);
+        vpnPermissionLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> {
+                    if (result.getResultCode() == RESULT_OK) startVpn();
+                    else SimpleLog.i("Permiso VPN denegado");
+                }
+        );
 
         connectBtn = findViewById(R.id.btnConnect);
         logView = findViewById(R.id.txtLogs);
@@ -58,18 +66,9 @@ public class SimpleModeActivity extends ComponentActivity {
     private void startVpnWithPermission() {
         Intent prepare = VpnService.prepare(this);
         if (prepare != null) {
-            startActivityForResult(prepare, REQ_VPN);
+            vpnPermissionLauncher.launch(prepare);
         } else {
             startVpn();
-        }
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQ_VPN) {
-            if (resultCode == RESULT_OK) startVpn();
-            else SimpleLog.i("Permiso VPN denegado");
         }
     }
 
