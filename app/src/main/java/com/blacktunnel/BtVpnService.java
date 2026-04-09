@@ -47,6 +47,11 @@ public class BtVpnService extends VpnService {
                 .addRoute("::", 0)
                 .addDnsServer("8.8.8.8")
                 .addDnsServer("1.1.1.1");
+        try {
+            b.addDisallowedApplication(getPackageName());
+        } catch (android.content.pm.PackageManager.NameNotFoundException e) {
+            SimpleLog.i("No se pudo excluir la app del TUN: " + e.getMessage());
+        }
 
         tunPfd = b.establish();
         if (tunPfd == null) {
