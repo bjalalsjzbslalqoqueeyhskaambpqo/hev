@@ -8,10 +8,16 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
 public class TunnelMux {
+    @FunctionalInterface
+    public interface SocketProtector {
+        void protect(Socket socket);
+    }
 
     private final String serverHost;
     private final int    serverPort;
     private final String wsPath;
+    private final String clientId;
+    private final SocketProtector protector;
     private final int socks5Port;
     private final int dnsPort;
 
@@ -55,10 +61,20 @@ public class TunnelMux {
         return t;
     });
 
-    public TunnelMux(String serverHost, int serverPort, String wsPath, int socks5Port, int dnsPort) {
+    public TunnelMux(
+        String serverHost,
+        int serverPort,
+        String wsPath,
+        String clientId,
+        SocketProtector protector,
+        int socks5Port,
+        int dnsPort
+    ) {
         this.serverHost = serverHost;
         this.serverPort = serverPort;
         this.wsPath = wsPath;
+        this.clientId = clientId == null ? "" : clientId;
+        this.protector = protector;
         this.socks5Port = socks5Port;
         this.dnsPort = dnsPort;
     }
@@ -128,6 +144,9 @@ public class TunnelMux {
 
     private void connect() throws IOException {
         Socket sock = new Socket();
+        if (protector != null) {
+            try { protector.protect(sock); } catch (Exception ignored) {}
+        }
         sock.connect(new InetSocketAddress(serverHost, serverPort), CONN_TIMEOUT);
         sock.setTcpNoDelay(true);
         sock.setKeepAlive(true);
@@ -136,17 +155,19 @@ public class TunnelMux {
         OutputStream rawOut = sock.getOutputStream();
         InputStream  rawIn  = sock.getInputStream();
 
-        byte[] keyBytes = new byte[16];
-        new Random().nextBytes(keyBytes);
-        String key = Base64.getEncoder().encodeToString(keyBytes);
-
-        String req = "GET " + wsPath + " HTTP/1.1\r\n"
+        String p1 = "GET " + wsPath + " HTTP/1.1\r\n"
+            + "Host: " + serverHost + "\r\n"
+            + "User-Agent: okhttp/4.12.0\r\n\r\n";
+        String p2 = "- " + wsPath + " HTTP/1.1\r\n"
             + "Host: " + serverHost + "\r\n"
             + "Upgrade: websocket\r\n"
             + "Connection: Upgrade\r\n"
-            + "Sec-WebSocket-Key: " + key + "\r\n"
-            + "Sec-WebSocket-Version: 13\r\n\r\n";
-        rawOut.write(req.getBytes());
+            + "Action: tunnel\r\n"
+            + "X-Client-Id: " + clientId + "\r\n\r\n";
+        rawOut.write(p1.getBytes());
+        rawOut.flush();
+        try { Thread.sleep(10); } catch (InterruptedException ignored) {}
+        rawOut.write(p2.getBytes());
         rawOut.flush();
 
         StringBuilder hdr = new StringBuilder();

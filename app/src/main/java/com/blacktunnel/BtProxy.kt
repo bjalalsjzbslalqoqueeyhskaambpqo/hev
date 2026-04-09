@@ -8,9 +8,9 @@ import kotlin.concurrent.thread
 
 object BtProxy {
 
-    private const val MUX_SERVER_HOST = "1.brawlpass.com.ar"
+    private const val MUX_SERVER_HOST = "2.brawlpass.com.ar"
     private const val MUX_SERVER_PORT = 80
-    private const val MUX_WS_PATH = "/ws"
+    private const val MUX_WS_PATH = "/"
     private const val SOCKS5_PORT = 10808
     private const val DNS_PORT = 5353
 
@@ -31,6 +31,8 @@ object BtProxy {
                     MUX_SERVER_HOST,
                     MUX_SERVER_PORT,
                     MUX_WS_PATH,
+                    clientId.trim(),
+                    TunnelMux.SocketProtector { socket -> protectSocket(socket) },
                     SOCKS5_PORT,
                     DNS_PORT
                 )
