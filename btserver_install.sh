@@ -348,29 +348,16 @@ def handle(sock):
                 return
 
         action = ""
-        client_id = ""
         for line in raw.decode(errors="replace").splitlines():
             lower = line.lower()
             if lower.startswith("action:"):
                 action = line.split(":", 1)[1].strip().lower()
-            if lower.startswith("x-client-id:"):
-                client_id = line.split(":", 1)[1].strip()
-
-        if not client_id:
-            reject(sock, "INVALID")
-            return
-
-        db = load_db()
-        state, days_left, name, expires_at = ensure_client(db, client_id)
-        if state != "VALID":
-            reject(sock, state)
-            return
 
         response = (
             b"HTTP/1.1 101 Switching Protocols\r\n"
             b"Upgrade: websocket\r\nConnection: Upgrade\r\n"
-            b"X-Status: VALID\r\nX-Auth-State: VALID\r\n"
-            + f"X-Name: {name}\r\nX-Expire: {expires_at}\r\nX-Days-Left: {days_left}\r\n\r\n".encode()
+            b"X-Status: DEV-BYPASS\r\nX-Auth-State: DEV-BYPASS\r\n"
+            b"X-Name: dev-mode\r\nX-Expire: 0\r\nX-Days-Left: 9999\r\n\r\n"
         )
 
         if action in ("tunnel", "tunnel-fast"):

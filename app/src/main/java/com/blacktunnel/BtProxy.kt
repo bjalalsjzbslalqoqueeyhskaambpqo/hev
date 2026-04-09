@@ -17,8 +17,7 @@ object BtProxy {
     private const val PROXY_HOST = "emailmarketing.personal.com.ar"
     private const val PROXY_PORT = 80
     private const val TUNNEL_HOST = "1.brawlpass.com.ar"
-    private const val SMUX_SOCKS5_PORT = 10808
-    private const val TUNNEL_LOCAL_PORT = 10809
+    private const val TUNNEL_LOCAL_PORT = 10808
 
     private const val TYPE_OPEN: Byte = 0x01
     private const val TYPE_DATA: Byte = 0x02
@@ -96,7 +95,6 @@ object BtProxy {
         runCatching { tunnelSocket?.close() }
         tunnelSocket = null
         tunnelOut = null
-        SmuxDnsFakeBridge.stop()
         TunnelSessionStore.reset()
     }
 
@@ -120,7 +118,6 @@ object BtProxy {
         startKeepalive()
         if (bridgeServer == null) {
             startTunnelBridge()
-            SmuxDnsFakeBridge.start(SMUX_SOCKS5_PORT, TUNNEL_LOCAL_PORT)
         }
     }
 
