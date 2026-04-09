@@ -74,21 +74,8 @@ async def handle_client(
     try:
         req1 = await read_http_block(reader)
         req2 = await read_http_block(reader)
-
-        _, h1 = parse_headers(req1)
+        _, _h1 = parse_headers(req1)
         _, h2 = parse_headers(req2)
-
-        if "host" not in h1 or h2.get("upgrade", "").lower() != "websocket":
-            writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
-            await writer.drain()
-            return
-
-        action = h2.get("action", "")
-        if action.lower() != "tunnel":
-            writer.write(b"HTTP/1.1 403 Forbidden\r\nX-Status: INVALID\r\nContent-Length: 0\r\n\r\n")
-            await writer.drain()
-            return
-
         client_id = h2.get("x-client-id", "-")
 
         upstream_reader, upstream_writer = await asyncio.open_connection(upstream_host, upstream_port)

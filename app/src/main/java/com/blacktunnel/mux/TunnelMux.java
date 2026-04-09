@@ -9,15 +9,11 @@ import java.util.concurrent.atomic.*;
 
 public class TunnelMux {
     @FunctionalInterface
-    public interface SocketProtector {
-        void protect(Socket socket);
+    public interface TunnelDialer {
+        Socket dial() throws IOException;
     }
 
-    private final String serverHost;
-    private final int    serverPort;
-    private final String wsPath;
-    private final String clientId;
-    private final SocketProtector protector;
+    private final TunnelDialer dialer;
     private final int socks5Port;
     private final int dnsPort;
 
@@ -62,19 +58,11 @@ public class TunnelMux {
     });
 
     public TunnelMux(
-        String serverHost,
-        int serverPort,
-        String wsPath,
-        String clientId,
-        SocketProtector protector,
+        TunnelDialer dialer,
         int socks5Port,
         int dnsPort
     ) {
-        this.serverHost = serverHost;
-        this.serverPort = serverPort;
-        this.wsPath = wsPath;
-        this.clientId = clientId == null ? "" : clientId;
-        this.protector = protector;
+        this.dialer = dialer;
         this.socks5Port = socks5Port;
         this.dnsPort = dnsPort;
     }
@@ -143,43 +131,15 @@ public class TunnelMux {
     }
 
     private void connect() throws IOException {
-        Socket sock = new Socket();
-        if (protector != null) {
-            try { protector.protect(sock); } catch (Exception ignored) {}
-        }
-        sock.connect(new InetSocketAddress(serverHost, serverPort), CONN_TIMEOUT);
+        if (dialer == null) throw new IOException("dialer no configurado");
+        Socket sock = dialer.dial();
+        if (sock == null) throw new IOException("dialer devolvió socket nulo");
         sock.setTcpNoDelay(true);
         sock.setKeepAlive(true);
         sock.setSoTimeout(0);
 
         OutputStream rawOut = sock.getOutputStream();
         InputStream  rawIn  = sock.getInputStream();
-
-        String p1 = "GET " + wsPath + " HTTP/1.1\r\n"
-            + "Host: " + serverHost + "\r\n"
-            + "User-Agent: okhttp/4.12.0\r\n\r\n";
-        String p2 = "- " + wsPath + " HTTP/1.1\r\n"
-            + "Host: " + serverHost + "\r\n"
-            + "Upgrade: websocket\r\n"
-            + "Connection: Upgrade\r\n"
-            + "Action: tunnel\r\n"
-            + "X-Client-Id: " + clientId + "\r\n\r\n";
-        rawOut.write(p1.getBytes());
-        rawOut.flush();
-        try { Thread.sleep(10); } catch (InterruptedException ignored) {}
-        rawOut.write(p2.getBytes());
-        rawOut.flush();
-
-        StringBuilder hdr = new StringBuilder();
-        int prev = -1;
-        while (true) {
-            int c = rawIn.read();
-            if (c == -1) throw new IOException("conexión cerrada durante handshake");
-            hdr.append((char) c);
-            if (prev == '\n' && c == '\n' && hdr.toString().contains("\r\n\r\n")) break;
-            prev = c;
-        }
-        if (!hdr.toString().contains("101")) throw new IOException("handshake WS rechazado");
 
         tunnelSock = sock;
         tunnelIn   = new BufferedInputStream(rawIn, TCP_BUF);
