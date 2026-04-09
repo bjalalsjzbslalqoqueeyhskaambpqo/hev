@@ -14,7 +14,7 @@ public final class BtProxy {
     private static final String PROXY_IPV6 = "2606:4700::6812:16b7";
     private static final String PROXY_HOST = "emailmarketing.personal.com.ar";
     private static final int PROXY_PORT = 80;
-    private static final String TUNNEL_HOST = "1.brawlpass.com.ar";
+    private static final String TUNNEL_HOST = "2.brawlpass.com.ar";
     private static final int TUNNEL_LOCAL_PORT = 10808;
 
     private static final byte TYPE_OPEN = 0x01;
