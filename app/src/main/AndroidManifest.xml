@@ -35,10 +35,6 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".MainActivity"
-            android:exported="false" />
-
         <service
             android:name=".BtVpnService"
             android:exported="false"
@@ -53,28 +49,6 @@
                 android:value="VPN tunnel service" />
         </service>
 
-        <receiver
-            android:name=".BootReceiver"
-            android:enabled="true"
-            android:exported="true"
-            android:directBootAware="true">
-            <intent-filter android:priority="999">
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
-                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
-                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
-                <action android:name="android.intent.action.ACTION_BOOT_COMPLETED" />
-            </intent-filter>
-        </receiver>
-
-        <receiver
-            android:name=".NetworkChangeReceiver"
-            android:enabled="true"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="android.net.conn.CONNECTIVITY_CHANGE" />
-            </intent-filter>
-        </receiver>
     </application>
 
 </manifest>
