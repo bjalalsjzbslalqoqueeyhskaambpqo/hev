@@ -95,7 +95,10 @@ object BtProxy {
             append("Upgrade: websocket\\r\\n")
             append("Connection: Upgrade\\r\\n")
             append("Action: tunnel\\r\\n")
-            append("X-Client-Id: $clientId\\r\\n\\r\\n")
+            if (clientId.isNotBlank()) {
+                append("X-Client-Id: $clientId\\r\\n")
+            }
+            append("\\r\\n")
         }
 
         out.write(p1.toByteArray())
