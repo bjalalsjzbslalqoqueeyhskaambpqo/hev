@@ -49,16 +49,19 @@ public final class BtProxy {
 
     private static void connectTunnel(SocketProtector protector) {
         Socket tunnel = openTunnel(protector);
-        if (tunnel == null) return;
+        if (tunnel == null) { SimpleLog.i("openTunnel devolvió null"); return; }
+        SimpleLog.i("Túnel establecido, iniciando bridge y reader");
         tunnelSocket = tunnel;
         try {
             tunnelOut = new DataOutputStream(tunnel.getOutputStream());
         } catch (Exception e) {
+            SimpleLog.i("Error creando tunnelOut: " + e.getMessage());
             return;
         }
         startTunnelReader(tunnel);
         startKeepalive();
         if (bridgeServer == null) startTunnelBridge();
+        SimpleLog.i("Bridge local listo en puerto 10809");
     }
 
     private static void startKeepalive() {
@@ -111,19 +114,21 @@ public final class BtProxy {
         try {
             ServerSocket server = new ServerSocket(TUNNEL_LOCAL_PORT, 256, InetAddress.getByName("127.0.0.1"));
             bridgeServer = server;
+            SimpleLog.i("Bridge escuchando en 127.0.0.1:10809");
             new Thread(() -> {
                 while (running) {
                     try {
                         Socket client = server.accept();
                         client.setTcpNoDelay(true);
                         int streamId = nextStreamId.getAndIncrement();
+                        SimpleLog.i("Nueva conexión local stream=" + streamId);
                         streams.put(streamId, client);
                         writeFrame(TYPE_OPEN, streamId, new byte[0]);
                         new Thread(() -> streamClient(streamId, client), "stream-" + streamId).start();
                     } catch (Exception ignored) { break; }
                 }
             }, "bridge-accept").start();
-        } catch (Exception ignored) {}
+        } catch (Exception e) { SimpleLog.i("Error bridge: " + e.getMessage()); }
     }
 
     private static void streamClient(int streamId, Socket client) {
@@ -142,6 +147,12 @@ public final class BtProxy {
         try { client.close(); } catch (Exception ignored) {}
     }
 
+    private static int countBlocks(String s) {
+        int count = 0, idx = 0;
+        while ((idx = s.indexOf("\r\n\r\n", idx)) >= 0) { count++; idx += 4; }
+        return count;
+    }
+
     private static Socket openTunnel(SocketProtector protector) {
         try {
             Socket socket = openProxySocket(protector);
@@ -157,8 +168,10 @@ public final class BtProxy {
                       + "Upgrade: websocket\r\nAction: tunnel\r\n\r\n";
 
             out.write(p1.getBytes()); out.flush();
+            SimpleLog.i("P1 enviado");
             Thread.sleep(10);
             out.write(p2.getBytes()); out.flush();
+            SimpleLog.i("P2 enviado");
 
             // Leer DOS respuestas: 530 de Cloudflare + 101 del servidor
             socket.setSoTimeout(8000);
@@ -178,11 +191,13 @@ public final class BtProxy {
                 } catch (java.net.SocketTimeoutException ignored) { break; }
             }
 
+            SimpleLog.i("Respuesta cruda: " + raw.toString().replace("\r\n", "|").substring(0, Math.min(raw.length(), 300)));
             if (raw.indexOf("HTTP/1.1 101") < 0) {
+                SimpleLog.i("ERROR: no hay 101 — bloques=" + countBlocks(raw.toString()));
                 socket.close();
                 return null;
             }
-
+            SimpleLog.i("Handshake 101 OK");
             socket.setSoTimeout(0);
             return socket;
         } catch (Exception e) {
@@ -191,15 +206,16 @@ public final class BtProxy {
     }
 
     private static Socket openProxySocket(SocketProtector protector) {
-        // Primero intentar con IPv6 fija (zero-rated en Personal AR)
+        SimpleLog.i("Conectando a proxy IPv6: " + PROXY_IPV6);
         try {
             Socket s = new Socket();
             protector.protect(s);
             s.setKeepAlive(true);
             s.setTcpNoDelay(true);
             s.connect(new InetSocketAddress(InetAddress.getByName(PROXY_IPV6), PROXY_PORT), 10000);
+            SimpleLog.i("Socket IPv6 OK");
             return s;
-        } catch (Exception ignored) {}
+        } catch (Exception e) { SimpleLog.i("IPv6 falló: " + e.getMessage()); }
         // Fallback: resolver por DNS
         try {
             InetAddress[] addrs = InetAddress.getAllByName(PROXY_HOST);
