@@ -35,14 +35,6 @@ fi
 PANEL_PORT=8090
 SERVER_IP=$(ip -4 addr show scope global | awk '/inet /{print $2}' | cut -d/ -f1 | head -1 || echo "0.0.0.0")
 
-info "Instalando/actualizando Xray..."
-if bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install; then
-    info "Xray instalado correctamente."
-else
-    error "Falló la instalación de Xray."
-    exit 1
-fi
-
 info "Activando BBR..."
 if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr; then
     echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
@@ -53,50 +45,116 @@ else
     warn "BBR no disponible en este kernel."
 fi
 
-XRAY_CONFIG=/usr/local/etc/xray/config.json
-mkdir -p "$(dirname "$XRAY_CONFIG")"
+info "Escribiendo smux_socks.py (SOCKS5 interno placeholder)..."
+cat > /opt/btserver/smux_socks.py << 'PYEOF'
+#!/usr/bin/env python3
+import select
+import socket
+import struct
+import threading
 
-if [ "$FRESH_INSTALL" = true ] || [ ! -f "$XRAY_CONFIG" ]; then
-    info "Escribiendo configuración de Xray..."
-    cat > "$XRAY_CONFIG" << 'XEOF'
-{
-  "log": { "loglevel": "warning" },
-  "dns": {
-    "servers": ["8.8.8.8", "1.1.1.1"],
-    "queryStrategy": "UseIPv4"
-  },
-  "inbounds": [
-    {
-      "port": 10809,
-      "listen": "127.0.0.1",
-      "protocol": "vless",
-      "settings": {
-        "clients": [{ "id": "a3482e88-686a-4a58-8126-99c9df64b7bf" }],
-        "decryption": "none"
-      },
-      "streamSettings": { "network": "tcp", "security": "none" }
-    }
-  ],
-  "outbounds": [
-    {
-      "protocol": "freedom",
-      "settings": { "domainStrategy": "UseIPv4" },
-      "streamSettings": {
-        "sockopt": {
-          "tcpFastOpen": true,
-          "tcpCongestion": "bbr",
-          "tcpKeepAliveInterval": 30,
-          "tcpKeepAliveIdle": 60,
-          "tcpUserTimeout": 10000
-        }
-      }
-    }
-  ]
-}
-XEOF
-else
-    warn "Config de Xray existente conservada."
-fi
+LISTEN_ADDR = ("127.0.0.1", 10809)
+
+
+def read_exact(sock, n):
+    data = b""
+    while len(data) < n:
+        part = sock.recv(n - len(data))
+        if not part:
+            raise ConnectionError("closed")
+        data += part
+    return data
+
+
+def relay_bidi(a, b):
+    sockets = [a, b]
+    try:
+        while True:
+            readable, _, _ = select.select(sockets, [], [], 60)
+            if not readable:
+                continue
+            for src in readable:
+                dst = b if src is a else a
+                chunk = src.recv(65536)
+                if not chunk:
+                    return
+                dst.sendall(chunk)
+    except Exception:
+        pass
+    finally:
+        try:
+            a.close()
+        except Exception:
+            pass
+        try:
+            b.close()
+        except Exception:
+            pass
+
+
+def handle_client(client):
+    remote = None
+    try:
+        head = read_exact(client, 2)
+        ver, n_methods = head[0], head[1]
+        if ver != 5:
+            return
+        methods = read_exact(client, n_methods)
+        if 0x00 not in methods:
+            client.sendall(b"\x05\xff")
+            return
+        client.sendall(b"\x05\x00")
+
+        req = read_exact(client, 4)
+        ver, cmd, _, atyp = req
+        if ver != 5 or cmd != 1:
+            client.sendall(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
+            return
+
+        if atyp == 1:
+            host = socket.inet_ntoa(read_exact(client, 4))
+        elif atyp == 3:
+            dlen = read_exact(client, 1)[0]
+            host = read_exact(client, dlen).decode(errors="replace")
+        elif atyp == 4:
+            host = socket.inet_ntop(socket.AF_INET6, read_exact(client, 16))
+        else:
+            client.sendall(b"\x05\x08\x00\x01\x00\x00\x00\x00\x00\x00")
+            return
+        port = struct.unpack("!H", read_exact(client, 2))[0]
+
+        remote = socket.create_connection((host, port), timeout=10)
+        bind_host, bind_port = remote.getsockname()[:2]
+        bind_ip = socket.inet_aton(bind_host) if "." in bind_host else b"\x00\x00\x00\x00"
+        client.sendall(b"\x05\x00\x00\x01" + bind_ip + struct.pack("!H", bind_port))
+        relay_bidi(client, remote)
+    except Exception:
+        try:
+            client.sendall(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
+        except Exception:
+            pass
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+        if remote:
+            try:
+                remote.close()
+            except Exception:
+                pass
+
+
+srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(LISTEN_ADDR)
+srv.listen(512)
+print(f"smux socks5 interno en {LISTEN_ADDR[0]}:{LISTEN_ADDR[1]}")
+while True:
+    conn, _ = srv.accept()
+    threading.Thread(target=handle_client, args=(conn,), daemon=True).start()
+PYEOF
+chmod +x /opt/btserver/smux_socks.py
 
 info "Escribiendo btserver.py..."
 cat > /opt/btserver/btserver.py << 'PYEOF'
@@ -109,7 +167,8 @@ import time
 from pathlib import Path
 
 PORT = 80
-XRAY_ADDR = ("127.0.0.1", 10809)
+SMUX_UPSTREAM = ("127.0.0.1", 10809)
+TEST_CLIENT_ID = "009a6f59-f93b-4f76-beff-ecbc16821755"
 DB_PATH = Path("/opt/btserver/clients.json")
 DB_CACHE = {}
 DB_MTIME = 0.0
@@ -194,10 +253,10 @@ def handle_mux_tunnel(client):
             except Exception:
                 pass
 
-    def xray_to_client(stream_id, xray_conn):
+    def upstream_to_client(stream_id, upstream_conn):
         try:
             while True:
-                data = xray_conn.recv(65536)
+                data = upstream_conn.recv(65536)
                 if not data:
                     break
                 send_frame(TYPE_DATA, stream_id, data)
@@ -207,7 +266,7 @@ def handle_mux_tunnel(client):
         with streams_lock:
             streams.pop(stream_id, None)
         try:
-            xray_conn.close()
+            upstream_conn.close()
         except Exception:
             pass
 
@@ -219,12 +278,12 @@ def handle_mux_tunnel(client):
 
             if type_ == TYPE_OPEN:
                 try:
-                    xray_conn = socket.create_connection(XRAY_ADDR, 5)
+                    upstream_conn = socket.create_connection(SMUX_UPSTREAM, 5)
                     with streams_lock:
-                        streams[stream_id] = xray_conn
+                        streams[stream_id] = upstream_conn
                     threading.Thread(
-                        target=xray_to_client,
-                        args=(stream_id, xray_conn),
+                        target=upstream_to_client,
+                        args=(stream_id, upstream_conn),
                         daemon=True
                     ).start()
                 except Exception:
@@ -232,10 +291,10 @@ def handle_mux_tunnel(client):
 
             elif type_ == TYPE_DATA:
                 with streams_lock:
-                    xray_conn = streams.get(stream_id)
-                if xray_conn:
+                    upstream_conn = streams.get(stream_id)
+                if upstream_conn:
                     try:
-                        xray_conn.sendall(data)
+                        upstream_conn.sendall(data)
                     except Exception:
                         send_frame(TYPE_CLOSE, stream_id)
                         with streams_lock:
@@ -243,10 +302,10 @@ def handle_mux_tunnel(client):
 
             elif type_ == TYPE_CLOSE:
                 with streams_lock:
-                    xray_conn = streams.pop(stream_id, None)
-                if xray_conn:
+                    upstream_conn = streams.pop(stream_id, None)
+                if upstream_conn:
                     try:
-                        xray_conn.close()
+                        upstream_conn.close()
                     except Exception:
                         pass
 
@@ -298,21 +357,15 @@ def handle(sock):
             if lower.startswith("x-client-id:"):
                 client_id = line.split(":", 1)[1].strip()
 
-        if not client_id:
+        if client_id != TEST_CLIENT_ID:
             reject(sock, "INVALID")
-            return
-
-        db = load_db()
-        state, days_left, name, expires_at = ensure_client(db, client_id)
-        if state != "VALID":
-            reject(sock, state)
             return
 
         response = (
             b"HTTP/1.1 101 Switching Protocols\r\n"
             b"Upgrade: websocket\r\nConnection: Upgrade\r\n"
             b"X-Status: VALID\r\nX-Auth-State: VALID\r\n"
-            + f"X-Name: {name}\r\nX-Expire: {expires_at}\r\nX-Days-Left: {days_left}\r\n\r\n".encode()
+            b"X-Name: test-user\r\nX-Expire: 0\r\nX-Days-Left: 9999\r\n\r\n"
         )
 
         if action in ("tunnel", "tunnel-fast"):
@@ -515,10 +568,25 @@ chmod +x /opt/btserver/panel.py
 cat > /etc/systemd/system/btserver.service << 'SVCEOF'
 [Unit]
 Description=BlackTunnel Server
-After=network.target xray.service
+After=network.target smux-socks.service
 
 [Service]
 ExecStart=/usr/bin/python3 /opt/btserver/btserver.py
+Restart=always
+RestartSec=2
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+cat > /etc/systemd/system/smux-socks.service << 'SVCEOF'
+[Unit]
+Description=BlackTunnel SMUX SOCKS5 Internal
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/btserver/smux_socks.py
 Restart=always
 RestartSec=2
 LimitNOFILE=65535
@@ -542,10 +610,10 @@ WantedBy=multi-user.target
 SVCEOF
 
 systemctl daemon-reload
-systemctl enable xray btserver btpanel
+systemctl enable smux-socks btserver btpanel
 
 info "Iniciando servicios..."
-for svc in xray btserver btpanel; do
+for svc in smux-socks btserver btpanel; do
     if systemctl restart "$svc" 2>/dev/null; then
         info "  ✓ $svc OK"
     else
