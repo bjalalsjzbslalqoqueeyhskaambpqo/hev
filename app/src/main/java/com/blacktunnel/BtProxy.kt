@@ -244,6 +244,20 @@ object BtProxy {
         }
     }
 
+    fun getHotspotIp(): String? = runCatching {
+        java.net.NetworkInterface.getNetworkInterfaces()
+            .asSequence()
+            .flatMap { intf -> intf.inetAddresses.asSequence().map { intf.name.lowercase() to it } }
+            .filter { (_, addr) -> addr is java.net.Inet4Address && !addr.isLoopbackAddress }
+            .map { (name, addr) -> name to addr.hostAddress }
+            .let { pairs ->
+                pairs.firstOrNull { (name, ip) ->
+                    (name.contains("ap") || name.contains("swlan") ||
+                        name.contains("rndis") || name.contains("wlan")) && !ip.startsWith("127.")
+                }?.second ?: pairs.firstOrNull()?.second
+            }
+    }.getOrNull()
+
     private fun isNetworkValidated(cm: android.net.ConnectivityManager): Boolean {
         return runCatching {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
