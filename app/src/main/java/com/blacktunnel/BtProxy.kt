@@ -76,6 +76,7 @@ object BtProxy {
         reconnectAttempts = 0
         authFatalError = false
         thread(isDaemon = true, name = "btproxy-init") {
+            SimpleLog.i("btproxy-init")
             connectTunnel(protectSocket)
         }
     }
@@ -166,6 +167,9 @@ object BtProxy {
             out.writeInt(data.size)
             if (data.isNotEmpty()) out.write(data)
             out.flush()
+            if (streamId != 0) {
+                SimpleLog.i("TX frame type=$type stream=$streamId bytes=${data.size}")
+            }
         }
     }
 
@@ -186,6 +190,7 @@ object BtProxy {
                     when (type) {
                         TYPE_DATA -> {
                             val client = streams[streamId] ?: continue
+                            SimpleLog.i("RX frame DATA stream=$streamId bytes=${data.size}")
                             runCatching {
                                 client.getOutputStream().apply {
                                     write(data)
@@ -194,6 +199,7 @@ object BtProxy {
                             }
                         }
                         TYPE_CLOSE -> {
+                            SimpleLog.i("RX frame CLOSE stream=$streamId")
                             val client = streams.remove(streamId)
                             runCatching { client?.close() }
                         }
@@ -218,6 +224,7 @@ object BtProxy {
                 while (running) {
                     val client = server.accept().also { it.tcpNoDelay = true }
                     val streamId = nextStreamId.getAndIncrement()
+                    SimpleLog.i("OPEN stream=$streamId")
                     streams[streamId] = client
                     writeFrame(TYPE_OPEN, streamId)
                     thread(isDaemon = true, name = "stream-$streamId") {
@@ -334,10 +341,12 @@ object BtProxy {
 
             out.write(p1.toByteArray()); out.flush()
             LogSink.add("→", "P1 enviado", LogLevel.INFO)
+            SimpleLog.i("WS fake P1 enviado")
             Thread.sleep(10)
             val pingStart = System.currentTimeMillis()
             out.write(p2.toByteArray()); out.flush()
             LogSink.add("→", "P2 enviado", LogLevel.INFO)
+            SimpleLog.i("WS fake P2 enviado")
 
             socket.soTimeout = 8000
             val raw = StringBuilder()
@@ -357,10 +366,12 @@ object BtProxy {
                 runCatching { socket.close() }
                 TunnelSessionStore.setState("CONNECTING")
                 LogSink.add("✗", "Handshake inválido", LogLevel.ERROR)
+                SimpleLog.i("Handshake inválido")
                 clearDnsCache()
                 return null
             }
             LogSink.add("✓", "P1/P2 OK", LogLevel.OK)
+            SimpleLog.i("Handshake 101 OK")
 
             TunnelSessionStore.updateFromHeaders(mapOf(
                 "X-Status"    to "VALID",
