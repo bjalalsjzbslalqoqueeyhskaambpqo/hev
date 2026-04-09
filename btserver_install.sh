@@ -602,8 +602,6 @@ WantedBy=multi-user.target
 SVCEOF
 
 systemctl daemon-reload
-systemctl disable xray 2>/dev/null || true
-systemctl stop xray 2>/dev/null || true
 systemctl enable smux-socks btserver btpanel
 
 info "Iniciando servicios..."
