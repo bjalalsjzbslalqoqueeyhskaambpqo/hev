@@ -11,15 +11,18 @@ import android.os.ParcelFileDescriptor;
 import androidx.core.app.NotificationCompat;
 
 import java.io.File;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 public class BtVpnService extends VpnService {
     public static final String ACTION_START = "com.blacktunnel.START";
-    public static final String ACTION_STOP = "com.blacktunnel.STOP";
-    private static final String CHANNEL_ID = "simple_vpn";
-    private static final int NOTIF_ID = 33;
+    public static final String ACTION_STOP  = "com.blacktunnel.STOP";
+    private static final String CHANNEL_ID  = "simple_vpn";
+    private static final int    NOTIF_ID    = 33;
 
     private ParcelFileDescriptor tunPfd;
     private Thread hevThread;
+    private volatile boolean hevReady = false;
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -47,10 +50,11 @@ public class BtVpnService extends VpnService {
                 .addRoute("::", 0)
                 .addDnsServer("8.8.8.8")
                 .addDnsServer("1.1.1.1");
+
         try {
             b.addDisallowedApplication(getPackageName());
-        } catch (android.content.pm.PackageManager.NameNotFoundException e) {
-            SimpleLog.i("No se pudo excluir la app del TUN: " + e.getMessage());
+        } catch (Exception e) {
+            SimpleLog.i("addDisallowedApplication error: " + e.getMessage());
         }
 
         tunPfd = b.establish();
@@ -59,21 +63,44 @@ public class BtVpnService extends VpnService {
             return;
         }
 
+        int rawFd;
+        try {
+            rawFd = ParcelFileDescriptor.dup(tunPfd.getFileDescriptor()).detachFd();
+        } catch (Exception e) {
+            SimpleLog.i("dup fd error: " + e.getMessage());
+            return;
+        }
+
         File cfg = writeHevConfig();
-        BtProxy.start(sock -> protect(sock));
-        SimpleLog.i("Proxy iniciado");
+
+        CountDownLatch hevLatch = new CountDownLatch(1);
 
         hevThread = new Thread(() -> {
-            int fd = tunPfd.detachFd();
-            int code = HevBridge.start(cfg.getAbsolutePath(), fd);
+            SimpleLog.i("HEV arrancando...");
+            hevLatch.countDown();
+            int code = HevBridge.start(cfg.getAbsolutePath(), rawFd);
             SimpleLog.i("HEV terminó code=" + code);
+            hevReady = false;
+            try { ParcelFileDescriptor.adoptFd(rawFd).close(); } catch (Exception ignored) {}
         }, "hev-main");
         hevThread.start();
+
+        try {
+            hevLatch.await(500, TimeUnit.MILLISECONDS);
+            Thread.sleep(300);
+        } catch (InterruptedException ignored) {}
+
+        hevReady = true;
+        SimpleLog.i("HEV listo, iniciando proxy...");
+
+        BtProxy.start(sock -> protect(sock));
+        SimpleLog.i("Proxy iniciado");
     }
 
     private void stopAll() {
         BtProxy.stop();
         HevBridge.stop();
+        hevReady = false;
         if (tunPfd != null) {
             try { tunPfd.close(); } catch (Exception ignored) {}
             tunPfd = null;
@@ -84,22 +111,20 @@ public class BtVpnService extends VpnService {
 
     private File writeHevConfig() {
         File f = new File(getFilesDir(), "hev.yml");
-        String yml = """
-                tunnel:
-                  name: simple-hev
-                  mtu: 1300
-                  ipv4: 198.18.0.1
-                  ipv6: fc00::1
-                socks5:
-                  address: 127.0.0.1
-                  port: 10808
-                  udp: 'tcp'
-                misc:
-                  log-level: warn
-                """;
+        String yml = "tunnel:\n" +
+                     "  name: simple-hev\n" +
+                     "  mtu: 1300\n" +
+                     "  ipv4: 198.18.0.1\n" +
+                     "  ipv6: fc00::1\n" +
+                     "socks5:\n" +
+                     "  address: 127.0.0.1\n" +
+                     "  port: 10809\n" +
+                     "  udp: 'udp'\n" +
+                     "misc:\n" +
+                     "  log-level: warn\n";
         try {
             java.io.FileOutputStream fos = new java.io.FileOutputStream(f, false);
-            fos.write(yml.trim().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            fos.write(yml.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             fos.flush();
             fos.close();
         } catch (Exception e) {
@@ -112,7 +137,8 @@ public class BtVpnService extends VpnService {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
         NotificationManager nm = getSystemService(NotificationManager.class);
         if (nm != null) {
-            nm.createNotificationChannel(new NotificationChannel(CHANNEL_ID, "Simple VPN", NotificationManager.IMPORTANCE_LOW));
+            nm.createNotificationChannel(new NotificationChannel(
+                    CHANNEL_ID, "Simple VPN", NotificationManager.IMPORTANCE_LOW));
         }
     }
 
