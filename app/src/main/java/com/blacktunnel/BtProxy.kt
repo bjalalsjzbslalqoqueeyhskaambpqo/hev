@@ -53,7 +53,6 @@ object BtProxy {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Volatile private var running = false
-    @Volatile private var currentClientId = ""
     @Volatile private var bridgeServer: ServerSocket? = null
     @Volatile private var tunnelSocket: Socket? = null
     @Volatile private var tunnelOut: DataOutputStream? = null
@@ -71,7 +70,6 @@ object BtProxy {
         clientId: String,
         protectSocket: (Socket) -> Unit
     ) {
-        currentClientId = clientId.trim()
         savedCtx = ctx
         savedProtect = protectSocket
         running = true
@@ -319,7 +317,6 @@ object BtProxy {
     }
 
     private fun openTunnel(protectSocket: (Socket) -> Unit): Socket? {
-        if (currentClientId.isBlank()) return null
         return try {
             val totalStart = System.currentTimeMillis()
             LogSink.add("🔍", "Resolviendo DNS...", LogLevel.INFO)
@@ -333,7 +330,7 @@ object BtProxy {
 
             val p1 = "GET / HTTP/1.1\r\nHost: $PROXY_HOST\r\n\r\n"
             val p2 = "- / HTTP/1.1\r\nHost: $TUNNEL_HOST\r\nUpgrade: websocket\r\n" +
-                "Action: tunnel\r\nX-Client-Id: $currentClientId\r\n\r\n"
+                "Action: tunnel\r\n\r\n"
 
             out.write(p1.toByteArray()); out.flush()
             LogSink.add("→", "P1 enviado", LogLevel.INFO)
@@ -358,49 +355,17 @@ object BtProxy {
             val handshake = parseTunnelHandshake(raw.toString())
             if (handshake == null || handshake.statusCode != 101) {
                 runCatching { socket.close() }
-                val rejection = parseRejection(raw.toString())
-                val status = rejection?.get("x-status") ?: rejection?.get("x-auth-state") ?: ""
-                when {
-                    status.equals("EXPIRED", ignoreCase = true) -> {
-                        LogSink.add("✗", "Usuario expirado", LogLevel.ERROR)
-                        authFatalError = true
-                        TunnelSessionStore.setState("ERROR")
-                        stop()
-                    }
-                    status.equals("UNKNOWN", ignoreCase = true) ||
-                    status.equals("INVALID", ignoreCase = true) -> {
-                        LogSink.add("✗", "Usuario no registrado", LogLevel.ERROR)
-                        authFatalError = true
-                        TunnelSessionStore.setState("ERROR")
-                        stop()
-                        stop()
-                    }
-                    else -> {
-                        TunnelSessionStore.setState("CONNECTING")
-                        LogSink.add("✗", "Handshake inválido", LogLevel.ERROR)
-                        clearDnsCache()
-                    }
-                }
+                TunnelSessionStore.setState("CONNECTING")
+                LogSink.add("✗", "Handshake inválido", LogLevel.ERROR)
+                clearDnsCache()
                 return null
             }
             LogSink.add("✓", "P1/P2 OK", LogLevel.OK)
 
-            val authState = handshake.headers["x-auth-state"] ?: handshake.headers["x-status"] ?: ""
-            if (authState.isNotBlank() && !authState.equals("VALID", ignoreCase = true)) {
-                runCatching { socket.close() }
-                TunnelSessionStore.setState("ERROR")
-                authFatalError = true
-                val message = if (authState.contains("EXPIRED", ignoreCase = true))
-                    "Usuario expirado" else "Usuario inválido"
-                LogSink.add("✗", message, LogLevel.ERROR)
-                stop()
-                return null
-            }
-
             TunnelSessionStore.updateFromHeaders(mapOf(
-                "X-Status"    to (authState.ifBlank { "VALID" }),
-                "X-Name"      to (handshake.headers["x-name"] ?: "-"),
-                "X-Days-Left" to (handshake.headers["x-days-left"] ?: "-")
+                "X-Status"    to "VALID",
+                "X-Name"      to (handshake.headers["x-name"] ?: "dev"),
+                "X-Days-Left" to (handshake.headers["x-days-left"] ?: "9999")
             ))
             val latencyMs = System.currentTimeMillis() - pingStart
             val totalMs = System.currentTimeMillis() - totalStart
@@ -444,16 +409,6 @@ object BtProxy {
         val start = raw.indexOf(marker).takeIf { it >= 0 } ?: return null
         val end = raw.indexOf("\r\n\r\n", start).takeIf { it >= 0 } ?: return null
         return raw.substring(start, end)
-    }
-
-    private fun parseRejection(raw: String): Map<String, String>? {
-        val block = findHttpBlock(raw, 403) ?: return null
-        val lines = block.split("\r\n")
-        return lines.drop(1).mapNotNull { line ->
-            val sep = line.indexOf(':')
-            if (sep <= 0) return@mapNotNull null
-            line.substring(0, sep).trim().lowercase() to line.substring(sep + 1).trim()
-        }.toMap()
     }
 
     private fun parseTunnelHandshake(raw: String): HandshakeResult? {
