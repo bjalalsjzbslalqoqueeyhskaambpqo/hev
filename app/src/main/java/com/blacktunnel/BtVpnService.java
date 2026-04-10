@@ -93,11 +93,7 @@ public class BtVpnService extends VpnService {
         hevReady = true;
         SimpleLog.i("HEV listo, iniciando proxy...");
 
-        BtProxy.start(sock -> {
-            boolean ok = protect(sock);
-            if (!ok) SimpleLog.i("WARN: protect() falló");
-            return ok;
-        });
+        BtProxy.start();
         SimpleLog.i("Proxy iniciado");
     }
 

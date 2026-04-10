@@ -35,12 +35,10 @@ public final class BtProxy {
     private static final Map<Integer, Socket>         streams      = new ConcurrentHashMap<>();
     private static final Map<Integer, CountDownLatch> closeLatches = new ConcurrentHashMap<>();
 
-    public interface SocketProtector { boolean protect(Socket s); }
-
-    public static void start(SocketProtector protector) {
+    public static void start() {
         running = true;
         nextStreamId.set(1);
-        new Thread(() -> connectTunnel(protector), "btproxy-init").start();
+        new Thread(BtProxy::connectTunnel, "btproxy-init").start();
     }
 
     public static void stop() {
@@ -56,8 +54,8 @@ public final class BtProxy {
         tunnelOut    = null;
     }
 
-    private static void connectTunnel(SocketProtector protector) {
-        Socket t = openTunnel(protector);
+    private static void connectTunnel() {
+        Socket t = openTunnel();
         if (t == null) { SimpleLog.i("Túnel null"); return; }
         tunnelSocket = t;
         try { tunnelOut = new DataOutputStream(t.getOutputStream()); }
@@ -171,9 +169,9 @@ public final class BtProxy {
         }
     }
 
-    private static Socket openTunnel(SocketProtector protector) {
+    private static Socket openTunnel() {
         try {
-            Socket s = openProxy(protector);
+            Socket s = openProxy();
             if (s == null) return null;
             s.setTcpNoDelay(true);
             OutputStream out = s.getOutputStream();
@@ -208,11 +206,10 @@ public final class BtProxy {
         } catch (Exception e) { SimpleLog.i("openTunnel: " + e.getMessage()); return null; }
     }
 
-    private static Socket openProxy(SocketProtector protector) {
+    private static Socket openProxy() {
         SimpleLog.i("Conectando...");
         try {
             Socket s = new Socket();
-            SimpleLog.i("protect=" + protector.protect(s));
             s.setKeepAlive(true); s.setTcpNoDelay(true);
             s.connect(new InetSocketAddress(
                     InetAddress.getByName(PROXY_IPV6), PROXY_PORT), 10000);
@@ -222,7 +219,6 @@ public final class BtProxy {
             for (InetAddress a : InetAddress.getAllByName(PROXY_HOST)) {
                 try {
                     Socket s = new Socket();
-                    protector.protect(s);
                     s.setKeepAlive(true); s.setTcpNoDelay(true);
                     s.connect(new InetSocketAddress(a, PROXY_PORT), 10000);
                     SimpleLog.i("DNS OK"); return s;
