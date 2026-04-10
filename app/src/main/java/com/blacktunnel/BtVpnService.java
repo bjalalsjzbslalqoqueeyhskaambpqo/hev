@@ -121,7 +121,7 @@ public class BtVpnService extends VpnService {
         } catch (InterruptedException ignored) {}
 
         log("HEV listo, iniciando proxy...");
-        Proxy.start();
+        Proxy.start(sock -> protect(sock));
         log("Proxy iniciado");
     }
 
@@ -205,7 +205,11 @@ public class BtVpnService extends VpnService {
         private static final Map<Integer, Socket>         streams      = new ConcurrentHashMap<>();
         private static final Map<Integer, CountDownLatch> closeLatches = new ConcurrentHashMap<>();
 
-        static void start() {
+        interface Protector { boolean protect(Socket s); }
+        private static volatile Protector protector;
+
+        static void start(Protector p) {
+            protector = p;
             running = true;
             nextStreamId.set(1);
             new Thread(Proxy::connectTunnel, "btproxy-init").start();
@@ -213,6 +217,7 @@ public class BtVpnService extends VpnService {
 
         static void stop() {
             running = false;
+            protector = null;
             closeLatches.values().forEach(CountDownLatch::countDown);
             closeLatches.clear();
             try { if (socks5Server != null) socks5Server.close(); } catch (Exception ignored) {}
@@ -380,8 +385,10 @@ public class BtVpnService extends VpnService {
 
         private static Socket openProxy() {
             log("Conectando...");
+            Protector p = protector;
             try {
                 Socket s = new Socket();
+                if (p != null) p.protect(s);
                 s.setKeepAlive(true);
                 s.setTcpNoDelay(true);
                 s.connect(new InetSocketAddress(InetAddress.getByName(PROXY_IPV6), PROXY_PORT), 10000);
@@ -394,6 +401,7 @@ public class BtVpnService extends VpnService {
                 for (InetAddress a : InetAddress.getAllByName(PROXY_HOST)) {
                     try {
                         Socket s = new Socket();
+                        if (p != null) p.protect(s);
                         s.setKeepAlive(true);
                         s.setTcpNoDelay(true);
                         s.connect(new InetSocketAddress(a, PROXY_PORT), 10000);
