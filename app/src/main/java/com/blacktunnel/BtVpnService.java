@@ -48,7 +48,8 @@ public class BtVpnService extends VpnService {
                 .addAddress("fc00::1", 126)
                 .addRoute("0.0.0.0", 0)
                 .addRoute("::", 0)
-                .addDnsServer("198.18.0.1");  // DNS local — HEV intercepta y redirige al BtProxy DNS
+                .addDnsServer("8.8.8.8")
+                .addDnsServer("1.1.1.1");
 
         try {
             b.addDisallowedApplication(getPackageName());
@@ -118,11 +119,8 @@ public class BtVpnService extends VpnService {
                      "socks5:\n" +
                      "  address: 127.0.0.1\n" +
                      "  port: 10809\n" +
-                     "  udp: 'udp'\n" +
-                     "dns:\n" +
-                     "  port: 5353\n" +
-                     "  address: 127.0.0.1\n" +
-                     "  ttl: 0\n" +
+                     "  udp: 'tcp'\n" +
+                     "  pipeline: false\n" +
                      "misc:\n" +
                      "  log-level: warn\n";
         try {
