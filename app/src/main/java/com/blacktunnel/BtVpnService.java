@@ -428,6 +428,7 @@ public class BtVpnService extends VpnService {
             }
         }
 
+
         private static boolean isUpgradeResponse(String raw) {
             for (String line : raw.split("\r\n|\n")) {
                 String trimmed = line.trim();
