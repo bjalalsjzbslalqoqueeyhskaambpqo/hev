@@ -7,9 +7,7 @@ import android.content.Intent;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
-
 import androidx.core.app.NotificationCompat;
-
 import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -210,14 +208,7 @@ public class BtVpnService extends VpnService {
         private static final int  MAX_PAYLOAD       = 65535;
         private static final long STREAM_IDLE_MS    = 5 * 60 * 1000L;
         private static final long WATCHDOG_INTERVAL = 60 * 1000L;
-
-        // Buffer de escritura para el túnel TCP y UDP.
-        // Agrupa frames pequeños consecutivos en un solo write() al OS.
-        // Sin esto, cada writeByte/writeInt/writeShort/write es potencialmente
-        // un syscall separado. Con gaming (muchos paquetes pequeños por segundo)
-        // el ahorro es real. El flush() explícito al final de cada frame garantiza
-        // que no haya latencia artificial — el dato sale en cuanto está listo.
-        private static final int TUNNEL_WRITE_BUFFER = 16 * 1024; // 16 KB
+        private static final int TUNNEL_WRITE_BUFFER = 8 * 1024;
 
         interface Protector { boolean protect(Socket s); }
 
@@ -316,10 +307,6 @@ public class BtVpnService extends VpnService {
                     while (running) {
                         try {
                             Socket client = tcpRelayServer.accept();
-                            // TCP_NODELAY: deshabilita el algoritmo de Nagle en el socket local.
-                            // Sin esto, el OS retiene paquetes pequeños esperando acumular más
-                            // datos antes de mandarlos. Para gaming esto introduce latencia
-                            // artificial en cada input o estado enviado.
                             client.setTcpNoDelay(true);
                             new Thread(() -> handleTcpStream(client), "tcp-relay").start();
                         } catch (Exception ignored) { break; }
@@ -421,9 +408,6 @@ public class BtVpnService extends VpnService {
                 tcpTunnelOut.writeInt(sid);
                 tcpTunnelOut.writeShort(data.length);
                 if (data.length > 0) tcpTunnelOut.write(data);
-                // flush() vacía el BufferedOutputStream: frames del mismo tick
-                // se agruparon en el buffer y salen juntos en un solo write al OS.
-                // El dato no espera — sale en cuanto el frame está completo.
                 tcpTunnelOut.flush();
             }
         }
