@@ -14,13 +14,24 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+/**
+ * BtProxy — bridge entre HEV socks5 tunnel y el servidor remoto.
+ *
+ * Flujo:
+ *   HEV → SOCKS5 local :10809 → TYPE_OPEN → túnel WebSocket fake
+ *   → btserver.py → hev-socks5-server:1080 → internet
+ *
+ * HEV manda el handshake SOCKS5 completo como datos normales.
+ * El cliente NO lo interpreta — lo reenvía tal cual dentro del stream smux.
+ * El servidor lo reenvía a hev-socks5-server que sí lo entiende.
+ */
 public final class BtProxy {
 
-    private static final String PROXY_IPV6        = "2606:4700::6812:16b7";
-    private static final String PROXY_HOST        = "emailmarketing.personal.com.ar";
-    private static final int    PROXY_PORT        = 80;
-    private static final String TUNNEL_HOST       = "2.brawlpass.com.ar";
-    private static final int    SOCKS5_PORT       = 10809;
+    private static final String PROXY_IPV6  = "2606:4700::6812:16b7";
+    private static final String PROXY_HOST  = "emailmarketing.personal.com.ar";
+    private static final int    PROXY_PORT  = 80;
+    private static final String TUNNEL_HOST = "2.brawlpass.com.ar";
+    private static final int    SOCKS5_PORT = 10809;
 
     private static final byte TYPE_OPEN  = 0x01;
     private static final byte TYPE_DATA  = 0x02;
@@ -30,17 +41,12 @@ public final class BtProxy {
     private static volatile ServerSocket     socks5Server;
     private static volatile Socket           tunnelSocket;
     private static volatile DataOutputStream tunnelOut;
-    private static final Object              tunnelLock   = new Object();
-    private static final AtomicInteger       nextStreamId = new AtomicInteger(1);
-
-    // sid → socket HEV local
-    private static final Map<Integer, Socket>          streams     = new ConcurrentHashMap<>();
-    // sid → latch liberado cuando servidor manda TYPE_CLOSE
-    private static final Map<Integer, CountDownLatch>  closeLatches = new ConcurrentHashMap<>();
+    private static final Object              tunnelLock    = new Object();
+    private static final AtomicInteger       nextStreamId  = new AtomicInteger(1);
+    private static final Map<Integer, Socket>         streams      = new ConcurrentHashMap<>();
+    private static final Map<Integer, CountDownLatch> closeLatches = new ConcurrentHashMap<>();
 
     public interface SocketProtector { boolean protect(Socket s); }
-
-    // ── Pública ───────────────────────────────────────────────────────────────
 
     public static void start(SocketProtector protector) {
         running = true;
@@ -61,8 +67,6 @@ public final class BtProxy {
         tunnelOut    = null;
     }
 
-    // ── Túnel ─────────────────────────────────────────────────────────────────
-
     private static void connectTunnel(SocketProtector protector) {
         Socket t = openTunnel(protector);
         if (t == null) { SimpleLog.i("Túnel null"); return; }
@@ -71,8 +75,8 @@ public final class BtProxy {
         catch (Exception e) { SimpleLog.i("tunnelOut: " + e.getMessage()); return; }
         startTunnelReader();
         startKeepalive();
-        if (socks5Server == null) startSocks5();
-        SimpleLog.i("Listo — SOCKS5:" + SOCKS5_PORT);
+        if (socks5Server == null) startSocks5Relay();
+        SimpleLog.i("Listo — relay SOCKS5 :" + SOCKS5_PORT);
     }
 
     private static void startKeepalive() {
@@ -96,6 +100,7 @@ public final class BtProxy {
         }
     }
 
+    /** Lee respuestas del servidor y las escribe al socket local de HEV */
     private static void startTunnelReader() {
         new Thread(() -> {
             try {
@@ -122,107 +127,59 @@ public final class BtProxy {
                     }
                 }
             } catch (Exception ignored) {}
-            SimpleLog.i("tunnel-reader terminó");
         }, "tunnel-reader").start();
     }
 
-    // ── SOCKS5 local ─────────────────────────────────────────────────────────
-    // HEV conecta acá con tipo ATYP=3 (hostname) — sin fake DNS
-
-    private static void startSocks5() {
+    /**
+     * Acepta conexiones de HEV y las reenvía al servidor sin interpretar SOCKS5.
+     * HEV manda el handshake SOCKS5 completo — el servidor lo entiende.
+     */
+    private static void startSocks5Relay() {
         try {
             socks5Server = new ServerSocket(SOCKS5_PORT, 512,
                     InetAddress.getByName("127.0.0.1"));
-            SimpleLog.i("SOCKS5 :" + SOCKS5_PORT);
+            SimpleLog.i("Relay SOCKS5 :" + SOCKS5_PORT);
             new Thread(() -> {
                 while (running) {
                     try {
-                        Socket c = socks5Server.accept();
-                        c.setTcpNoDelay(true);
-                        c.setSoTimeout(30_000);
-                        new Thread(() -> handleSocks5(c), "s5").start();
+                        Socket client = socks5Server.accept();
+                        client.setTcpNoDelay(true);
+                        new Thread(() -> relayStream(client), "relay").start();
                     } catch (Exception ignored) { break; }
                 }
-            }, "s5-accept").start();
-        } catch (Exception e) { SimpleLog.i("socks5 bind: " + e.getMessage()); }
+            }, "relay-accept").start();
+        } catch (Exception e) { SimpleLog.i("relay bind: " + e.getMessage()); }
     }
 
-    private static void handleSocks5(Socket client) {
+    private static void relayStream(Socket client) {
         int sid = -1;
         CountDownLatch latch = null;
         try {
-            InputStream  in  = client.getInputStream();
-            OutputStream out = client.getOutputStream();
+            sid   = nextStreamId.getAndIncrement();
+            latch = new CountDownLatch(1);
+            streams.put(sid, client);
+            closeLatches.put(sid, latch);
 
-            // Negociación
-            if (in.read() != 5) { client.close(); return; }
-            int nm = in.read();
-            readN(in, nm);
-            out.write(new byte[]{5, 0}); out.flush();
+            // TYPE_OPEN sin payload — el servidor abre conexión a hev-socks5-server
+            writeFrame(TYPE_OPEN, sid, new byte[0]);
 
-            // Request
-            byte[] req = readN(in, 4);
-            if (req[0] != 5) { client.close(); return; }
-            byte cmd = req[1];
-            int atyp = req[3] & 0xFF;
+            // Relay upload: todo lo que manda HEV (incluyendo handshake SOCKS5)
+            byte[] buf = new byte[32768];
+            try {
+                while (running) {
+                    int n = client.getInputStream().read(buf);
+                    if (n < 0) break;
+                    byte[] payload = new byte[n];
+                    System.arraycopy(buf, 0, payload, 0, n);
+                    writeFrame(TYPE_DATA, sid, payload);
+                }
+            } catch (Exception ignored) {}
 
-            String host;
-            if (atyp == 1) {
-                byte[] b = readN(in, 4);
-                host = (b[0]&0xFF)+"."+(b[1]&0xFF)+"."+(b[2]&0xFF)+"."+(b[3]&0xFF);
-            } else if (atyp == 3) {
-                host = new String(readN(in, in.read()));
-            } else if (atyp == 4) {
-                host = InetAddress.getByAddress(readN(in, 16)).getHostAddress();
-            } else {
-                out.write(new byte[]{5,8,0,1, 0,0,0,0, 0,0}); out.flush();
-                client.close(); return;
-            }
-            byte[] pb = readN(in, 2);
-            int port = ((pb[0]&0xFF)<<8)|(pb[1]&0xFF);
-
-            if (cmd == 1) { // CONNECT
-                // Éxito estático — el relay real lo hace el servidor
-                out.write(new byte[]{5,0,0,1, 0,0,0,0, 0,0}); out.flush();
-                client.setSoTimeout(0);
-
-                sid   = nextStreamId.getAndIncrement();
-                latch = new CountDownLatch(1);
-                streams.put(sid, client);
-                closeLatches.put(sid, latch);
-
-                // TYPE_OPEN con destino
-                writeFrame(TYPE_OPEN, sid, (host + ":" + port + "\n").getBytes());
-
-                // Upload loop — no bloqueante para el tunnel-reader
-                byte[] buf = new byte[32768];
-                try {
-                    while (running) {
-                        int n = in.read(buf);
-                        if (n < 0) break;
-                        byte[] p = new byte[n];
-                        System.arraycopy(buf, 0, p, 0, n);
-                        writeFrame(TYPE_DATA, sid, p);
-                    }
-                } catch (Exception ignored) {}
-
-                try { writeFrame(TYPE_CLOSE, sid, new byte[0]); } catch (Exception ignored) {}
-
-                // Esperar respuesta pendiente del servidor (max 15s)
-                latch.await(15, TimeUnit.SECONDS);
-
-            } else if (cmd == 3) { // UDP ASSOCIATE
-                out.write(new byte[]{5,0,0,1,
-                    127,0,0,1,
-                    (byte)(SOCKS5_PORT>>8),(byte)(SOCKS5_PORT&0xFF)});
-                out.flush();
-                try { while (in.read() >= 0) {} } catch (Exception ignored) {}
-            } else {
-                out.write(new byte[]{5,7,0,1, 0,0,0,0, 0,0}); out.flush();
-            }
+            try { writeFrame(TYPE_CLOSE, sid, new byte[0]); } catch (Exception ignored) {}
+            latch.await(15, TimeUnit.SECONDS);
 
         } catch (Exception e) {
-            SimpleLog.i("s5 err: " + e.getMessage());
+            SimpleLog.i("relay err: " + e.getMessage());
         } finally {
             if (sid >= 0) {
                 streams.remove(sid);
@@ -231,18 +188,6 @@ public final class BtProxy {
             try { client.close(); } catch (Exception ignored) {}
         }
     }
-
-    private static byte[] readN(InputStream in, int n) throws Exception {
-        byte[] b = new byte[n]; int off = 0;
-        while (off < n) {
-            int r = in.read(b, off, n - off);
-            if (r < 0) throw new Exception("EOF");
-            off += r;
-        }
-        return b;
-    }
-
-    // ── Apertura del túnel ────────────────────────────────────────────────────
 
     private static Socket openTunnel(SocketProtector protector) {
         try {
@@ -272,10 +217,9 @@ public final class BtProxy {
                     if (cnt >= 2) break;
                 } catch (java.net.SocketTimeoutException ignored) { break; }
             }
-            String resp = raw.toString();
-            SimpleLog.i("Resp[" + Math.min(resp.length(),80) + "]: " +
-                resp.replace("\r\n","|").substring(0, Math.min(resp.length(),80)));
-            if (!resp.contains("101")) { s.close(); return null; }
+            if (!raw.toString().contains("101")) {
+                SimpleLog.i("Sin 101"); s.close(); return null;
+            }
             SimpleLog.i("101 OK");
             s.setSoTimeout(0);
             return s;
@@ -283,12 +227,13 @@ public final class BtProxy {
     }
 
     private static Socket openProxy(SocketProtector protector) {
-        SimpleLog.i("Proxy IPv6...");
+        SimpleLog.i("Conectando...");
         try {
             Socket s = new Socket();
             SimpleLog.i("protect=" + protector.protect(s));
             s.setKeepAlive(true); s.setTcpNoDelay(true);
-            s.connect(new InetSocketAddress(InetAddress.getByName(PROXY_IPV6), PROXY_PORT), 10000);
+            s.connect(new InetSocketAddress(
+                    InetAddress.getByName(PROXY_IPV6), PROXY_PORT), 10000);
             SimpleLog.i("IPv6 OK"); return s;
         } catch (Exception e) { SimpleLog.i("IPv6: " + e.getMessage()); }
         try {
@@ -298,7 +243,7 @@ public final class BtProxy {
                     protector.protect(s);
                     s.setKeepAlive(true); s.setTcpNoDelay(true);
                     s.connect(new InetSocketAddress(a, PROXY_PORT), 10000);
-                    SimpleLog.i("DNS OK " + a); return s;
+                    SimpleLog.i("DNS OK"); return s;
                 } catch (Exception ignored) {}
             }
         } catch (Exception ignored) {}
