@@ -25,7 +25,7 @@ public final class BtProxy {
     private static final int    PROXY_PORT        = 80;
     private static final String TUNNEL_HOST       = "2.brawlpass.com.ar";
     private static final int    SOCKS5_PORT       = 10809; // HEV apunta acá
-    private static final int    DNS_PORT          = 10853; // DNS local que escuchamos
+    private static final int    DNS_PORT          = 53; // DNS local — HEV apunta acá
 
     // Pool fake DNS de HEV: 198.18.0.0/15
     private static final int    FAKE_IP_START     = (198 << 24) | (18 << 16); // 198.18.0.0
@@ -203,12 +203,46 @@ public final class BtProxy {
             String hostname = parseDnsHostname(query);
             if (hostname == null || hostname.isEmpty()) return;
 
-            String fakeIp = allocateFakeIp(hostname);
-            byte[] response = buildDnsResponse(query, hostname, fakeIp);
-            DatagramPacket resp = new DatagramPacket(response, response.length,
-                    pkt.getAddress(), pkt.getPort());
-            udp.send(resp);
+            // Detectar tipo de query: A (1) o AAAA (28)
+            int qtype = 1;
+            try {
+                // QNAME termina en 0x00, luego 2 bytes de tipo
+                int pos = 12;
+                while (pos < query.length && query[pos] != 0) {
+                    pos += (query[pos] & 0xFF) + 1;
+                }
+                pos++; // saltar el 0x00
+                qtype = ((query[pos] & 0xFF) << 8) | (query[pos+1] & 0xFF);
+            } catch (Exception ignored) {}
+
+            byte[] response;
+            if (qtype == 28) {
+                // AAAA — responder NXDOMAIN para forzar IPv4
+                response = buildNxDomain(query);
+            } else {
+                // A — responder con IP fake del pool
+                String fakeIp = allocateFakeIp(hostname);
+                response = buildDnsResponse(query, hostname, fakeIp);
+            }
+            udp.send(new DatagramPacket(response, response.length,
+                    pkt.getAddress(), pkt.getPort()));
         } catch (Exception ignored) {}
+    }
+
+    private static byte[] buildNxDomain(byte[] query) {
+        // Respuesta NXDOMAIN: header con RCODE=3, sin answers
+        ByteBuffer buf = ByteBuffer.allocate(query.length);
+        buf.put(query[0]); buf.put(query[1]); // transaction ID
+        buf.put((byte)0x81); buf.put((byte)0x83); // response, NXDOMAIN
+        buf.putShort((short)1); // QDCOUNT
+        buf.putShort((short)0); // ANCOUNT
+        buf.putShort((short)0); // NSCOUNT
+        buf.putShort((short)0); // ARCOUNT
+        // Copiar question
+        buf.put(query, 12, query.length - 12);
+        byte[] result = new byte[buf.position()];
+        buf.rewind(); buf.get(result);
+        return result;
     }
 
     private static String parseDnsHostname(byte[] data) {
