@@ -76,7 +76,7 @@ public class BtVpnService extends VpnService {
 
         Builder b = new Builder()
                 .setSession("simple-hev")
-                .setMtu(8500)
+                .setMtu(1400)
                 .addAddress("198.18.0.1", 30)
                 .addAddress("fc00::1", 126)
                 .addRoute("0.0.0.0", 0)
@@ -155,6 +155,10 @@ public class BtVpnService extends VpnService {
                 "  netmask: 255.192.0.0\n" +
                 "  cache-size: 4096\n" +
                 "misc:\n" +
+                "  task-stack-size: 81920\n" +
+                "  tcp-buffer-size: 8192\n" +
+                "  connect-timeout: 5000\n" +
+                "  read-write-timeout: 300000\n" +
                 "  log-level: warn\n";
         try {
             java.io.FileOutputStream fos = new java.io.FileOutputStream(f, false);
@@ -397,6 +401,8 @@ public class BtVpnService extends VpnService {
                 if (p != null) p.protect(s);
                 s.setKeepAlive(true);
                 s.setTcpNoDelay(true);
+                s.setReceiveBufferSize(262144);
+                s.setSendBufferSize(262144);
                 s.connect(new InetSocketAddress(InetAddress.getByName(PROXY_IPV6), PROXY_PORT), 10000);
                 log("IPv6 OK");
                 return s;
@@ -410,6 +416,8 @@ public class BtVpnService extends VpnService {
                         if (p != null) p.protect(s);
                         s.setKeepAlive(true);
                         s.setTcpNoDelay(true);
+                        s.setReceiveBufferSize(262144);
+                        s.setSendBufferSize(262144);
                         s.connect(new InetSocketAddress(a, PROXY_PORT), 10000);
                         log("DNS OK");
                         return s;
