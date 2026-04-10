@@ -21,15 +21,11 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.text.SimpleDateFormat;
 import java.util.ArrayDeque;
-import java.util.Arrays;
 import java.util.Date;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -206,37 +202,36 @@ public class BtVpnService extends VpnService {
         private static final String TUNNEL_HOST = "2.brawlpass.com.ar";
         private static final int    SOCKS5_PORT = 10809;
 
-        private static final byte TYPE_OPEN_TCP = 0x01;
-        private static final byte TYPE_OPEN_UDP = 0x06;
-        private static final byte TYPE_DATA     = 0x02;
-        private static final byte TYPE_CLOSE    = 0x03;
-        private static final byte TYPE_NOP      = 0x04;
+        private static final byte TYPE_OPEN  = 0x01;
+        private static final byte TYPE_DATA  = 0x02;
+        private static final byte TYPE_CLOSE = 0x03;
+        private static final byte TYPE_PING  = 0x04;
+        private static final byte TYPE_PONG  = 0x05;
+
+        private static final int MAX_PAYLOAD = 65535;
 
         private static volatile boolean          running;
         private static volatile ServerSocket     socks5Server;
         private static volatile Socket           tunnelSocket;
         private static volatile DataOutputStream tunnelOut;
-        private static final Object              tunnelLock   = new Object();
-        private static final AtomicInteger       nextStreamId = new AtomicInteger(1);
-        private static final Map<Integer, Socket>         streams      = new ConcurrentHashMap<>();
-        private static final Map<Integer, CountDownLatch> closeLatches = new ConcurrentHashMap<>();
-        private static final LinkedBlockingQueue<byte[]>  sendQueue    = new LinkedBlockingQueue<>(8192);
-        private static final ExecutorService              relayPool    = Executors.newCachedThreadPool();
+        private static          Protector        protector;
+        private static final    Object           tunnelLock   = new Object();
+        private static final    AtomicInteger    nextStreamId = new AtomicInteger(1);
+        private static final    Map<Integer, Socket>          streams      = new ConcurrentHashMap<>();
+        private static final    Map<Integer, CountDownLatch>  closeLatches = new ConcurrentHashMap<>();
 
         interface Protector { boolean protect(Socket s); }
-        private static volatile Protector protector;
 
         static void start(Protector p) {
             protector = p;
             running = true;
             nextStreamId.set(1);
-            new Thread(Proxy::tunnelManager, "tunnel-manager").start();
+            new Thread(Proxy::connectTunnel, "btproxy-init").start();
         }
 
         static void stop() {
             running = false;
             protector = null;
-            sendQueue.clear();
             closeLatches.values().forEach(CountDownLatch::countDown);
             closeLatches.clear();
             try { if (socks5Server != null) socks5Server.close(); } catch (Exception ignored) {}
@@ -246,92 +241,40 @@ public class BtVpnService extends VpnService {
             try { if (tunnelSocket != null) tunnelSocket.close(); } catch (Exception ignored) {}
             tunnelSocket = null;
             tunnelOut = null;
-            relayPool.shutdownNow();
         }
 
-        private static void tunnelManager() {
-            while (running) {
-                Socket t = openTunnel();
-                if (t != null) {
-                    tunnelSocket = t;
-                    try {
-                        tunnelOut = new DataOutputStream(
-                            new java.io.BufferedOutputStream(t.getOutputStream(), 65536));
-                    } catch (Exception e) {
-                        log("tunnelOut: " + e.getMessage());
-                        try { t.close(); } catch (Exception ignored) {}
-                        sleepSafe(5000);
-                        continue;
-                    }
-                    startSendLoop();
-                    startTunnelReader();
-                    startKeepalive();
-                    if (socks5Server == null) startSocks5Relay();
-                    log("Túnel listo");
-                    while (running && tunnelSocket != null && !tunnelSocket.isClosed()) {
-                        sleepSafe(1000);
-                    }
-                } else {
-                    log("Túnel falló, reintento en 5s");
-                }
-                if (!running) break;
-                sleepSafe(5000);
-            }
-        }
-
-        private static void startSendLoop() {
-            new Thread(() -> {
-                while (running && tunnelSocket != null && !tunnelSocket.isClosed()) {
-                    try {
-                        byte[] frame = sendQueue.poll(1, TimeUnit.SECONDS);
-                        if (frame == null) continue;
-                        synchronized (tunnelLock) {
-                            tunnelOut.write(frame);
-                            byte[] next;
-                            while ((next = sendQueue.poll()) != null) {
-                                tunnelOut.write(next);
-                            }
-                            tunnelOut.flush();
-                        }
-                    } catch (Exception e) {
-                        break;
-                    }
-                }
-            }, "send-loop").start();
+        private static void connectTunnel() {
+            Socket t = openTunnel();
+            if (t == null) { log("Túnel null"); return; }
+            tunnelSocket = t;
+            try { tunnelOut = new DataOutputStream(t.getOutputStream()); }
+            catch (Exception e) { log("tunnelOut: " + e.getMessage()); return; }
+            startTunnelReader();
+            startKeepalive();
+            if (socks5Server == null) startSocks5Relay();
+            log("Listo — relay SOCKS5 :" + SOCKS5_PORT);
         }
 
         private static void startKeepalive() {
             new Thread(() -> {
-                while (running && tunnelSocket != null && !tunnelSocket.isClosed()) {
-                    sleepSafe(30_000);
-                    try { sendUdpDirect(buildFrame(TYPE_NOP, 0, new byte[0])); }
+                while (running && tunnelSocket != null && tunnelSocket.isConnected()) {
+                    try { Thread.sleep(30_000); } catch (InterruptedException ignored) {}
+                    try { writeFrame(TYPE_PING, 0, new byte[0]); }
                     catch (Exception ignored) { break; }
                 }
             }, "keepalive").start();
         }
 
-        private static byte[] buildFrame(byte type, int sid, byte[] data) {
-            int len = data != null ? data.length : 0;
-            byte[] frame = new byte[7 + len];
-            frame[0] = type;
-            frame[1] = (byte)(sid >> 24);
-            frame[2] = (byte)(sid >> 16);
-            frame[3] = (byte)(sid >> 8);
-            frame[4] = (byte)(sid);
-            frame[5] = (byte)(len >> 8);
-            frame[6] = (byte)(len);
-            if (len > 0) System.arraycopy(data, 0, frame, 7, len);
-            return frame;
-        }
-
-        private static void enqueueTcp(byte[] frame) {
-            sendQueue.offer(frame);
-        }
-
-        private static void sendUdpDirect(byte[] frame) throws Exception {
+        // Wire format: type(1) + sid(4) + len(2) = 7 bytes
+        // Coincide con struct.Struct("!BIH") en btserver.py
+        private static void writeFrame(byte type, int sid, byte[] data) throws Exception {
+            if (data.length > MAX_PAYLOAD) throw new IllegalArgumentException("payload > 65535");
             synchronized (tunnelLock) {
                 if (tunnelOut == null) return;
-                tunnelOut.write(frame);
+                tunnelOut.writeByte(type);
+                tunnelOut.writeInt(sid);
+                tunnelOut.writeShort(data.length);
+                if (data.length > 0) tunnelOut.write(data);
                 tunnelOut.flush();
             }
         }
@@ -340,13 +283,10 @@ public class BtVpnService extends VpnService {
             new Thread(() -> {
                 try {
                     DataInputStream inp = new DataInputStream(tunnelSocket.getInputStream());
-                    byte[] hdr = new byte[7];
                     while (running) {
-                        inp.readFully(hdr);
-                        byte type = hdr[0];
-                        int  sid  = ((hdr[1] & 0xFF) << 24) | ((hdr[2] & 0xFF) << 16)
-                                  | ((hdr[3] & 0xFF) << 8)  |  (hdr[4] & 0xFF);
-                        int  len  = ((hdr[5] & 0xFF) << 8)  |  (hdr[6] & 0xFF);
+                        byte   type = inp.readByte();
+                        int    sid  = inp.readInt();
+                        int    len  = inp.readUnsignedShort();
                         byte[] data = len > 0 ? new byte[len] : new byte[0];
                         if (len > 0) inp.readFully(data);
 
@@ -362,12 +302,11 @@ public class BtVpnService extends VpnService {
                             CountDownLatch l = closeLatches.remove(sid);
                             if (l != null) l.countDown();
                             streams.remove(sid);
+                        } else if (type == TYPE_PONG) {
+                            // keepalive reply — ignorar
                         }
                     }
-                } catch (Exception ignored) {
-                    try { if (tunnelSocket != null) tunnelSocket.close(); } catch (Exception ignored2) {}
-                    tunnelSocket = null;
-                }
+                } catch (Exception ignored) {}
             }, "tunnel-reader").start();
         }
 
@@ -380,7 +319,7 @@ public class BtVpnService extends VpnService {
                         try {
                             Socket client = socks5Server.accept();
                             client.setTcpNoDelay(true);
-                            relayPool.submit(() -> relayStream(client));
+                            new Thread(() -> relayStream(client), "relay").start();
                         } catch (Exception ignored) { break; }
                     }
                 }, "relay-accept").start();
@@ -390,69 +329,26 @@ public class BtVpnService extends VpnService {
         private static void relayStream(Socket client) {
             int sid = -1;
             CountDownLatch latch = null;
-            boolean isUdp = false;
             try {
-                DataInputStream cin = new DataInputStream(client.getInputStream());
-                OutputStream cout = client.getOutputStream();
-
-                cin.readByte();
-                int nmethods = cin.readByte() & 0xFF;
-                cin.skipBytes(nmethods);
-                cout.write(new byte[]{0x05, 0x00});
-                cout.flush();
-
-                cin.readByte();
-                byte cmd = cin.readByte();
-                isUdp = (cmd == 0x03);
-                cin.readByte();
-
-                byte atyp = cin.readByte();
-                if (atyp == 0x01) {
-                    cin.skipBytes(4);
-                } else if (atyp == 0x03) {
-                    int dlen = cin.readByte() & 0xFF;
-                    cin.skipBytes(dlen);
-                } else if (atyp == 0x04) {
-                    cin.skipBytes(16);
-                }
-                cin.skipBytes(2);
-
-                cout.write(new byte[]{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0});
-                cout.flush();
-
-                sid = nextStreamId.getAndUpdate(v -> v >= Integer.MAX_VALUE ? 1 : v + 1);
+                sid = nextStreamId.getAndIncrement();
                 latch = new CountDownLatch(1);
                 streams.put(sid, client);
                 closeLatches.put(sid, latch);
+                writeFrame(TYPE_OPEN, sid, new byte[0]);
 
-                byte openType = isUdp ? TYPE_OPEN_UDP : TYPE_OPEN_TCP;
-                byte[] openFrame = buildFrame(openType, sid, new byte[0]);
-                if (isUdp) {
-                    sendUdpDirect(openFrame);
-                } else {
-                    enqueueTcp(openFrame);
-                }
-
-                byte[] buf = new byte[isUdp ? 4096 : 32768];
-                while (running) {
-                    int n = client.getInputStream().read(buf);
-                    if (n < 0) break;
-                    byte[] frame = buildFrame(TYPE_DATA, sid, Arrays.copyOf(buf, n));
-                    if (isUdp) {
-                        sendUdpDirect(frame);
-                    } else {
-                        enqueueTcp(frame);
+                byte[] buf = new byte[32768];
+                try {
+                    while (running) {
+                        int n = client.getInputStream().read(buf);
+                        if (n < 0) break;
+                        byte[] payload = new byte[n];
+                        System.arraycopy(buf, 0, payload, 0, n);
+                        writeFrame(TYPE_DATA, sid, payload);
                     }
-                }
+                } catch (Exception ignored) {}
 
-                byte[] closeFrame = buildFrame(TYPE_CLOSE, sid, new byte[0]);
-                if (isUdp) {
-                    try { sendUdpDirect(closeFrame); } catch (Exception ignored) {}
-                } else {
-                    enqueueTcp(closeFrame);
-                    latch.await(15, TimeUnit.SECONDS);
-                }
-
+                try { writeFrame(TYPE_CLOSE, sid, new byte[0]); } catch (Exception ignored) {}
+                latch.await(15, TimeUnit.SECONDS);
             } catch (Exception e) {
                 log("relay err: " + e.getMessage());
             } finally {
@@ -470,7 +366,7 @@ public class BtVpnService extends VpnService {
                 if (s == null) return null;
                 s.setTcpNoDelay(true);
                 OutputStream out = s.getOutputStream();
-                InputStream  inp = s.getInputStream();
+                InputStream inp = s.getInputStream();
 
                 out.write(("GET / HTTP/1.1\r\nHost: " + PROXY_HOST + "\r\n\r\n").getBytes());
                 out.flush();
@@ -538,10 +434,6 @@ public class BtVpnService extends VpnService {
                 }
             } catch (Exception ignored) {}
             return null;
-        }
-
-        private static void sleepSafe(long ms) {
-            try { Thread.sleep(ms); } catch (InterruptedException ignored) {}
         }
     }
 }
