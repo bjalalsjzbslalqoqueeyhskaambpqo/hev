@@ -120,7 +120,7 @@ public class BtVpnService extends VpnService {
                      "  port: 10809\n" +
                      "  udp: 'udp'\n" +
                      "dns:\n" +
-                     "  port: 53\n" +
+                     "  port: 5353\n" +
                      "  address: 127.0.0.1\n" +
                      "  ttl: 0\n" +
                      "misc:\n" +
