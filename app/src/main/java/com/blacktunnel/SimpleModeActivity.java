@@ -24,7 +24,7 @@ public class SimpleModeActivity extends ComponentActivity {
         @Override
         public void run() {
             if (logView != null) {
-                logView.setText(SimpleLog.dump());
+                logView.setText(BtVpnService.dumpLogs());
             }
             handler.postDelayed(this, 800);
         }
@@ -38,7 +38,7 @@ public class SimpleModeActivity extends ComponentActivity {
                 new ActivityResultContracts.StartActivityForResult(),
                 result -> {
                     if (result.getResultCode() == RESULT_OK) startVpn();
-                    else SimpleLog.i("Permiso VPN denegado");
+                    else BtVpnService.log("Permiso VPN denegado");
                 }
         );
 
@@ -54,7 +54,7 @@ public class SimpleModeActivity extends ComponentActivity {
         });
 
         handler.post(logTicker);
-        SimpleLog.i("Simple mode listo");
+        BtVpnService.log("Simple mode listo");
     }
 
     @Override
@@ -79,7 +79,7 @@ public class SimpleModeActivity extends ComponentActivity {
         else startService(i);
         connected = true;
         connectBtn.setText("Desconectar");
-        SimpleLog.i("Solicitando conexión...");
+        BtVpnService.log("Solicitando conexión...");
     }
 
     private void stopVpn() {
@@ -88,6 +88,6 @@ public class SimpleModeActivity extends ComponentActivity {
         startService(i);
         connected = false;
         connectBtn.setText("Conectar");
-        SimpleLog.i("Solicitando desconexión...");
+        BtVpnService.log("Solicitando desconexión...");
     }
 }
