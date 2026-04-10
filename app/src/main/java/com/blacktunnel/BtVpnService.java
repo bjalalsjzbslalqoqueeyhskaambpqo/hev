@@ -53,6 +53,7 @@ public class BtVpnService extends VpnService {
 
         try {
             b.addDisallowedApplication(getPackageName());
+            b.addDisallowedApplication("com.sonelli.juicessh");
         } catch (Exception e) {
             SimpleLog.i("addDisallowedApplication error: " + e.getMessage());
         }
