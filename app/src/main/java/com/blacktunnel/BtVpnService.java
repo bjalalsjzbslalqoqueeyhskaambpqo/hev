@@ -27,7 +27,6 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class BtVpnService extends VpnService {
@@ -41,7 +40,6 @@ public class BtVpnService extends VpnService {
     private static final SimpleDateFormat LOG_TS = new SimpleDateFormat("HH:mm:ss", Locale.US);
 
     private ParcelFileDescriptor tunPfd;
-    private final AtomicBoolean serviceRunning = new AtomicBoolean(false);
 
     public static synchronized void log(String msg) {
         String line = LOG_TS.format(new Date()) + "  " + msg;
@@ -72,15 +70,7 @@ public class BtVpnService extends VpnService {
     }
 
     private void startAll() {
-        if (!serviceRunning.compareAndSet(false, true)) {
-            log("startAll: ya hay una sesión activa, ignorando");
-            return;
-        }
-        if (tunPfd != null) {
-            serviceRunning.set(false);
-            return;
-        }
-
+        if (tunPfd != null) return;
         createChannel();
         startForeground(NOTIF_ID, buildNotif("Simple tunnel activo"));
 
@@ -103,7 +93,6 @@ public class BtVpnService extends VpnService {
         tunPfd = b.establish();
         if (tunPfd == null) {
             log("No se pudo establecer TUN");
-            serviceRunning.set(false);
             return;
         }
 
@@ -112,7 +101,6 @@ public class BtVpnService extends VpnService {
             rawFd = ParcelFileDescriptor.dup(tunPfd.getFileDescriptor()).detachFd();
         } catch (Exception e) {
             log("dup fd error: " + e.getMessage());
-            serviceRunning.set(false);
             return;
         }
 
@@ -124,11 +112,7 @@ public class BtVpnService extends VpnService {
             hevLatch.countDown();
             int code = HevBridge.start(cfg.getAbsolutePath(), rawFd);
             log("HEV terminó code=" + code);
-            if (serviceRunning.get()) {
-                log("HEV terminó inesperadamente, deteniendo servicio...");
-                stopAll();
-                stopSelf();
-            }
+            try { ParcelFileDescriptor.adoptFd(rawFd).close(); } catch (Exception ignored) {}
         }, "hev-main").start();
 
         try {
@@ -142,7 +126,6 @@ public class BtVpnService extends VpnService {
     }
 
     private void stopAll() {
-        serviceRunning.set(false);
         Proxy.stop();
         HevBridge.stop();
         if (tunPfd != null) {
@@ -328,13 +311,7 @@ public class BtVpnService extends VpnService {
             int sid = -1;
             CountDownLatch latch = null;
             try {
-                int next = nextStreamId.incrementAndGet();
-                if (next <= 0) {
-                    nextStreamId.set(1);
-                    next = 1;
-                }
-                sid = next;
-
+                sid = nextStreamId.getAndIncrement();
                 latch = new CountDownLatch(1);
                 streams.put(sid, client);
                 closeLatches.put(sid, latch);
@@ -382,20 +359,6 @@ public class BtVpnService extends VpnService {
                 s.setSoTimeout(8000);
                 StringBuilder raw = new StringBuilder();
                 long dl = System.currentTimeMillis() + 8000;
-
-                while (System.currentTimeMillis() < dl) {
-                    try {
-                        byte[] tmp = new byte[4096];
-                        int n = inp.read(tmp);
-                        if (n < 0) break;
-                        raw.append(new String(tmp, 0, n));
-                        if (raw.indexOf("\r\n\r\n") >= 0) break;
-                    } catch (java.net.SocketTimeoutException ignored) { break; }
-                }
-
-                log("Resp1: " + raw.toString().substring(0, Math.min(raw.length(), 120)));
-
-                dl = System.currentTimeMillis() + 8000;
                 while (System.currentTimeMillis() < dl) {
                     try {
                         byte[] tmp = new byte[4096];
@@ -407,12 +370,8 @@ public class BtVpnService extends VpnService {
                         if (cnt >= 2) break;
                     } catch (java.net.SocketTimeoutException ignored) { break; }
                 }
-
-                String rawStr = raw.toString();
-                if (!rawStr.contains("HTTP/1.1 101") && !rawStr.contains("HTTP/1.0 101")) {
-                    int sep = rawStr.indexOf("\r\n\r\n");
-                    String resp2 = sep >= 0 ? rawStr.substring(sep + 4) : rawStr;
-                    log("Sin 101 — resp2: " + resp2.substring(0, Math.min(resp2.length(), 200)));
+                if (!raw.toString().contains("101")) {
+                    log("Sin 101");
                     s.close();
                     return null;
                 }
