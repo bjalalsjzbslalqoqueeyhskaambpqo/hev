@@ -108,8 +108,9 @@ public final class BtProxy {
                             catch (Exception ignored) {}
                         }
                     } else if (type == TYPE_CLOSE) {
-                        Socket client = streams.remove(streamId);
-                        if (client != null) try { client.close(); } catch (Exception ignored) {}
+                        // Quitar del map — esto desbloquea el wait loop en handleSocks5Client
+                        streams.remove(streamId);
+                        // No cerrar el socket aquí — handleSocks5Client lo cierra
                     }
                 }
             } catch (Exception ignored) {}
@@ -199,10 +200,8 @@ public final class BtProxy {
             byte[] dest = (host + ":" + port + "\n").getBytes();
             writeFrame(TYPE_OPEN, streamId, dest);
 
-            // ── Relay bidireccional: cliente ↔ servidor ──────────────────────
-            // Thread separado para leer del túnel y escribir al cliente local
-            // (el tunnel-reader global ya hace esto, pero necesitamos saber
-            //  cuándo termina este stream específico para cerrar limpio)
+            // Upload: HEV → servidor via TYPE_DATA
+            // Download: servidor → HEV lo maneja tunnelReader globalmente
             byte[] buf = new byte[65536];
             try {
                 while (running) {
@@ -212,12 +211,17 @@ public final class BtProxy {
                     System.arraycopy(buf, 0, payload, 0, n);
                     writeFrame(TYPE_DATA, streamId, payload);
                 }
-            } catch (Exception e) {
-                // Broken pipe u otro error — el cliente local cerró
-                SimpleLog.i("stream=" + streamId + " fin relay: " + e.getMessage());
-            }
+            } catch (Exception ignored) {}
 
+            // HEV terminó de subir — notificar al servidor
             try { writeFrame(TYPE_CLOSE, streamId, new byte[0]); } catch (Exception ignored) {}
+
+            // Esperar a que tunnelReader procese el TYPE_CLOSE del servidor
+            // y escriba los últimos datos a HEV antes de cerrar el socket
+            long deadline = System.currentTimeMillis() + 10_000;
+            while (streams.containsKey(streamId) && System.currentTimeMillis() < deadline) {
+                try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+            }
             streams.remove(streamId);
             try { client.close(); } catch (Exception ignored) {}
 
