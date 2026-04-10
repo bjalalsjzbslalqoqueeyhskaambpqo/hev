@@ -76,13 +76,13 @@ public class BtVpnService extends VpnService {
 
         Builder b = new Builder()
                 .setSession("simple-hev")
-                .setMtu(1500)
+                .setMtu(8500)
                 .addAddress("198.18.0.1", 30)
                 .addAddress("fc00::1", 126)
                 .addRoute("0.0.0.0", 0)
                 .addRoute("::", 0)
-                .addDnsServer("8.8.8.8")
-                .addDnsServer("1.1.1.1");
+                .addDnsServer("198.18.0.2")
+                .addDnsServer("8.8.8.8");
 
         try {
             b.addDisallowedApplication(getPackageName());
@@ -140,14 +140,20 @@ public class BtVpnService extends VpnService {
         File f = new File(getFilesDir(), "hev.yml");
         String yml = "tunnel:\n" +
                 "  name: simple-hev\n" +
-                "  mtu: 1500\n" +
+                "  mtu: 8500\n" +
                 "  ipv4: 198.18.0.1\n" +
                 "  ipv6: fc00::1\n" +
                 "socks5:\n" +
                 "  address: 127.0.0.1\n" +
                 "  port: 10809\n" +
                 "  udp: 'udp'\n" +
-                "  pipeline: false\n" +
+                "  pipeline: true\n" +
+                "mapdns:\n" +
+                "  address: 198.18.0.2\n" +
+                "  port: 53\n" +
+                "  network: 100.64.0.0\n" +
+                "  netmask: 255.192.0.0\n" +
+                "  cache-size: 4096\n" +
                 "misc:\n" +
                 "  log-level: warn\n";
         try {
