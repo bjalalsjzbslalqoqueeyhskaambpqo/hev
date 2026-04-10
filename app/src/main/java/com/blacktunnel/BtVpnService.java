@@ -41,8 +41,6 @@ public class BtVpnService extends VpnService {
     private static final SimpleDateFormat LOG_TS = new SimpleDateFormat("HH:mm:ss", Locale.US);
 
     private ParcelFileDescriptor tunPfd;
-
-    // FIX #7 — flag de servicio activo para detectar threads zombies al reiniciar
     private final AtomicBoolean serviceRunning = new AtomicBoolean(false);
 
     public static synchronized void log(String msg) {
@@ -74,7 +72,6 @@ public class BtVpnService extends VpnService {
     }
 
     private void startAll() {
-        // FIX #7 — si ya hay una sesión activa no arrancamos otra encima
         if (!serviceRunning.compareAndSet(false, true)) {
             log("startAll: ya hay una sesión activa, ignorando");
             return;
@@ -127,13 +124,6 @@ public class BtVpnService extends VpnService {
             hevLatch.countDown();
             int code = HevBridge.start(cfg.getAbsolutePath(), rawFd);
             log("HEV terminó code=" + code);
-            // FIX #1 — NO llamar adoptFd(rawFd).close() aquí.
-            // HEV es dueño del rawFd y lo cierra internamente al terminar.
-            // Llamar adoptFd() sobre un fd ya cerrado por HEV dispara fdsan
-            // en Android 10+ (API 30+) con SIGABRT por double-close.
-
-            // FIX #2 — si HEV muere inesperadamente mientras el servicio
-            // sigue activo, detener todo de forma limpia.
             if (serviceRunning.get()) {
                 log("HEV terminó inesperadamente, deteniendo servicio...");
                 stopAll();
@@ -338,7 +328,6 @@ public class BtVpnService extends VpnService {
             int sid = -1;
             CountDownLatch latch = null;
             try {
-                // FIX #6 — evitar overflow de streamId que produciría sids negativos
                 int next = nextStreamId.incrementAndGet();
                 if (next <= 0) {
                     nextStreamId.set(1);
@@ -393,6 +382,20 @@ public class BtVpnService extends VpnService {
                 s.setSoTimeout(8000);
                 StringBuilder raw = new StringBuilder();
                 long dl = System.currentTimeMillis() + 8000;
+
+                while (System.currentTimeMillis() < dl) {
+                    try {
+                        byte[] tmp = new byte[4096];
+                        int n = inp.read(tmp);
+                        if (n < 0) break;
+                        raw.append(new String(tmp, 0, n));
+                        if (raw.indexOf("\r\n\r\n") >= 0) break;
+                    } catch (java.net.SocketTimeoutException ignored) { break; }
+                }
+
+                log("Resp1: " + raw.toString().substring(0, Math.min(raw.length(), 120)));
+
+                dl = System.currentTimeMillis() + 8000;
                 while (System.currentTimeMillis() < dl) {
                     try {
                         byte[] tmp = new byte[4096];
@@ -405,11 +408,11 @@ public class BtVpnService extends VpnService {
                     } catch (java.net.SocketTimeoutException ignored) { break; }
                 }
 
-                // FIX #4 — verificar el 101 en la línea de status real,
-                // no como substring suelto que podría matchear en cualquier header o body
                 String rawStr = raw.toString();
                 if (!rawStr.contains("HTTP/1.1 101") && !rawStr.contains("HTTP/1.0 101")) {
-                    log("Sin 101 — respuesta: " + rawStr.substring(0, Math.min(rawStr.length(), 200)));
+                    int sep = rawStr.indexOf("\r\n\r\n");
+                    String resp2 = sep >= 0 ? rawStr.substring(sep + 4) : rawStr;
+                    log("Sin 101 — resp2: " + resp2.substring(0, Math.min(resp2.length(), 200)));
                     s.close();
                     return null;
                 }
