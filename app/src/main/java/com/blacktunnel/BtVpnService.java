@@ -10,6 +10,7 @@ import android.os.ParcelFileDescriptor;
 
 import androidx.core.app.NotificationCompat;
 
+import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.File;
@@ -134,7 +135,7 @@ public class BtVpnService extends VpnService {
 
         String yml = "tunnel:\n" +
                 "  name: bt-hev\n" +
-                "  mtu: 8500\n" +
+                "  mtu: 1400\n" +
                 "  ipv4: 198.18.0.1\n" +
                 "  ipv6: fc00::1\n" +
                 "socks5:\n" +
@@ -187,6 +188,9 @@ public class BtVpnService extends VpnService {
     @Override
     public void onDestroy() { stopAll(); super.onDestroy(); }
 
+    // ==========================================================================
+    // Proxy
+    // ==========================================================================
     static final class Proxy {
         static final int SOCKS5_TCP_PORT = 10809;
         static final int SOCKS5_UDP_PORT = 10810;
@@ -194,7 +198,7 @@ public class BtVpnService extends VpnService {
         private static final String PROXY_IPV6  = "2606:4700::6812:16b7";
         private static final String PROXY_HOST  = "emailmarketing.personal.com.ar";
         private static final int    PROXY_PORT  = 80;
-        private static final String TUNNEL_HOST = "3.brawlpass.com.ar";
+        private static final String TUNNEL_HOST = "2.brawlpass.com.ar";
 
         private static final byte TYPE_OPEN  = 0x01;
         private static final byte TYPE_DATA  = 0x02;
@@ -202,9 +206,18 @@ public class BtVpnService extends VpnService {
         private static final byte TYPE_PING  = 0x04;
         private static final byte TYPE_PONG  = 0x05;
         private static final byte STREAM_TCP = 0x00;
+
         private static final int  MAX_PAYLOAD       = 65535;
         private static final long STREAM_IDLE_MS    = 5 * 60 * 1000L;
         private static final long WATCHDOG_INTERVAL = 60 * 1000L;
+
+        // Buffer de escritura para el túnel TCP y UDP.
+        // Agrupa frames pequeños consecutivos en un solo write() al OS.
+        // Sin esto, cada writeByte/writeInt/writeShort/write es potencialmente
+        // un syscall separado. Con gaming (muchos paquetes pequeños por segundo)
+        // el ahorro es real. El flush() explícito al final de cada frame garantiza
+        // que no haya latencia artificial — el dato sale en cuanto está listo.
+        private static final int TUNNEL_WRITE_BUFFER = 16 * 1024; // 16 KB
 
         interface Protector { boolean protect(Socket s); }
 
@@ -256,29 +269,23 @@ public class BtVpnService extends VpnService {
             udpTunnelOut = null;
         }
 
+        // ----------------------------------------------------------------------
+        // TCP tunnel
+        // ----------------------------------------------------------------------
         private static void connectTcpTunnel(boolean alsoStartUdp) {
             Socket t = openTunnel("tunnel");
             if (t == null) { log("TCP túnel null"); return; }
             tcpTunnel = t;
-            try { tcpTunnelOut = new DataOutputStream(t.getOutputStream()); }
-            catch (Exception e) { log("tcpTunnelOut: " + e.getMessage()); return; }
+            try {
+                tcpTunnelOut = new DataOutputStream(
+                        new BufferedOutputStream(t.getOutputStream(), TUNNEL_WRITE_BUFFER));
+            } catch (Exception e) { log("tcpTunnelOut: " + e.getMessage()); return; }
             startTcpTunnelReader();
             startTcpKeepalive();
             startStreamWatchdog();
             startTcpRelay();
             if (alsoStartUdp) new Thread(Proxy::connectUdpTunnel, "bt-udp-init").start();
             log("Túnel TCP listo");
-        }
-
-        private static void connectUdpTunnel() {
-            Socket t = openTunnel("tunnel-udp");
-            if (t == null) { log("UDP túnel null"); return; }
-            udpTunnel = t;
-            try { udpTunnelOut = new DataOutputStream(t.getOutputStream()); }
-            catch (Exception e) { log("udpTunnelOut: " + e.getMessage()); return; }
-            startUdpTunnelReader();
-            startUdpRelay();
-            log("Túnel UDP listo");
         }
 
         private static void startStreamWatchdog() {
@@ -309,6 +316,10 @@ public class BtVpnService extends VpnService {
                     while (running) {
                         try {
                             Socket client = tcpRelayServer.accept();
+                            // TCP_NODELAY: deshabilita el algoritmo de Nagle en el socket local.
+                            // Sin esto, el OS retiene paquetes pequeños esperando acumular más
+                            // datos antes de mandarlos. Para gaming esto introduce latencia
+                            // artificial en cada input o estado enviado.
                             client.setTcpNoDelay(true);
                             new Thread(() -> handleTcpStream(client), "tcp-relay").start();
                         } catch (Exception ignored) { break; }
@@ -361,6 +372,78 @@ public class BtVpnService extends VpnService {
             }
         }
 
+        private static void startTcpTunnelReader() {
+            new Thread(() -> {
+                try {
+                    DataInputStream inp = new DataInputStream(tcpTunnel.getInputStream());
+                    while (running) {
+                        byte   type = inp.readByte();
+                        int    sid  = inp.readInt();
+                        int    len  = inp.readUnsignedShort();
+                        byte[] data = len > 0 ? new byte[len] : new byte[0];
+                        if (len > 0) inp.readFully(data);
+
+                        if (type == TYPE_DATA) {
+                            Socket s = tcpStreams.get(sid);
+                            if (s != null && !s.isClosed()) {
+                                try { s.getOutputStream().write(data); s.getOutputStream().flush(); }
+                                catch (Exception ignored) {}
+                            }
+                            AtomicLong ts = tcpLastActive.get(sid);
+                            if (ts != null) ts.set(System.currentTimeMillis());
+                        } else if (type == TYPE_CLOSE) {
+                            CountDownLatch l = tcpLatches.remove(sid);
+                            if (l != null) l.countDown();
+                            tcpStreams.remove(sid);
+                            tcpLastActive.remove(sid);
+                        }
+                        // TYPE_PONG — no action needed
+                    }
+                } catch (Exception ignored) {}
+            }, "tcp-tunnel-reader").start();
+        }
+
+        private static void startTcpKeepalive() {
+            new Thread(() -> {
+                while (running && tcpTunnel != null && tcpTunnel.isConnected()) {
+                    try { Thread.sleep(30_000); } catch (InterruptedException ignored) { break; }
+                    try { writeTcpFrame(TYPE_PING, 0, new byte[0]); }
+                    catch (Exception ignored) { break; }
+                }
+            }, "tcp-keepalive").start();
+        }
+
+        private static void writeTcpFrame(byte type, int sid, byte[] data) throws Exception {
+            if (data.length > MAX_PAYLOAD) throw new IllegalArgumentException("payload > 65535");
+            synchronized (tcpLock) {
+                if (tcpTunnelOut == null) return;
+                tcpTunnelOut.writeByte(type);
+                tcpTunnelOut.writeInt(sid);
+                tcpTunnelOut.writeShort(data.length);
+                if (data.length > 0) tcpTunnelOut.write(data);
+                // flush() vacía el BufferedOutputStream: frames del mismo tick
+                // se agruparon en el buffer y salen juntos en un solo write al OS.
+                // El dato no espera — sale en cuanto el frame está completo.
+                tcpTunnelOut.flush();
+            }
+        }
+
+        // ----------------------------------------------------------------------
+        // UDP tunnel
+        // ----------------------------------------------------------------------
+        private static void connectUdpTunnel() {
+            Socket t = openTunnel("tunnel-udp");
+            if (t == null) { log("UDP túnel null"); return; }
+            udpTunnel = t;
+            try {
+                udpTunnelOut = new DataOutputStream(
+                        new BufferedOutputStream(t.getOutputStream(), TUNNEL_WRITE_BUFFER));
+            } catch (Exception e) { log("udpTunnelOut: " + e.getMessage()); return; }
+            startUdpTunnelReader();
+            startUdpRelay();
+            log("Túnel UDP listo");
+        }
+
         private static void startUdpRelay() {
             try {
                 udpRelaySocket = new DatagramSocket(SOCKS5_UDP_PORT, InetAddress.getByName("127.0.0.1"));
@@ -410,58 +493,9 @@ public class BtVpnService extends VpnService {
             }, "udp-tunnel-reader").start();
         }
 
-        private static void startTcpTunnelReader() {
-            new Thread(() -> {
-                try {
-                    DataInputStream inp = new DataInputStream(tcpTunnel.getInputStream());
-                    while (running) {
-                        byte   type = inp.readByte();
-                        int    sid  = inp.readInt();
-                        int    len  = inp.readUnsignedShort();
-                        byte[] data = len > 0 ? new byte[len] : new byte[0];
-                        if (len > 0) inp.readFully(data);
-
-                        if (type == TYPE_DATA) {
-                            Socket s = tcpStreams.get(sid);
-                            if (s != null && !s.isClosed()) {
-                                try { s.getOutputStream().write(data); s.getOutputStream().flush(); }
-                                catch (Exception ignored) {}
-                            }
-                            AtomicLong ts = tcpLastActive.get(sid);
-                            if (ts != null) ts.set(System.currentTimeMillis());
-                        } else if (type == TYPE_CLOSE) {
-                            CountDownLatch l = tcpLatches.remove(sid);
-                            if (l != null) l.countDown();
-                            tcpStreams.remove(sid);
-                            tcpLastActive.remove(sid);
-                        }
-                    }
-                } catch (Exception ignored) {}
-            }, "tcp-tunnel-reader").start();
-        }
-
-        private static void startTcpKeepalive() {
-            new Thread(() -> {
-                while (running && tcpTunnel != null && tcpTunnel.isConnected()) {
-                    try { Thread.sleep(30_000); } catch (InterruptedException ignored) { break; }
-                    try { writeTcpFrame(TYPE_PING, 0, new byte[0]); }
-                    catch (Exception ignored) { break; }
-                }
-            }, "tcp-keepalive").start();
-        }
-
-        private static void writeTcpFrame(byte type, int sid, byte[] data) throws Exception {
-            if (data.length > MAX_PAYLOAD) throw new IllegalArgumentException("payload > 65535");
-            synchronized (tcpLock) {
-                if (tcpTunnelOut == null) return;
-                tcpTunnelOut.writeByte(type);
-                tcpTunnelOut.writeInt(sid);
-                tcpTunnelOut.writeShort(data.length);
-                if (data.length > 0) tcpTunnelOut.write(data);
-                tcpTunnelOut.flush();
-            }
-        }
-
+        // ----------------------------------------------------------------------
+        // Conexión al servidor remoto
+        // ----------------------------------------------------------------------
         private static Socket openTunnel(String action) {
             try {
                 Socket s = openProxy();
