@@ -80,7 +80,7 @@ public class BtVpnService extends VpnService {
 
         Builder b = new Builder()
                 .setSession("bt-hev")
-                .setMtu(1400)
+                .setMtu(8500)
                 .addAddress("198.18.0.1", 30)
                 .addAddress("fc00::1", 126)
                 .addRoute("0.0.0.0", 0)
