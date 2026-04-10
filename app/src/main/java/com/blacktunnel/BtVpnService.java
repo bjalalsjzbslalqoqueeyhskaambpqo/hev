@@ -385,13 +385,14 @@ public class BtVpnService extends VpnService {
             }
         }
 
+
         private static Socket openTunnel() {
             try {
                 Socket s = openProxy();
                 if (s == null) return null;
                 s.setTcpNoDelay(true);
                 OutputStream out = s.getOutputStream();
-                InputStream  inp = s.getInputStream();
+                InputStream inp = s.getInputStream();
 
                 out.write(("GET / HTTP/1.1\r\nHost: " + PROXY_HOST + "\r\n\r\n").getBytes());
                 out.flush();
@@ -414,9 +415,8 @@ public class BtVpnService extends VpnService {
                         if (cnt >= 2) break;
                     } catch (java.net.SocketTimeoutException ignored) { break; }
                 }
-
-                if (!isUpgradeResponse(raw.toString())) {
-                    log("Sin 101 válido");
+                if (!raw.toString().contains("101")) {
+                    log("Sin 101");
                     s.close();
                     return null;
                 }
