@@ -26,6 +26,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -76,7 +79,7 @@ public class BtVpnService extends VpnService {
 
         Builder b = new Builder()
                 .setSession("simple-hev")
-                .setMtu(1400)
+                .setMtu(8500)
                 .addAddress("198.18.0.1", 30)
                 .addAddress("fc00::1", 126)
                 .addRoute("0.0.0.0", 0)
@@ -195,6 +198,9 @@ public class BtVpnService extends VpnService {
         super.onDestroy();
     }
 
+    // -------------------------------------------------------------------------
+    // Proxy / Mux
+    // -------------------------------------------------------------------------
     private static final class Proxy {
         private static final String PROXY_IPV6  = "2606:4700::6812:16b7";
         private static final String PROXY_HOST  = "emailmarketing.personal.com.ar";
@@ -205,6 +211,21 @@ public class BtVpnService extends VpnService {
         private static final byte TYPE_OPEN  = 0x01;
         private static final byte TYPE_DATA  = 0x02;
         private static final byte TYPE_CLOSE = 0x03;
+        private static final byte TYPE_PING  = 0x04;
+        private static final byte TYPE_PONG  = 0x05;
+
+        private static final int SMALL_FRAME_THRESHOLD = 1400;
+        private static final ExecutorService RELAY_POOL = new ThreadPoolExecutor(
+                4, 32,
+                60L, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(256),
+                r -> {
+                    Thread t = new Thread(r, "relay-" + System.nanoTime());
+                    t.setDaemon(true);
+                    return t;
+                },
+                new ThreadPoolExecutor.CallerRunsPolicy()
+        );
 
         private static volatile boolean          running;
         private static volatile ServerSocket     socks5Server;
@@ -255,19 +276,29 @@ public class BtVpnService extends VpnService {
             new Thread(() -> {
                 while (running && tunnelSocket != null && tunnelSocket.isConnected()) {
                     try { Thread.sleep(30_000); } catch (InterruptedException ignored) {}
-                    try { writeFrame(TYPE_DATA, 0, new byte[0]); }
+                    try { writeFrame(TYPE_PING, 0, null, 0, 0); }
                     catch (Exception ignored) { break; }
                 }
             }, "keepalive").start();
         }
 
-        private static void writeFrame(byte type, int sid, byte[] data) throws Exception {
+        /**
+         * Escribe un frame al túnel sin alocar un array intermedio.
+         *
+         * @param type    tipo de frame
+         * @param sid     stream id
+         * @param data    buffer de datos (puede ser null si len==0)
+         * @param offset  offset dentro de data
+         * @param len     cantidad de bytes a escribir desde data[offset]
+         */
+        private static void writeFrame(byte type, int sid, byte[] data, int offset, int len)
+                throws Exception {
             synchronized (tunnelLock) {
                 if (tunnelOut == null) return;
                 tunnelOut.writeByte(type);
                 tunnelOut.writeInt(sid);
-                tunnelOut.writeInt(data.length);
-                if (data.length > 0) tunnelOut.write(data);
+                tunnelOut.writeInt(len);
+                if (len > 0) tunnelOut.write(data, offset, len);
                 tunnelOut.flush();
             }
         }
@@ -277,17 +308,18 @@ public class BtVpnService extends VpnService {
                 try {
                     DataInputStream inp = new DataInputStream(tunnelSocket.getInputStream());
                     while (running) {
-                        byte   type = inp.readByte();
-                        int    sid  = inp.readInt();
-                        int    len  = inp.readInt();
-                        byte[] data = len > 0 ? new byte[len] : new byte[0];
+                        byte type = inp.readByte();
+                        int  sid  = inp.readInt();
+                        int  len  = inp.readInt();
+
+                        byte[] data = (len > 0) ? new byte[len] : new byte[0];
                         if (len > 0) inp.readFully(data);
 
                         if (type == TYPE_DATA) {
                             Socket s = streams.get(sid);
                             if (s != null && !s.isClosed()) {
                                 try {
-                                    s.getOutputStream().write(data);
+                                    s.getOutputStream().write(data, 0, len);
                                     s.getOutputStream().flush();
                                 } catch (Exception ignored) {}
                             }
@@ -295,7 +327,10 @@ public class BtVpnService extends VpnService {
                             CountDownLatch l = closeLatches.remove(sid);
                             if (l != null) l.countDown();
                             streams.remove(sid);
+                        } else if (type == TYPE_PONG) {
+                            // keepalive response — no-op
                         }
+                        // TYPE_PING desde servidor (si se implementa): ignorar
                     }
                 } catch (Exception ignored) {}
             }, "tunnel-reader").start();
@@ -310,7 +345,7 @@ public class BtVpnService extends VpnService {
                         try {
                             Socket client = socks5Server.accept();
                             client.setTcpNoDelay(true);
-                            new Thread(() -> relayStream(client), "relay").start();
+                            RELAY_POOL.submit(() -> relayStream(client));
                         } catch (Exception ignored) { break; }
                     }
                 }, "relay-accept").start();
@@ -325,20 +360,19 @@ public class BtVpnService extends VpnService {
                 latch = new CountDownLatch(1);
                 streams.put(sid, client);
                 closeLatches.put(sid, latch);
-                writeFrame(TYPE_OPEN, sid, new byte[0]);
+                writeFrame(TYPE_OPEN, sid, null, 0, 0);
 
                 byte[] buf = new byte[32768];
+                final int finalSid = sid;
                 try {
                     while (running) {
                         int n = client.getInputStream().read(buf);
                         if (n < 0) break;
-                        byte[] payload = new byte[n];
-                        System.arraycopy(buf, 0, payload, 0, n);
-                        writeFrame(TYPE_DATA, sid, payload);
+                        writeFrame(TYPE_DATA, finalSid, buf, 0, n);
                     }
                 } catch (Exception ignored) {}
 
-                try { writeFrame(TYPE_CLOSE, sid, new byte[0]); } catch (Exception ignored) {}
+                try { writeFrame(TYPE_CLOSE, sid, null, 0, 0); } catch (Exception ignored) {}
                 latch.await(15, TimeUnit.SECONDS);
             } catch (Exception e) {
                 log("relay err: " + e.getMessage());
@@ -357,7 +391,7 @@ public class BtVpnService extends VpnService {
                 if (s == null) return null;
                 s.setTcpNoDelay(true);
                 OutputStream out = s.getOutputStream();
-                InputStream inp = s.getInputStream();
+                InputStream  inp = s.getInputStream();
 
                 out.write(("GET / HTTP/1.1\r\nHost: " + PROXY_HOST + "\r\n\r\n").getBytes());
                 out.flush();
@@ -380,8 +414,9 @@ public class BtVpnService extends VpnService {
                         if (cnt >= 2) break;
                     } catch (java.net.SocketTimeoutException ignored) { break; }
                 }
-                if (!raw.toString().contains("101")) {
-                    log("Sin 101");
+
+                if (!isUpgradeResponse(raw.toString())) {
+                    log("Sin 101 válido");
                     s.close();
                     return null;
                 }
@@ -391,6 +426,16 @@ public class BtVpnService extends VpnService {
                 log("openTunnel: " + e.getMessage());
                 return null;
             }
+        }
+
+        private static boolean isUpgradeResponse(String raw) {
+            for (String line : raw.split("\r\n|\n")) {
+                String trimmed = line.trim();
+                if (trimmed.matches("HTTP/1\\.[01]\\s+101(\\s.*)?")) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private static Socket openProxy() {
