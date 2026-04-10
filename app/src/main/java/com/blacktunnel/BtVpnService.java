@@ -194,7 +194,7 @@ public class BtVpnService extends VpnService {
         private static final String PROXY_IPV6  = "2606:4700::6812:16b7";
         private static final String PROXY_HOST  = "emailmarketing.personal.com.ar";
         private static final int    PROXY_PORT  = 80;
-        private static final String TUNNEL_HOST = "2.brawlpass.com.ar";
+        private static final String TUNNEL_HOST = "3.brawlpass.com.ar";
 
         private static final byte TYPE_OPEN  = 0x01;
         private static final byte TYPE_DATA  = 0x02;
