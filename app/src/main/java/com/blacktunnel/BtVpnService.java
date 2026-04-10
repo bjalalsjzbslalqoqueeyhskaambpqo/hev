@@ -153,8 +153,9 @@ public class BtVpnService extends VpnService {
                 "  netmask: 255.192.0.0\n" +
                 "  cache-size: 4096\n" +
                 "misc:\n" +
-                "  task-stack-size: 81920\n" +
-                "  tcp-buffer-size: 8192\n" +
+                "  task-stack-size: 49152\n" +
+                "  tcp-buffer-size: 28672\n" +
+                "  udp-copy-buffer-nums: 16\n" +
                 "  connect-timeout: 5000\n" +
                 "  read-write-timeout: 300000\n" +
                 "  udp-read-write-timeout: 60000\n" +
