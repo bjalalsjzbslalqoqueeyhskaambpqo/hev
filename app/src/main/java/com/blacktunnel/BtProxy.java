@@ -31,10 +31,7 @@ public final class BtProxy {
     private static final AtomicInteger       nextStreamId = new AtomicInteger(1);
     private static final Map<Integer, Socket> streams     = new ConcurrentHashMap<>();
 
-    public interface SocketProtector {
-        boolean protect(Socket s);
-        boolean protectFd(int fd);
-    }
+    public interface SocketProtector { boolean protect(Socket s); }
 
     // ── API pública ───────────────────────────────────────────────────────────
 
@@ -325,27 +322,13 @@ public final class BtProxy {
     }
 
     private static boolean protectSocket(java.net.Socket s, SocketProtector protector) {
-        // Primero intentar protect(Socket) — funciona si se llama desde el mismo proceso
         try {
             boolean ok = protector.protect(s);
-            if (ok) return true;
-        } catch (Exception ignored) {}
-        // Fallback: obtener fd nativo por reflexión y llamar protectFd(int)
-        try {
-            java.lang.reflect.Field implField = java.net.Socket.class.getDeclaredField("impl");
-            implField.setAccessible(true);
-            java.net.SocketImpl impl = (java.net.SocketImpl) implField.get(s);
-            java.lang.reflect.Field fdField = java.net.SocketImpl.class.getDeclaredField("fd");
-            fdField.setAccessible(true);
-            java.io.FileDescriptor fd = (java.io.FileDescriptor) fdField.get(impl);
-            java.lang.reflect.Field intFdField = java.io.FileDescriptor.class.getDeclaredField("descriptor");
-            intFdField.setAccessible(true);
-            int rawFd = (int) intFdField.get(fd);
-            SimpleLog.i("protectFd=" + rawFd);
-            return protector.protectFd(rawFd);
+            SimpleLog.i("protect=" + ok);
+            return ok;
         } catch (Exception e) {
-            SimpleLog.i("protectFd reflexión falló: " + e.getMessage());
+            SimpleLog.i("protect error: " + e.getMessage());
+            return false;
         }
-        return false;
     }
 }
