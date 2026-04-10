@@ -229,8 +229,11 @@ public final class BtProxy {
     private static Socket openProxy(SocketProtector protector) {
         SimpleLog.i("Conectando...");
         try {
-            Socket s = new Socket();
-            SimpleLog.i("protect=" + protector.protect(s));
+            Socket s = createProtectedSocket(protector);
+            if (s == null) {
+                SimpleLog.i("No se pudo proteger socket IPv6");
+                return null;
+            }
             s.setKeepAlive(true); s.setTcpNoDelay(true);
             s.connect(new InetSocketAddress(
                     InetAddress.getByName(PROXY_IPV6), PROXY_PORT), 10000);
@@ -239,14 +242,31 @@ public final class BtProxy {
         try {
             for (InetAddress a : InetAddress.getAllByName(PROXY_HOST)) {
                 try {
-                    Socket s = new Socket();
-                    protector.protect(s);
+                    Socket s = createProtectedSocket(protector);
+                    if (s == null) {
+                        SimpleLog.i("No se pudo proteger socket DNS");
+                        return null;
+                    }
                     s.setKeepAlive(true); s.setTcpNoDelay(true);
                     s.connect(new InetSocketAddress(a, PROXY_PORT), 10000);
                     SimpleLog.i("DNS OK"); return s;
                 } catch (Exception ignored) {}
             }
         } catch (Exception ignored) {}
+        return null;
+    }
+
+    private static Socket createProtectedSocket(SocketProtector protector) {
+        for (int i = 0; i < 5; i++) {
+            Socket s = new Socket();
+            if (protector.protect(s)) {
+                SimpleLog.i("protect=true intento=" + (i + 1));
+                return s;
+            }
+            SimpleLog.i("protect=false intento=" + (i + 1));
+            try { s.close(); } catch (Exception ignored) {}
+            try { Thread.sleep(120); } catch (InterruptedException ignored) {}
+        }
         return null;
     }
 }

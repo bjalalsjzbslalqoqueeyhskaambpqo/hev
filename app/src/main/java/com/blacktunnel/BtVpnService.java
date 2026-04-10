@@ -51,6 +51,10 @@ public class BtVpnService extends VpnService {
                 .addDnsServer("8.8.8.8")
                 .addDnsServer("1.1.1.1");
 
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            b.allowBypass();
+        }
+
         try {
             b.addDisallowedApplication(getPackageName());
         } catch (Exception e) {
