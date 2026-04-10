@@ -32,7 +32,14 @@ public class BtVpnService extends VpnService {
             stopSelf();
             return START_NOT_STICKY;
         }
-        startAll();
+        try {
+            startAll();
+        } catch (Throwable t) {
+            SimpleLog.i("startAll crash: " + t);
+            stopAll();
+            stopSelf();
+            return START_NOT_STICKY;
+        }
         return START_STICKY;
     }
 
@@ -93,7 +100,7 @@ public class BtVpnService extends VpnService {
         hevReady = true;
         SimpleLog.i("HEV listo, iniciando proxy...");
 
-        BtProxy.start();
+        BtProxy.start(this::protect);
         SimpleLog.i("Proxy iniciado");
     }
 

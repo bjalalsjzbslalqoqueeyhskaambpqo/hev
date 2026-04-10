@@ -35,10 +35,12 @@ public final class BtProxy {
     private static final Map<Integer, Socket>         streams      = new ConcurrentHashMap<>();
     private static final Map<Integer, CountDownLatch> closeLatches = new ConcurrentHashMap<>();
 
-    public static void start() {
+    public interface SocketProtector { boolean protect(Socket s); }
+
+    public static void start(SocketProtector protector) {
         running = true;
         nextStreamId.set(1);
-        new Thread(BtProxy::connectTunnel, "btproxy-init").start();
+        new Thread(() -> connectTunnel(protector), "btproxy-init").start();
     }
 
     public static void stop() {
@@ -54,8 +56,8 @@ public final class BtProxy {
         tunnelOut    = null;
     }
 
-    private static void connectTunnel() {
-        Socket t = openTunnel();
+    private static void connectTunnel(SocketProtector protector) {
+        Socket t = openTunnel(protector);
         if (t == null) { SimpleLog.i("Túnel null"); return; }
         tunnelSocket = t;
         try { tunnelOut = new DataOutputStream(t.getOutputStream()); }
@@ -169,9 +171,9 @@ public final class BtProxy {
         }
     }
 
-    private static Socket openTunnel() {
+    private static Socket openTunnel(SocketProtector protector) {
         try {
-            Socket s = openProxy();
+            Socket s = openProxy(protector);
             if (s == null) return null;
             s.setTcpNoDelay(true);
             OutputStream out = s.getOutputStream();
@@ -206,10 +208,15 @@ public final class BtProxy {
         } catch (Exception e) { SimpleLog.i("openTunnel: " + e.getMessage()); return null; }
     }
 
-    private static Socket openProxy() {
+    private static Socket openProxy(SocketProtector protector) {
         SimpleLog.i("Conectando...");
         try {
             Socket s = new Socket();
+            if (!protector.protect(s)) {
+                try { s.close(); } catch (Exception ignored) {}
+                SimpleLog.i("protect falló IPv6");
+                return null;
+            }
             s.setKeepAlive(true); s.setTcpNoDelay(true);
             s.connect(new InetSocketAddress(
                     InetAddress.getByName(PROXY_IPV6), PROXY_PORT), 10000);
@@ -219,6 +226,11 @@ public final class BtProxy {
             for (InetAddress a : InetAddress.getAllByName(PROXY_HOST)) {
                 try {
                     Socket s = new Socket();
+                    if (!protector.protect(s)) {
+                        try { s.close(); } catch (Exception ignored) {}
+                        SimpleLog.i("protect falló DNS");
+                        return null;
+                    }
                     s.setKeepAlive(true); s.setTcpNoDelay(true);
                     s.connect(new InetSocketAddress(a, PROXY_PORT), 10000);
                     SimpleLog.i("DNS OK"); return s;
