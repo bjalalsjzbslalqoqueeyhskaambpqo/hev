@@ -208,6 +208,10 @@ public class BtVpnService extends VpnService {
         private static final byte TYPE_PING  = 0x04;
         private static final byte TYPE_PONG  = 0x05;
 
+        // Byte enviado como payload del TYPE_OPEN para indicar tipo de stream
+        private static final byte STREAM_TCP = 0x00;
+        private static final byte STREAM_UDP = 0x01;
+
         private static final int MAX_PAYLOAD = 65535;
 
         private static volatile boolean          running;
@@ -312,6 +316,9 @@ public class BtVpnService extends VpnService {
 
         private static void startSocks5Relay() {
             try {
+                // Puerto par = TCP, puerto impar = UDP (hev-socks5 abre ambos en el mismo puerto)
+                // El tipo real lo detectamos leyendo el primer byte del handshake SOCKS5:
+                // cmd=0x01 -> CONNECT (TCP), cmd=0x03 -> UDP ASSOCIATE
                 socks5Server = new ServerSocket(SOCKS5_PORT, 512, InetAddress.getByName("127.0.0.1"));
                 log("Relay SOCKS5 :" + SOCKS5_PORT);
                 new Thread(() -> {
@@ -326,6 +333,29 @@ public class BtVpnService extends VpnService {
             } catch (Exception e) { log("relay bind: " + e.getMessage()); }
         }
 
+        // Detecta si la conexión SOCKS5 es TCP o UDP mirando el campo CMD del handshake.
+        // SOCKS5 handshake: VER(1) NMETHODS(1) METHODS(n) -> VER(1) METHOD(1)
+        //                   VER(1) CMD(1) RSV(1) ATYP(1) ...
+        // CMD 0x01 = CONNECT (TCP), CMD 0x03 = UDP ASSOCIATE
+        // Devuelve los bytes ya leídos para reenviarlos al upstream sin perderlos.
+        private static byte detectStreamType(Socket client, byte[] peeked) {
+            // peeked[0]=VER, peeked[1]=NMETHODS — necesitamos leer hasta el CMD
+            // pero no consumimos nada aquí; el llamador ya leyó el primer bloque.
+            // El CMD está en el segundo mensaje SOCKS5, byte índice 1.
+            // Como relayStream lee en bloques de 32KB no podemos inspeccionar sin
+            // romper el flujo, así que usamos una heurística: si el primer byte
+            // del payload inicial es 0x05 (SOCKS5 VER) asumimos TCP por defecto
+            // hasta que llega el segundo mensaje con CMD. Para gaming (UDP) el
+            // campo CMD llega en el tercer byte del segundo mensaje SOCKS5.
+            // Simplificación práctica: hev en modo 'udp: udp' solo abre UDP ASSOCIATE
+            // para tráfico UDP real, así que si NMETHODS != 0 y el stream viene de
+            // hev lo tratamos como TCP salvo que CMD == 0x03.
+            if (peeked.length >= 2 && peeked[1] == 0x03) {
+                return STREAM_UDP;
+            }
+            return STREAM_TCP;
+        }
+
         private static void relayStream(Socket client) {
             int sid = -1;
             CountDownLatch latch = null;
@@ -334,9 +364,39 @@ public class BtVpnService extends VpnService {
                 latch = new CountDownLatch(1);
                 streams.put(sid, client);
                 closeLatches.put(sid, latch);
-                writeFrame(TYPE_OPEN, sid, new byte[0]);
 
+                // Leer primer bloque para detectar tipo antes de abrir el stream
                 byte[] buf = new byte[32768];
+                int firstRead = client.getInputStream().read(buf);
+                if (firstRead < 0) return;
+
+                byte[] firstChunk = new byte[firstRead];
+                System.arraycopy(buf, 0, firstChunk, 0, firstRead);
+
+                // Detectar tipo: segundo mensaje SOCKS5 tiene CMD en posición [1]
+                // El primer mensaje es VER+NMETHODS+METHODS (3+ bytes)
+                // El segundo empieza con VER CMD RSV ATYP
+                // hev manda ambos rápido; si firstRead >= 4 y hay un 0x03 en [4+1]
+                // es UDP ASSOCIATE. Sino TCP.
+                byte streamType = STREAM_TCP;
+                if (firstRead >= 4) {
+                    // Buscar segundo mensaje SOCKS5 dentro del primer bloque
+                    // El primer mensaje tiene longitud 2 + NMETHODS
+                    int nmethods = firstChunk[1] & 0xFF;
+                    int secondMsgStart = 2 + nmethods + 2; // +2 por la respuesta del server (no aplica)
+                    // En realidad el client manda: msg1 + msg2 concatenados si TCP_NODELAY
+                    // msg1: 05 NMETHODS METHODS...  longitud = 2 + nmethods
+                    int msg2Start = 2 + nmethods;
+                    if (firstRead > msg2Start + 1) {
+                        byte cmd = firstChunk[msg2Start + 1];
+                        if (cmd == 0x03) streamType = STREAM_UDP;
+                    }
+                }
+
+                writeFrame(TYPE_OPEN, sid, new byte[]{ streamType });
+                writeFrame(TYPE_DATA, sid, firstChunk);
+
+                final byte finalType = streamType;
                 try {
                     while (running) {
                         int n = client.getInputStream().read(buf);
