@@ -119,7 +119,7 @@ public class BtVpnService extends VpnService {
                      "socks5:\n" +
                      "  address: 127.0.0.1\n" +
                      "  port: 10809\n" +
-                     "  udp: 'tcp'\n" +
+                     "  udp: 'udp'\n" +
                      "  pipeline: false\n" +
                      "misc:\n" +
                      "  log-level: warn\n";
