@@ -43,7 +43,7 @@ public class BtVpnService extends VpnService {
 
         Builder b = new Builder()
                 .setSession("simple-hev")
-                .setMtu(1300)
+                .setMtu(1500)
                 .addAddress("198.18.0.1", 30)
                 .addAddress("fc00::1", 126)
                 .addRoute("0.0.0.0", 0)
@@ -93,7 +93,15 @@ public class BtVpnService extends VpnService {
         hevReady = true;
         SimpleLog.i("HEV listo, iniciando proxy...");
 
-        BtProxy.start(sock -> protect(sock));
+        BtProxy.start(sock -> {
+            // Reintentar protect hasta que el VPN esté listo
+            for (int i = 0; i < 5; i++) {
+                if (protect(sock)) return true;
+                try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+            }
+            SimpleLog.i("WARN: protect() falló 5 veces");
+            return false;
+        });
         SimpleLog.i("Proxy iniciado");
     }
 
@@ -113,13 +121,13 @@ public class BtVpnService extends VpnService {
         File f = new File(getFilesDir(), "hev.yml");
         String yml = "tunnel:\n" +
                      "  name: simple-hev\n" +
-                     "  mtu: 1300\n" +
+                     "  mtu: 1500\n" +
                      "  ipv4: 198.18.0.1\n" +
                      "  ipv6: fc00::1\n" +
                      "socks5:\n" +
                      "  address: 127.0.0.1\n" +
                      "  port: 10809\n" +
-                     "  udp: 'tcp'\n" +
+                     "  udp: 'udp'\n" +
                      "  pipeline: false\n" +
                      "misc:\n" +
                      "  log-level: warn\n";
