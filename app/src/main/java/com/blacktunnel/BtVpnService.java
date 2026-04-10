@@ -43,12 +43,13 @@ public class BtVpnService extends VpnService {
 
         Builder b = new Builder()
                 .setSession("simple-hev")
-                .setMtu(1450)
+                .setMtu(1500)
                 .addAddress("198.18.0.1", 30)
                 .addAddress("fc00::1", 126)
                 .addRoute("0.0.0.0", 0)
                 .addRoute("::", 0)
-                .addDnsServer("198.18.0.2");  // mapdns de HEV
+                .addDnsServer("198.18.0.2")
+                .addDnsServer("8.8.8.8");
 
         try {
             b.addDisallowedApplication(getPackageName());
