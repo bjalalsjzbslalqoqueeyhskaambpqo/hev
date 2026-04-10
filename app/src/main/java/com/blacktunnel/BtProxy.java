@@ -25,7 +25,7 @@ public final class BtProxy {
     private static final int    PROXY_PORT        = 80;
     private static final String TUNNEL_HOST       = "2.brawlpass.com.ar";
     private static final int    SOCKS5_PORT       = 10809; // HEV apunta acá
-    private static final int    DNS_PORT          = 53; // DNS local — HEV apunta acá
+    private static final int    DNS_PORT          = 5353; // puerto alto, sin root
 
     // Pool fake DNS de HEV: 198.18.0.0/15
     private static final int    FAKE_IP_START     = (198 << 24) | (18 << 16); // 198.18.0.0
