@@ -31,7 +31,10 @@ public final class BtProxy {
     private static final AtomicInteger       nextStreamId = new AtomicInteger(1);
     private static final Map<Integer, Socket> streams     = new ConcurrentHashMap<>();
 
-    public interface SocketProtector { boolean protect(Socket s); }
+    public interface SocketProtector {
+        boolean protect(Socket s);
+        boolean protectFd(int fd);
+    }
 
     // ── API pública ───────────────────────────────────────────────────────────
 
@@ -199,7 +202,10 @@ public final class BtProxy {
             byte[] dest = (host + ":" + port + "\n").getBytes();
             writeFrame(TYPE_OPEN, streamId, dest);
 
-            // ── Relay: cliente → servidor ─────────────────────────────────────
+            // ── Relay bidireccional: cliente ↔ servidor ──────────────────────
+            // Thread separado para leer del túnel y escribir al cliente local
+            // (el tunnel-reader global ya hace esto, pero necesitamos saber
+            //  cuándo termina este stream específico para cerrar limpio)
             byte[] buf = new byte[65536];
             try {
                 while (running) {
@@ -209,11 +215,14 @@ public final class BtProxy {
                     System.arraycopy(buf, 0, payload, 0, n);
                     writeFrame(TYPE_DATA, streamId, payload);
                 }
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                // Broken pipe u otro error — el cliente local cerró
+                SimpleLog.i("stream=" + streamId + " fin relay: " + e.getMessage());
+            }
 
-            writeFrame(TYPE_CLOSE, streamId, new byte[0]);
+            try { writeFrame(TYPE_CLOSE, streamId, new byte[0]); } catch (Exception ignored) {}
             streams.remove(streamId);
-            client.close();
+            try { client.close(); } catch (Exception ignored) {}
 
         } catch (Exception e) {
             SimpleLog.i("socks5 error: " + e.getMessage());
@@ -288,8 +297,10 @@ public final class BtProxy {
     private static Socket openProxySocket(SocketProtector protector) {
         SimpleLog.i("Conectando IPv6: " + PROXY_IPV6);
         try {
-            Socket s = new Socket();
-            boolean ok = protector.protect(s);
+            // Usar socket java.net pero obtener fd nativo para protect
+            java.net.Socket s = new java.net.Socket();
+            // Intentar protect por fd nativo via reflexión
+            boolean ok = protectSocket(s, protector);
             SimpleLog.i("protect=" + ok);
             s.setKeepAlive(true);
             s.setTcpNoDelay(true);
@@ -300,8 +311,8 @@ public final class BtProxy {
         try {
             for (InetAddress addr : InetAddress.getAllByName(PROXY_HOST)) {
                 try {
-                    Socket s = new Socket();
-                    protector.protect(s);
+                    java.net.Socket s = new java.net.Socket();
+                    protectSocket(s, protector);
                     s.setKeepAlive(true);
                     s.setTcpNoDelay(true);
                     s.connect(new InetSocketAddress(addr, PROXY_PORT), 10000);
@@ -311,5 +322,30 @@ public final class BtProxy {
             }
         } catch (Exception ignored) {}
         return null;
+    }
+
+    private static boolean protectSocket(java.net.Socket s, SocketProtector protector) {
+        // Primero intentar protect(Socket) — funciona si se llama desde el mismo proceso
+        try {
+            boolean ok = protector.protect(s);
+            if (ok) return true;
+        } catch (Exception ignored) {}
+        // Fallback: obtener fd nativo por reflexión y llamar protectFd(int)
+        try {
+            java.lang.reflect.Field implField = java.net.Socket.class.getDeclaredField("impl");
+            implField.setAccessible(true);
+            java.net.SocketImpl impl = (java.net.SocketImpl) implField.get(s);
+            java.lang.reflect.Field fdField = java.net.SocketImpl.class.getDeclaredField("fd");
+            fdField.setAccessible(true);
+            java.io.FileDescriptor fd = (java.io.FileDescriptor) fdField.get(impl);
+            java.lang.reflect.Field intFdField = java.io.FileDescriptor.class.getDeclaredField("descriptor");
+            intFdField.setAccessible(true);
+            int rawFd = (int) intFdField.get(fd);
+            SimpleLog.i("protectFd=" + rawFd);
+            return protector.protectFd(rawFd);
+        } catch (Exception e) {
+            SimpleLog.i("protectFd reflexión falló: " + e.getMessage());
+        }
+        return false;
     }
 }
