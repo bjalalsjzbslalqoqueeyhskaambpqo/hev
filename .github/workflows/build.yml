@@ -2,6 +2,7 @@ name: Build Simple Mode
 
 on:
   push:
+  pull_request:
 
 jobs:
   build:
@@ -14,22 +15,25 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-
-      - uses: android-actions/setup-android@v3
+          cache: 'gradle'
 
       - name: Download HEV
         run: |
           mkdir -p app/src/main/jniLibs/arm64-v8a
-          curl -L "https://github.com/bjalalsjzbslalqoqueeyhskaambpqo/hev/raw/libs/jniLibs/arm64-v8a/libhev-socks5-tunnel.so" \
-            -o app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so
+          if [ ! -f app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so ]; then
+            curl -L "https://github.com/bjalalsjzbslalqoqueeyhskaambpqo/hev/raw/libs/jniLibs/arm64-v8a/libhev-socks5-tunnel.so" \
+              -o app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so
+          fi
 
-      - name: Setup Gradle wrapper
+      - name: Bootstrap Gradle wrapper (if missing)
         run: |
-          gradle wrapper --gradle-version 8.7
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            gradle wrapper --gradle-version 8.7
+          fi
           chmod +x gradlew
 
       - name: Build debug APK (simple mode)
-        run: ./gradlew --stacktrace clean :app:assembleDebug -x lint -x test
+        run: ./gradlew --no-daemon :app:assembleDebug -x lint -x test
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
