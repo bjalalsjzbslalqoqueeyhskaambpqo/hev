@@ -32,18 +32,19 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class BtVpnService extends VpnService {
-    public static final String ACTION_START        = "com.blacktunnel.START";
-    public static final String ACTION_STOP         = "com.blacktunnel.STOP";
-    public static final String EXTRA_ENABLE_TCP    = "enable_tcp";
-    public static final String EXTRA_ENABLE_UDP    = "enable_udp";
-    private static final String CHANNEL_ID         = "bt_vpn";
-    private static final int    NOTIF_ID           = 33;
-    private static final int    LOG_MAX            = 300;
+    public static final String ACTION_START     = "com.blacktunnel.START";
+    public static final String ACTION_STOP      = "com.blacktunnel.STOP";
+    public static final String EXTRA_ENABLE_TCP = "enable_tcp";
+    public static final String EXTRA_ENABLE_UDP = "enable_udp";
+    private static final String CHANNEL_ID      = "bt_vpn";
+    private static final int    NOTIF_ID        = 33;
+    private static final int    LOG_MAX         = 300;
 
-    private static final ArrayDeque<String>  LOG_LINES = new ArrayDeque<>();
-    private static final SimpleDateFormat    LOG_TS    = new SimpleDateFormat("HH:mm:ss", Locale.US);
+    private static final ArrayDeque<String> LOG_LINES = new ArrayDeque<>();
+    private static final SimpleDateFormat   LOG_TS    = new SimpleDateFormat("HH:mm:ss", Locale.US);
 
     private ParcelFileDescriptor tunPfd;
 
@@ -128,12 +129,8 @@ public class BtVpnService extends VpnService {
     }
 
     private File writeHevConfig(boolean enableTcp, boolean enableUdp) {
-        int socks5Port = (enableTcp && !enableUdp) ? Proxy.SOCKS5_TCP_PORT :
-                         (!enableTcp && enableUdp) ? Proxy.SOCKS5_UDP_PORT :
-                         Proxy.SOCKS5_TCP_PORT;
+        int socks5Port = (!enableTcp && enableUdp) ? Proxy.SOCKS5_UDP_PORT : Proxy.SOCKS5_TCP_PORT;
         String udpMode = enableUdp ? "'udp'" : "'tcp'";
-        String udpAddr = (enableTcp && enableUdp) ?
-                "  udp-address: '127.0.0.1'\n" : "";
 
         String yml = "tunnel:\n" +
                 "  name: bt-hev\n" +
@@ -205,11 +202,11 @@ public class BtVpnService extends VpnService {
         private static final byte TYPE_PING  = 0x04;
         private static final byte TYPE_PONG  = 0x05;
         private static final byte STREAM_TCP = 0x00;
-        private static final byte STREAM_UDP = 0x01;
-        private static final int  MAX_PAYLOAD = 65535;
+        private static final int  MAX_PAYLOAD       = 65535;
+        private static final long STREAM_IDLE_MS    = 5 * 60 * 1000L;
+        private static final long WATCHDOG_INTERVAL = 60 * 1000L;
 
         interface Protector { boolean protect(Socket s); }
-        interface UdpProtector { boolean protect(DatagramSocket s); }
 
         private static volatile boolean          running;
         private static volatile Protector        protector;
@@ -217,15 +214,17 @@ public class BtVpnService extends VpnService {
         private static volatile ServerSocket     tcpRelayServer;
         private static volatile Socket           tcpTunnel;
         private static volatile DataOutputStream tcpTunnelOut;
-        private static final    Object           tcpLock      = new Object();
-        private static final    AtomicInteger    tcpStreamId  = new AtomicInteger(1);
-        private static final Map<Integer, Socket>         tcpStreams  = new ConcurrentHashMap<>();
-        private static final Map<Integer, CountDownLatch> tcpLatches  = new ConcurrentHashMap<>();
+        private static final    Object           tcpLock     = new Object();
+        private static final    AtomicInteger    tcpStreamId = new AtomicInteger(1);
+
+        private static final Map<Integer, Socket>         tcpStreams    = new ConcurrentHashMap<>();
+        private static final Map<Integer, CountDownLatch> tcpLatches    = new ConcurrentHashMap<>();
+        private static final Map<Integer, AtomicLong>     tcpLastActive = new ConcurrentHashMap<>();
 
         private static volatile DatagramSocket   udpRelaySocket;
         private static volatile Socket           udpTunnel;
         private static volatile DataOutputStream udpTunnelOut;
-        private static final    Object           udpLock      = new Object();
+        private static final    Object           udpLock = new Object();
 
         static void start(Protector p, boolean enableTcp, boolean enableUdp) {
             protector = p;
@@ -241,6 +240,7 @@ public class BtVpnService extends VpnService {
 
             tcpLatches.values().forEach(CountDownLatch::countDown);
             tcpLatches.clear();
+            tcpLastActive.clear();
             try { if (tcpRelayServer != null) tcpRelayServer.close(); } catch (Exception ignored) {}
             tcpRelayServer = null;
             tcpStreams.values().forEach(s -> { try { s.close(); } catch (Exception ignored) {} });
@@ -264,6 +264,7 @@ public class BtVpnService extends VpnService {
             catch (Exception e) { log("tcpTunnelOut: " + e.getMessage()); return; }
             startTcpTunnelReader();
             startTcpKeepalive();
+            startStreamWatchdog();
             startTcpRelay();
             if (alsoStartUdp) new Thread(Proxy::connectUdpTunnel, "bt-udp-init").start();
             log("Túnel TCP listo");
@@ -278,6 +279,27 @@ public class BtVpnService extends VpnService {
             startUdpTunnelReader();
             startUdpRelay();
             log("Túnel UDP listo");
+        }
+
+        private static void startStreamWatchdog() {
+            new Thread(() -> {
+                while (running) {
+                    try { Thread.sleep(WATCHDOG_INTERVAL); } catch (InterruptedException ignored) { break; }
+                    long now = System.currentTimeMillis();
+                    for (Map.Entry<Integer, AtomicLong> entry : tcpLastActive.entrySet()) {
+                        int  sid        = entry.getKey();
+                        long lastActive = entry.getValue().get();
+                        if (now - lastActive < STREAM_IDLE_MS) continue;
+                        log("stream " + sid + " idle, cerrando");
+                        tcpLastActive.remove(sid);
+                        Socket         s = tcpStreams.remove(sid);
+                        CountDownLatch l = tcpLatches.remove(sid);
+                        try { writeTcpFrame(TYPE_CLOSE, sid, new byte[0]); } catch (Exception ignored) {}
+                        if (l != null) l.countDown();
+                        if (s != null) try { s.close(); } catch (Exception ignored) {}
+                    }
+                }
+            }, "stream-watchdog").start();
         }
 
         private static void startTcpRelay() {
@@ -296,13 +318,14 @@ public class BtVpnService extends VpnService {
         }
 
         private static void handleTcpStream(Socket client) {
-            int sid = -1;
+            int            sid   = -1;
             CountDownLatch latch = null;
             try {
                 sid   = tcpStreamId.getAndIncrement();
                 latch = new CountDownLatch(1);
                 tcpStreams.put(sid, client);
                 tcpLatches.put(sid, latch);
+                tcpLastActive.put(sid, new AtomicLong(System.currentTimeMillis()));
 
                 byte[] buf      = new byte[32768];
                 int    firstLen = client.getInputStream().read(buf);
@@ -313,6 +336,7 @@ public class BtVpnService extends VpnService {
 
                 writeTcpFrame(TYPE_OPEN, sid, new byte[]{ STREAM_TCP });
                 writeTcpFrame(TYPE_DATA, sid, first);
+                tcpLastActive.get(sid).set(System.currentTimeMillis());
 
                 while (running) {
                     int n = client.getInputStream().read(buf);
@@ -320,13 +344,19 @@ public class BtVpnService extends VpnService {
                     byte[] chunk = new byte[n];
                     System.arraycopy(buf, 0, chunk, 0, n);
                     writeTcpFrame(TYPE_DATA, sid, chunk);
+                    AtomicLong ts = tcpLastActive.get(sid);
+                    if (ts != null) ts.set(System.currentTimeMillis());
                 }
                 try { writeTcpFrame(TYPE_CLOSE, sid, new byte[0]); } catch (Exception ignored) {}
                 latch.await(15, TimeUnit.SECONDS);
             } catch (Exception e) {
                 log("tcp stream err: " + e.getMessage());
             } finally {
-                if (sid >= 0) { tcpStreams.remove(sid); if (latch != null) tcpLatches.remove(sid); }
+                if (sid >= 0) {
+                    tcpStreams.remove(sid);
+                    tcpLatches.remove(sid);
+                    tcpLastActive.remove(sid);
+                }
                 try { client.close(); } catch (Exception ignored) {}
             }
         }
@@ -397,10 +427,13 @@ public class BtVpnService extends VpnService {
                                 try { s.getOutputStream().write(data); s.getOutputStream().flush(); }
                                 catch (Exception ignored) {}
                             }
+                            AtomicLong ts = tcpLastActive.get(sid);
+                            if (ts != null) ts.set(System.currentTimeMillis());
                         } else if (type == TYPE_CLOSE) {
                             CountDownLatch l = tcpLatches.remove(sid);
                             if (l != null) l.countDown();
                             tcpStreams.remove(sid);
+                            tcpLastActive.remove(sid);
                         }
                     }
                 } catch (Exception ignored) {}
@@ -410,7 +443,7 @@ public class BtVpnService extends VpnService {
         private static void startTcpKeepalive() {
             new Thread(() -> {
                 while (running && tcpTunnel != null && tcpTunnel.isConnected()) {
-                    try { Thread.sleep(30_000); } catch (InterruptedException ignored) {}
+                    try { Thread.sleep(30_000); } catch (InterruptedException ignored) { break; }
                     try { writeTcpFrame(TYPE_PING, 0, new byte[0]); }
                     catch (Exception ignored) { break; }
                 }
