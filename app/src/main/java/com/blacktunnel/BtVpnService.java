@@ -51,10 +51,6 @@ public class BtVpnService extends VpnService {
                 .addDnsServer("8.8.8.8")
                 .addDnsServer("1.1.1.1");
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            b.allowBypass();
-        }
-
         try {
             b.addDisallowedApplication(getPackageName());
         } catch (Exception e) {
@@ -98,13 +94,9 @@ public class BtVpnService extends VpnService {
         SimpleLog.i("HEV listo, iniciando proxy...");
 
         BtProxy.start(sock -> {
-            // Reintentar protect hasta que el VPN esté listo
-            for (int i = 0; i < 5; i++) {
-                if (protect(sock)) return true;
-                try { Thread.sleep(100); } catch (InterruptedException ignored) {}
-            }
-            SimpleLog.i("WARN: protect() falló 5 veces");
-            return false;
+            boolean ok = protect(sock);
+            if (!ok) SimpleLog.i("WARN: protect() falló");
+            return ok;
         });
         SimpleLog.i("Proxy iniciado");
     }

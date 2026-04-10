@@ -14,17 +14,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/**
- * BtProxy — bridge entre HEV socks5 tunnel y el servidor remoto.
- *
- * Flujo:
- *   HEV → SOCKS5 local :10809 → TYPE_OPEN → túnel WebSocket fake
- *   → btserver.py → hev-socks5-server:1080 → internet
- *
- * HEV manda el handshake SOCKS5 completo como datos normales.
- * El cliente NO lo interpreta — lo reenvía tal cual dentro del stream smux.
- * El servidor lo reenvía a hev-socks5-server que sí lo entiende.
- */
 public final class BtProxy {
 
     private static final String PROXY_IPV6  = "2606:4700::6812:16b7";
@@ -100,7 +89,6 @@ public final class BtProxy {
         }
     }
 
-    /** Lee respuestas del servidor y las escribe al socket local de HEV */
     private static void startTunnelReader() {
         new Thread(() -> {
             try {
@@ -130,10 +118,6 @@ public final class BtProxy {
         }, "tunnel-reader").start();
     }
 
-    /**
-     * Acepta conexiones de HEV y las reenvía al servidor sin interpretar SOCKS5.
-     * HEV manda el handshake SOCKS5 completo — el servidor lo entiende.
-     */
     private static void startSocks5Relay() {
         try {
             socks5Server = new ServerSocket(SOCKS5_PORT, 512,
@@ -160,10 +144,8 @@ public final class BtProxy {
             streams.put(sid, client);
             closeLatches.put(sid, latch);
 
-            // TYPE_OPEN sin payload — el servidor abre conexión a hev-socks5-server
             writeFrame(TYPE_OPEN, sid, new byte[0]);
 
-            // Relay upload: todo lo que manda HEV (incluyendo handshake SOCKS5)
             byte[] buf = new byte[32768];
             try {
                 while (running) {
@@ -229,11 +211,8 @@ public final class BtProxy {
     private static Socket openProxy(SocketProtector protector) {
         SimpleLog.i("Conectando...");
         try {
-            Socket s = createProtectedSocket(protector);
-            if (s == null) {
-                SimpleLog.i("No se pudo proteger socket IPv6");
-                return null;
-            }
+            Socket s = new Socket();
+            SimpleLog.i("protect=" + protector.protect(s));
             s.setKeepAlive(true); s.setTcpNoDelay(true);
             s.connect(new InetSocketAddress(
                     InetAddress.getByName(PROXY_IPV6), PROXY_PORT), 10000);
@@ -242,31 +221,14 @@ public final class BtProxy {
         try {
             for (InetAddress a : InetAddress.getAllByName(PROXY_HOST)) {
                 try {
-                    Socket s = createProtectedSocket(protector);
-                    if (s == null) {
-                        SimpleLog.i("No se pudo proteger socket DNS");
-                        return null;
-                    }
+                    Socket s = new Socket();
+                    protector.protect(s);
                     s.setKeepAlive(true); s.setTcpNoDelay(true);
                     s.connect(new InetSocketAddress(a, PROXY_PORT), 10000);
                     SimpleLog.i("DNS OK"); return s;
                 } catch (Exception ignored) {}
             }
         } catch (Exception ignored) {}
-        return null;
-    }
-
-    private static Socket createProtectedSocket(SocketProtector protector) {
-        for (int i = 0; i < 5; i++) {
-            Socket s = new Socket();
-            if (protector.protect(s)) {
-                SimpleLog.i("protect=true intento=" + (i + 1));
-                return s;
-            }
-            SimpleLog.i("protect=false intento=" + (i + 1));
-            try { s.close(); } catch (Exception ignored) {}
-            try { Thread.sleep(120); } catch (InterruptedException ignored) {}
-        }
         return null;
     }
 }
