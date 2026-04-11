@@ -15,8 +15,6 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.DatagramPacket;
-import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -128,9 +126,6 @@ public class BtVpnService extends VpnService {
     }
 
     private File writeHevConfig(boolean enableTcp, boolean enableUdp) {
-        int socks5Port = (!enableTcp && enableUdp) ? Proxy.SOCKS5_UDP_PORT : Proxy.SOCKS5_TCP_PORT;
-        String udpMode = enableUdp ? "'udp'" : "'tcp'";
-
         String yml = "tunnel:\n" +
                 "  name: bt-hev\n" +
                 "  mtu: 1280\n" +
@@ -138,9 +133,8 @@ public class BtVpnService extends VpnService {
                 "  ipv6: fc00::1\n" +
                 "socks5:\n" +
                 "  address: 127.0.0.1\n" +
-                "  port: " + socks5Port + "\n" +
-                "  udp: " + udpMode + "\n" +
-                (enableTcp && enableUdp ? "  udp-address: '127.0.0.1'\n" : "") +
+                "  port: " + Proxy.SOCKS5_TCP_PORT + "\n" +
+                "  udp: 'tcp'\n" +
                 "  pipeline: true\n" +
                 "mapdns:\n" +
                 "  address: 198.18.0.2\n" +
@@ -191,7 +185,6 @@ public class BtVpnService extends VpnService {
     // ==========================================================================
     static final class Proxy {
         static final int SOCKS5_TCP_PORT = 10809;
-        static final int SOCKS5_UDP_PORT = 10810;
 
         private static final String PROXY_IPV6  = "2606:4700::6812:16b7";
         private static final String PROXY_HOST  = "emailmarketing.personal.com.ar";
@@ -225,18 +218,11 @@ public class BtVpnService extends VpnService {
         private static final Map<Integer, CountDownLatch> tcpLatches    = new ConcurrentHashMap<>();
         private static final Map<Integer, AtomicLong>     tcpLastActive = new ConcurrentHashMap<>();
 
-        private static volatile DatagramSocket   udpRelaySocket;
-        private static volatile int              hevUdpPort = -1;
-        private static volatile Socket           udpTunnel;
-        private static volatile DataOutputStream udpTunnelOut;
-        private static final    Object           udpLock = new Object();
-
         static void start(Protector p, boolean enableTcp, boolean enableUdp) {
             protector = p;
             running   = true;
             tcpStreamId.set(1);
-            if (enableTcp) new Thread(() -> connectTcpTunnel(enableUdp), "bt-tcp-init").start();
-            if (enableUdp && !enableTcp) new Thread(Proxy::connectUdpTunnel, "bt-udp-init").start();
+            new Thread(() -> connectTcpTunnel(), "bt-tcp-init").start();
         }
 
         static void stop() {
@@ -253,19 +239,12 @@ public class BtVpnService extends VpnService {
             try { if (tcpTunnel != null) tcpTunnel.close(); } catch (Exception ignored) {}
             tcpTunnel    = null;
             tcpTunnelOut = null;
-
-            hevUdpPort = -1;
-            try { if (udpRelaySocket != null) udpRelaySocket.close(); } catch (Exception ignored) {}
-            udpRelaySocket = null;
-            try { if (udpTunnel != null) udpTunnel.close(); } catch (Exception ignored) {}
-            udpTunnel    = null;
-            udpTunnelOut = null;
         }
 
         // ----------------------------------------------------------------------
         // TCP tunnel
         // ----------------------------------------------------------------------
-        private static void connectTcpTunnel(boolean alsoStartUdp) {
+        private static void connectTcpTunnel() {
             Socket t = openTunnel("tunnel");
             if (t == null) { log("TCP túnel null"); return; }
             tcpTunnel = t;
@@ -277,8 +256,7 @@ public class BtVpnService extends VpnService {
             startTcpKeepalive();
             startStreamWatchdog();
             startTcpRelay();
-            if (alsoStartUdp) new Thread(Proxy::connectUdpTunnel, "bt-udp-init").start();
-            log("Túnel TCP listo");
+            log("Túnel listo");
         }
 
         private static void startStreamWatchdog() {
@@ -417,7 +395,7 @@ public class BtVpnService extends VpnService {
                     if (ts != null) ts.set(System.currentTimeMillis());
                 }
                 try { writeTcpFrame(TYPE_CLOSE, sid, new byte[0]); } catch (Exception ignored) {}
-                latch.await(5, TimeUnit.SECONDS);
+                latch.await(15, TimeUnit.SECONDS);
             } catch (Exception e) {
                 log("tcp stream err: " + e.getMessage());
             } finally {
@@ -481,72 +459,6 @@ public class BtVpnService extends VpnService {
                 if (data.length > 0) tcpTunnelOut.write(data);
                 tcpTunnelOut.flush();
             }
-        }
-
-        // ----------------------------------------------------------------------
-        // UDP tunnel
-        // ----------------------------------------------------------------------
-        private static void connectUdpTunnel() {
-            Socket t = openTunnel("tunnel-udp");
-            if (t == null) { log("UDP túnel null"); return; }
-            udpTunnel = t;
-            try {
-                udpTunnelOut = new DataOutputStream(t.getOutputStream());
-            } catch (Exception e) { log("udpTunnelOut: " + e.getMessage()); return; }
-            startUdpTunnelReader();
-            startUdpRelay();
-            log("Túnel UDP listo");
-        }
-
-        private static void startUdpRelay() {
-            try {
-                udpRelaySocket = new DatagramSocket(SOCKS5_UDP_PORT, InetAddress.getByName("127.0.0.1"));
-                new Thread(() -> {
-                    byte[] buf = new byte[65535];
-                    while (running) {
-                        try {
-                            DatagramPacket pkt = new DatagramPacket(buf, buf.length);
-                            udpRelaySocket.receive(pkt);
-                            hevUdpPort = pkt.getPort(); // guardar puerto real de hev
-                            byte[] data = new byte[pkt.getLength()];
-                            System.arraycopy(buf, 0, data, 0, pkt.getLength());
-                            writeUdpRaw(data);
-                        } catch (Exception ignored) { break; }
-                    }
-                }, "udp-relay-recv").start();
-            } catch (Exception e) { log("udpRelay bind: " + e.getMessage()); }
-        }
-
-        private static void writeUdpRaw(byte[] data) {
-            synchronized (udpLock) {
-                try {
-                    if (udpTunnelOut == null) return;
-                    udpTunnelOut.writeShort(data.length);
-                    udpTunnelOut.write(data);
-                    udpTunnelOut.flush();
-                } catch (Exception ignored) {}
-            }
-        }
-
-        private static void startUdpTunnelReader() {
-            new Thread(() -> {
-                try {
-                    DataInputStream inp = new DataInputStream(udpTunnel.getInputStream());
-                    while (running) {
-                        int    len  = inp.readUnsignedShort();
-                        byte[] data = new byte[len];
-                        inp.readFully(data);
-                        DatagramSocket relay = udpRelaySocket;
-                        int port = hevUdpPort;
-                        if (relay != null && !relay.isClosed() && port > 0) {
-                            DatagramPacket pkt = new DatagramPacket(
-                                    data, data.length,
-                                    InetAddress.getByName("127.0.0.1"), port);
-                            relay.send(pkt);
-                        }
-                    }
-                } catch (Exception ignored) {}
-            }, "udp-tunnel-reader").start();
         }
 
         // ----------------------------------------------------------------------
