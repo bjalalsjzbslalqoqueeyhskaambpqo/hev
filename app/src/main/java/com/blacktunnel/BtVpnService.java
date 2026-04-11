@@ -208,7 +208,7 @@ public class BtVpnService extends VpnService {
         private static final int  MAX_PAYLOAD       = 65535;
         private static final long STREAM_IDLE_MS    = 5 * 60 * 1000L;
         private static final long WATCHDOG_INTERVAL = 60 * 1000L;
-        private static final int TUNNEL_WRITE_BUFFER = 8 * 1024;
+        private static final int  TUNNEL_WRITE_BUFFER = 8 * 1024;
 
         interface Protector { boolean protect(Socket s); }
 
@@ -226,6 +226,7 @@ public class BtVpnService extends VpnService {
         private static final Map<Integer, AtomicLong>     tcpLastActive = new ConcurrentHashMap<>();
 
         private static volatile DatagramSocket   udpRelaySocket;
+        private static volatile int              hevUdpPort = -1;
         private static volatile Socket           udpTunnel;
         private static volatile DataOutputStream udpTunnelOut;
         private static final    Object           udpLock = new Object();
@@ -253,6 +254,7 @@ public class BtVpnService extends VpnService {
             tcpTunnel    = null;
             tcpTunnelOut = null;
 
+            hevUdpPort = -1;
             try { if (udpRelaySocket != null) udpRelaySocket.close(); } catch (Exception ignored) {}
             udpRelaySocket = null;
             try { if (udpTunnel != null) udpTunnel.close(); } catch (Exception ignored) {}
@@ -315,6 +317,16 @@ public class BtVpnService extends VpnService {
             } catch (Exception e) { log("tcpRelay bind: " + e.getMessage()); }
         }
 
+        // Lee N bytes exactos del InputStream — compatible con cualquier API level
+        private static void readFully(InputStream in, byte[] buf, int len) throws Exception {
+            int off = 0;
+            while (off < len) {
+                int n = in.read(buf, off, len - off);
+                if (n < 0) throw new Exception("EOF");
+                off += n;
+            }
+        }
+
         private static void handleTcpStream(Socket client) {
             int            sid   = -1;
             CountDownLatch latch = null;
@@ -325,19 +337,78 @@ public class BtVpnService extends VpnService {
                 tcpLatches.put(sid, latch);
                 tcpLastActive.put(sid, new AtomicLong(System.currentTimeMillis()));
 
-                byte[] buf      = new byte[32768];
-                int    firstLen = client.getInputStream().read(buf);
-                if (firstLen < 0) return;
+                InputStream  cin  = client.getInputStream();
+                OutputStream cout = client.getOutputStream();
+                byte[] tmp = new byte[256];
 
-                byte[] first = new byte[firstLen];
-                System.arraycopy(buf, 0, first, 0, firstLen);
+                // --- Saludo 1: VER + NMETHODS + METHODS ---
+                cin.read(); // VER = 0x05
+                int nmethods = cin.read();
+                readFully(cin, tmp, nmethods);
+                // Responder: aceptar sin autenticación
+                cout.write(new byte[]{0x05, 0x00});
+                cout.flush();
 
-                writeTcpFrame(TYPE_OPEN, sid, new byte[]{ STREAM_TCP });
-                writeTcpFrame(TYPE_DATA, sid, first);
+                // --- Saludo 2: VER + CMD + RSV + ATYP + DST ---
+                cin.read(); // VER = 0x05
+                cin.read(); // CMD = 0x01 CONNECT
+                cin.read(); // RSV = 0x00
+                int atyp = cin.read();
+
+                byte[] hostBytes;
+                if (atyp == 1) {
+                    // IPv4: 4 bytes
+                    hostBytes = new byte[4];
+                    readFully(cin, hostBytes, 4);
+                } else if (atyp == 3) {
+                    // Dominio: 1 byte longitud + N bytes
+                    int len = cin.read();
+                    hostBytes = new byte[len];
+                    readFully(cin, hostBytes, len);
+                } else {
+                    // IPv6: 16 bytes
+                    hostBytes = new byte[16];
+                    readFully(cin, hostBytes, 16);
+                }
+                byte[] portBytes = new byte[2];
+                readFully(cin, portBytes, 2);
+
+                // Responder localmente: conexión establecida
+                // BND.ADDR = 0.0.0.0, BND.PORT = 0
+                cout.write(new byte[]{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0});
+                cout.flush();
+
+                // Construir payload destino para TYPE_OPEN
+                // Formato: [1 byte atyp][host bytes][2 bytes puerto]
+                byte[] destPayload;
+                if (atyp == 1) {
+                    destPayload = new byte[7]; // 1 + 4 + 2
+                    destPayload[0] = 0x01;
+                    System.arraycopy(hostBytes, 0, destPayload, 1, 4);
+                    destPayload[5] = portBytes[0];
+                    destPayload[6] = portBytes[1];
+                } else if (atyp == 3) {
+                    destPayload = new byte[2 + hostBytes.length + 2]; // 1 + 1 + N + 2
+                    destPayload[0] = 0x03;
+                    destPayload[1] = (byte) hostBytes.length;
+                    System.arraycopy(hostBytes, 0, destPayload, 2, hostBytes.length);
+                    destPayload[2 + hostBytes.length]     = portBytes[0];
+                    destPayload[2 + hostBytes.length + 1] = portBytes[1];
+                } else {
+                    destPayload = new byte[19]; // 1 + 16 + 2
+                    destPayload[0] = 0x04;
+                    System.arraycopy(hostBytes, 0, destPayload, 1, 16);
+                    destPayload[17] = portBytes[0];
+                    destPayload[18] = portBytes[1];
+                }
+
+                writeTcpFrame(TYPE_OPEN, sid, destPayload);
                 tcpLastActive.get(sid).set(System.currentTimeMillis());
 
+                // A partir de aquí fluyen datos de aplicación normales
+                byte[] buf = new byte[32768];
                 while (running) {
-                    int n = client.getInputStream().read(buf);
+                    int n = cin.read(buf);
                     if (n < 0) break;
                     byte[] chunk = new byte[n];
                     System.arraycopy(buf, 0, chunk, 0, n);
@@ -420,34 +491,31 @@ public class BtVpnService extends VpnService {
             if (t == null) { log("UDP túnel null"); return; }
             udpTunnel = t;
             try {
-                udpTunnelOut = new DataOutputStream(
-                        new BufferedOutputStream(t.getOutputStream(), TUNNEL_WRITE_BUFFER));
+                udpTunnelOut = new DataOutputStream(t.getOutputStream());
             } catch (Exception e) { log("udpTunnelOut: " + e.getMessage()); return; }
             startUdpTunnelReader();
             startUdpRelay();
             log("Túnel UDP listo");
         }
 
-        private static volatile int hevUdpPort = -1;
-
-private static void startUdpRelay() {
-    try {
-        udpRelaySocket = new DatagramSocket(SOCKS5_UDP_PORT, InetAddress.getByName("127.0.0.1"));
-        new Thread(() -> {
-            byte[] buf = new byte[65535];
-            while (running) {
-                try {
-                    DatagramPacket pkt = new DatagramPacket(buf, buf.length);
-                    udpRelaySocket.receive(pkt);
-                    hevUdpPort = pkt.getPort(); // guardar puerto de hev
-                    byte[] data = new byte[pkt.getLength()];
-                    System.arraycopy(buf, 0, data, 0, pkt.getLength());
-                    writeUdpRaw(data);
-                } catch (Exception ignored) { break; }
-            }
-        }, "udp-relay-recv").start();
-    } catch (Exception e) { log("udpRelay bind: " + e.getMessage()); }
-}
+        private static void startUdpRelay() {
+            try {
+                udpRelaySocket = new DatagramSocket(SOCKS5_UDP_PORT, InetAddress.getByName("127.0.0.1"));
+                new Thread(() -> {
+                    byte[] buf = new byte[65535];
+                    while (running) {
+                        try {
+                            DatagramPacket pkt = new DatagramPacket(buf, buf.length);
+                            udpRelaySocket.receive(pkt);
+                            hevUdpPort = pkt.getPort(); // guardar puerto real de hev
+                            byte[] data = new byte[pkt.getLength()];
+                            System.arraycopy(buf, 0, data, 0, pkt.getLength());
+                            writeUdpRaw(data);
+                        } catch (Exception ignored) { break; }
+                    }
+                }, "udp-relay-recv").start();
+            } catch (Exception e) { log("udpRelay bind: " + e.getMessage()); }
+        }
 
         private static void writeUdpRaw(byte[] data) {
             synchronized (udpLock) {
@@ -461,24 +529,24 @@ private static void startUdpRelay() {
         }
 
         private static void startUdpTunnelReader() {
-    new Thread(() -> {
-        try {
-            DataInputStream inp = new DataInputStream(udpTunnel.getInputStream());
-            while (running) {
-                int    len  = inp.readUnsignedShort();
-                byte[] data = new byte[len];
-                inp.readFully(data);
-                DatagramSocket relay = udpRelaySocket;
-                int port = hevUdpPort;
-                if (relay != null && !relay.isClosed() && port > 0) {
-                    DatagramPacket pkt = new DatagramPacket(
-                            data, data.length,
-                            InetAddress.getByName("127.0.0.1"), port);
-                    relay.send(pkt);
-                }
-            }
-        } catch (Exception ignored) {}
-    }, "udp-tunnel-reader").start();
+            new Thread(() -> {
+                try {
+                    DataInputStream inp = new DataInputStream(udpTunnel.getInputStream());
+                    while (running) {
+                        int    len  = inp.readUnsignedShort();
+                        byte[] data = new byte[len];
+                        inp.readFully(data);
+                        DatagramSocket relay = udpRelaySocket;
+                        int port = hevUdpPort;
+                        if (relay != null && !relay.isClosed() && port > 0) {
+                            DatagramPacket pkt = new DatagramPacket(
+                                    data, data.length,
+                                    InetAddress.getByName("127.0.0.1"), port);
+                            relay.send(pkt);
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }, "udp-tunnel-reader").start();
         }
 
         // ----------------------------------------------------------------------
