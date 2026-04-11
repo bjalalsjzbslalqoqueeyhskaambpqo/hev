@@ -18,6 +18,8 @@ jobs:
           cache: 'gradle'
 
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
 
       - name: Download HEV
         run: |
@@ -27,16 +29,13 @@ jobs:
               -o app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so
           fi
 
-      - name: Restore Gradle wrapper jar
-        run: base64 -d gradle/wrapper/gradle-wrapper.ja > gradle/wrapper/gradle-wrapper.jar
-
       - name: Restore Java source extensions
         run: |
-          mv app/src/main/java/com/blacktunnel/BtVpnService.jav app/src/main/java/com/blacktunnel/BtVpnService.java
-          mv app/src/main/java/com/blacktunnel/SimpleModeActivity.jav app/src/main/java/com/blacktunnel/SimpleModeActivity.java
+          mv app/src/main/java/com/blacktunnel/btvpn.src app/src/main/java/com/blacktunnel/BtVpnService.java
+          mv app/src/main/java/com/blacktunnel/smode.src app/src/main/java/com/blacktunnel/SimpleModeActivity.java
 
       - name: Build debug APK (simple mode)
-        run: ./gradlew --no-daemon :app:assembleDebug -x lint -x test
+        run: gradle --no-daemon :app:assembleDebug -x lint -x test
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
