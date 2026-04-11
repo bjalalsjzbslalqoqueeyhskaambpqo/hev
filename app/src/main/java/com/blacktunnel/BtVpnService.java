@@ -69,7 +69,7 @@ public class BtVpnService extends VpnService {
         createChannel();
         startForeground(NF_ID, buildNotif("BlackTunnel activo"));
 
-        tunPfd = new Builder()
+        Builder builder = new Builder()
                 .setSession("bt-hev")
                 .setMtu(1280)
                 .addAddress("198.18.0.1", 30)
@@ -77,9 +77,13 @@ public class BtVpnService extends VpnService {
                 .addRoute("0.0.0.0", 0)
                 .addRoute("::", 0)
                 .addDnsServer("198.18.0.2")
-                .addDnsServer("8.8.8.8")
-                .addDisallowedApplication(getPackageName())
-                .establish();
+                .addDnsServer("8.8.8.8");
+        try {
+            builder.addDisallowedApplication(getPackageName());
+        } catch (Exception e) {
+            log("disallow app: " + e.getMessage());
+        }
+        tunPfd = builder.establish();
 
         if (tunPfd == null) { log("TUN null"); return; }
 
