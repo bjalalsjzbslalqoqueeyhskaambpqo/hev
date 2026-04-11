@@ -1,12 +1,13 @@
 package com.blacktunnel;
 
 import android.net.VpnService;
-import java.net.Socket;
 
 public final class BtProxy {
     static final int SOCKS5_PORT = 10809;
 
     static { System.loadLibrary("btproxy"); }
+
+    private BtProxy() {}
 
     static int start(VpnService svc) {
         return nativeStart(SOCKS5_PORT, svc);
@@ -16,6 +17,11 @@ public final class BtProxy {
         nativeStop();
     }
 
-    private static native int  nativeStart(int socks5Port, VpnService svc);
+    static String drainLogs() {
+        return nativeDrainLogs();
+    }
+
+    private static native int nativeStart(int socks5Port, VpnService svc);
     private static native void nativeStop();
+    private static native String nativeDrainLogs();
 }

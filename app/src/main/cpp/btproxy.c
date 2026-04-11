@@ -9,6 +9,7 @@
 #include <netinet/tcp.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,13 +18,14 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/uio.h>
+#include <time.h>
 #include <unistd.h>
 
 #define LOG_TAG "BtProxy"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-/* ── Constantes de protocolo mux ────────────────────────────────────────── */
+
 #define T_OPEN  0x01
 #define T_DATA  0x02
 #define T_CLOSE 0x03
@@ -34,13 +36,13 @@
 #define MAX_PAYLOAD 16384
 #define FRAME_MAX   (FRAME_HDR + MAX_PAYLOAD)
 
-/* ── Config del túnel ───────────────────────────────────────────────────── */
+
 #define PROXY_HOST_IPV6 "2606:4700::6812:16b7"
 #define PROXY_HOST      "emailmarketing.personal.com.ar"
 #define PROXY_PORT      80
 #define TUNNEL_HOST     "3.brawlpass.com.ar"
 
-/* ── Config del relay SOCKS5 local ─────────────────────────────────────── */
+
 #define RELAY_BACKLOG   512
 #define EPOLL_MAX_EVT   64
 #define IDLE_SECS       600
@@ -48,7 +50,7 @@
 #define KEEPALIVE_SEC   90
 #define MAX_STREAMS     2048
 
-/* ── Pool de buffers ────────────────────────────────────────────────────── */
+
 #define POOL_SIZE 256
 #define BUF_SIZE  FRAME_MAX
 
@@ -77,7 +79,7 @@ static void pool_put(uint8_t *data) {
     pthread_spin_unlock(&g_pool_lock);
 }
 
-/* ── Tabla de streams ───────────────────────────────────────────────────── */
+
 typedef struct {
     int      fd;
     int64_t  last_active;
@@ -114,7 +116,7 @@ static void stream_free(stream_t *s) {
     s->used = 0;
 }
 
-/* ── Estado global ──────────────────────────────────────────────────────── */
+
 static volatile int   g_running    = 0;
 static int            g_relay_fd   = -1;
 static int            g_tun_fd     = -1;
@@ -123,8 +125,44 @@ static atomic_int     g_next_sid   = 1;
 static pthread_t      g_main_thread;
 static JavaVM        *g_jvm        = NULL;
 static jobject        g_vpn_svc    = NULL;
+static pthread_mutex_t g_logs_mu   = PTHREAD_MUTEX_INITIALIZER;
+static char            g_logs_buf[32768];
+static size_t          g_logs_len   = 0;
 
-/* ── Utilidades fd ──────────────────────────────────────────────────────── */
+static void push_logf(const char *level, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    char msg[512];
+    vsnprintf(msg, sizeof(msg), fmt, args);
+    va_end(args);
+
+    if (strcmp(level, "E") == 0) LOGE("%s", msg);
+    else LOGI("%s", msg);
+
+    pthread_mutex_lock(&g_logs_mu);
+    char line[560];
+    int n = snprintf(line, sizeof(line), "%s %s\n", level, msg);
+    if (n > 0) {
+        size_t need = (size_t)n;
+        if (need >= sizeof(g_logs_buf)) {
+            memcpy(g_logs_buf, line + (need - sizeof(g_logs_buf) + 1), sizeof(g_logs_buf) - 1);
+            g_logs_buf[sizeof(g_logs_buf) - 1] = '\0';
+            g_logs_len = sizeof(g_logs_buf) - 1;
+        } else {
+            if (g_logs_len + need >= sizeof(g_logs_buf)) {
+                size_t drop = (g_logs_len + need) - (sizeof(g_logs_buf) - 1);
+                memmove(g_logs_buf, g_logs_buf + drop, g_logs_len - drop);
+                g_logs_len -= drop;
+            }
+            memcpy(g_logs_buf + g_logs_len, line, need);
+            g_logs_len += need;
+            g_logs_buf[g_logs_len] = '\0';
+        }
+    }
+    pthread_mutex_unlock(&g_logs_mu);
+}
+
+
 static void set_nonblock(int fd) {
     int fl = fcntl(fd, F_GETFL, 0);
     if (fl >= 0) fcntl(fd, F_SETFL, fl | O_NONBLOCK);
@@ -149,7 +187,7 @@ static void set_keepalive(int fd) {
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,    &cnt,   sizeof(cnt));
 }
 
-/* ── Frame builder inline ───────────────────────────────────────────────── */
+
 static inline void frame_hdr(uint8_t *buf, uint8_t type, uint32_t sid, uint16_t len) {
     buf[0] = type;
     buf[1] = (sid >> 24) & 0xFF;
@@ -160,7 +198,7 @@ static inline void frame_hdr(uint8_t *buf, uint8_t type, uint32_t sid, uint16_t 
     buf[6] =  len        & 0xFF;
 }
 
-/* ── Escritura completa al túnel ────────────────────────────────────────── */
+
 static int tun_send_frame(int tfd, uint8_t type, uint32_t sid, const uint8_t *data, uint16_t dlen) {
     uint8_t hdr[FRAME_HDR];
     frame_hdr(hdr, type, sid, dlen);
@@ -198,7 +236,7 @@ static int tun_send_frame(int tfd, uint8_t type, uint32_t sid, const uint8_t *da
     return 0;
 }
 
-/* ── Lectura completa blocking ──────────────────────────────────────────── */
+
 static int read_full(int fd, uint8_t *buf, int len) {
     int off = 0;
     while (off < len) {
@@ -211,7 +249,7 @@ static int read_full(int fd, uint8_t *buf, int len) {
     return 0;
 }
 
-/* ── VpnService.protect() via JNI ───────────────────────────────────────── */
+
 static void jni_protect(int fd) {
     if (!g_jvm || !g_vpn_svc) return;
     JNIEnv *env = NULL;
@@ -227,11 +265,11 @@ static void jni_protect(int fd) {
     if (attached) (*g_jvm)->DetachCurrentThread(g_jvm);
 }
 
-/* ── Conexión al proxy HTTP/túnel ───────────────────────────────────────── */
+
 static int open_tunnel_socket(void) {
     int fd = -1;
 
-    /* Intento IPv6 primero */
+    
     struct sockaddr_in6 a6 = {0};
     a6.sin6_family = AF_INET6;
     a6.sin6_port   = htons(PROXY_PORT);
@@ -243,12 +281,12 @@ static int open_tunnel_socket(void) {
             if (connect(fd, (struct sockaddr *)&a6, sizeof(a6)) != 0) {
                 close(fd); fd = -1;
             } else {
-                LOGI("tunnel IPv6 OK");
+                push_logf("I", "tunnel IPv6 OK");
             }
         }
     }
 
-    /* Fallback DNS */
+    
     if (fd < 0) {
         struct addrinfo hints = {0}, *res = NULL;
         hints.ai_family   = AF_UNSPEC;
@@ -262,7 +300,7 @@ static int open_tunnel_socket(void) {
                 set_nodelay(s); set_buffers(s); set_keepalive(s);
                 if (connect(s, r->ai_addr, r->ai_addrlen) == 0) {
                     fd = s;
-                    LOGI("tunnel DNS OK");
+                    push_logf("I", "tunnel DNS OK");
                 } else {
                     close(s);
                 }
@@ -271,9 +309,9 @@ static int open_tunnel_socket(void) {
         }
     }
 
-    if (fd < 0) { LOGE("tunnel connect failed"); return -1; }
+    if (fd < 0) { push_logf("E", "tunnel connect failed"); return -1; }
 
-    /* Handshake HTTP — dos requests en un solo write */
+    
     char req[512];
     int  rlen = snprintf(req, sizeof(req),
         "GET / HTTP/1.1\r\nHost: %s\r\n\r\n"
@@ -286,7 +324,7 @@ static int open_tunnel_socket(void) {
         else if (errno != EINTR) { close(fd); return -1; }
     }
 
-    /* Leer hasta dos bloques \r\n\r\n */
+    
     char resp[4096]; int roff = 0, blocks = 0;
     struct timeval tv = {8, 0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -300,26 +338,26 @@ static int open_tunnel_socket(void) {
     }
     tv.tv_sec = 0; setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    if (!strstr(resp, "101")) { LOGE("no 101"); close(fd); return -1; }
+    if (!strstr(resp, "101")) { push_logf("E", "handshake without 101"); close(fd); return -1; }
 
-    LOGI("tunnel handshake OK");
+    push_logf("I", "tunnel handshake OK");
     return fd;
 }
 
-/* ── SOCKS5 handshake con cliente local ─────────────────────────────────── */
+
 static int socks5_server_handshake(int cfd, uint8_t *dest_out, int *dest_len_out) {
     uint8_t buf[512];
 
-    /* auth negotiation */
+    
     if (read_full(cfd, buf, 2) < 0) return -1;
     int nm = buf[1];
     if (nm > 0 && read_full(cfd, buf + 2, nm) < 0) return -1;
     uint8_t rep[2] = {0x05, 0x00};
     if (send(cfd, rep, 2, MSG_NOSIGNAL) != 2) return -1;
 
-    /* request */
+    
     if (read_full(cfd, buf, 4) < 0) return -1;
-    /* buf[1]=cmd(ignored) buf[2]=rsv buf[3]=atyp */
+    
     int at = buf[3];
     uint8_t dest[256]; int dlen = 0;
     dest[dlen++] = (uint8_t)at;
@@ -340,7 +378,7 @@ static int socks5_server_handshake(int cfd, uint8_t *dest_out, int *dest_len_out
     if (read_full(cfd, dest + dlen, 2) < 0) return -1;
     dlen += 2;
 
-    /* respuesta OK */
+    
     uint8_t ok[10] = {0x05,0x00,0x00,0x01,0,0,0,0,0,0};
     if (send(cfd, ok, sizeof(ok), MSG_NOSIGNAL) != sizeof(ok)) return -1;
 
@@ -349,7 +387,7 @@ static int socks5_server_handshake(int cfd, uint8_t *dest_out, int *dest_len_out
     return 0;
 }
 
-/* ── Thread: cada conexión SOCKS5 local ────────────────────────────────── */
+
 typedef struct {
     int      cfd;
     int      tfd;
@@ -363,13 +401,13 @@ static void *conn_thread(void *arg) {
     uint32_t     sid = ca->sid;
     free(ca);
 
-    /* registro del stream */
+    
     pthread_mutex_lock(&g_streams_mu);
     stream_t *s = stream_alloc(sid, cfd);
     pthread_mutex_unlock(&g_streams_mu);
     if (!s) { close(cfd); return NULL; }
 
-    /* SOCKS5 */
+    
     uint8_t dest[260]; int dest_len = 0;
     if (socks5_server_handshake(cfd, dest, &dest_len) < 0) {
         pthread_mutex_lock(&g_streams_mu);
@@ -378,7 +416,7 @@ static void *conn_thread(void *arg) {
         return NULL;
     }
 
-    /* T_OPEN al túnel */
+    
     if (tun_send_frame(tfd, T_OPEN, sid, dest, (uint16_t)dest_len) < 0) {
         pthread_mutex_lock(&g_streams_mu);
         stream_free(s);
@@ -386,7 +424,7 @@ static void *conn_thread(void *arg) {
         return NULL;
     }
 
-    /* Loop de subida: cliente → túnel */
+    
     uint8_t buf[MAX_PAYLOAD];
     while (g_running) {
         ssize_t n = recv(cfd, buf, sizeof(buf), 0);
@@ -404,7 +442,7 @@ static void *conn_thread(void *arg) {
     return NULL;
 }
 
-/* ── Thread: lector del túnel → clientes locales ───────────────────────── */
+
 static void *tunnel_reader(void *arg) {
     int tfd = *(int *)arg;
     uint8_t hdr[FRAME_HDR];
@@ -426,7 +464,7 @@ static void *tunnel_reader(void *arg) {
             if (s && s->used) s->last_active = (int64_t)time(NULL);
             pthread_mutex_unlock(&g_streams_mu);
             if (cfd >= 0 && len > 0) {
-                /* Entrega directa al cliente — sin cola, sin copia extra */
+                
                 ssize_t off = 0;
                 while (off < len) {
                     ssize_t n = send(cfd, payload + off, len - off, MSG_NOSIGNAL);
@@ -441,13 +479,13 @@ static void *tunnel_reader(void *arg) {
             if (s) stream_free(s);
             pthread_mutex_unlock(&g_streams_mu);
         } else if (ft == T_PONG) {
-            /* nada */
+            
         }
     }
     return NULL;
 }
 
-/* ── Thread: keepalive ──────────────────────────────────────────────────── */
+
 static void *keepalive_thread(void *arg) {
     int tfd = *(int *)arg;
     while (g_running) {
@@ -461,7 +499,7 @@ static void *keepalive_thread(void *arg) {
     return NULL;
 }
 
-/* ── Thread: watchdog idle streams ─────────────────────────────────────── */
+
 static void *watchdog_thread(void *arg) {
     int tfd = *(int *)arg;
     while (g_running) {
@@ -484,16 +522,16 @@ static void *watchdog_thread(void *arg) {
     return NULL;
 }
 
-/* ── Thread principal: relay SOCKS5 + dispatch ──────────────────────────── */
+
 static void *main_thread(void *arg) {
     int socks5_port = (int)(intptr_t)arg;
 
-    /* Conectar túnel */
+    
     int tfd = open_tunnel_socket();
     if (tfd < 0) return NULL;
     g_tun_fd = tfd;
 
-    /* Servidor SOCKS5 local */
+    
     int rfd = socket(AF_INET, SOCK_STREAM, 0);
     if (rfd < 0) { close(tfd); return NULL; }
     int one = 1;
@@ -508,16 +546,16 @@ static void *main_thread(void *arg) {
         close(rfd); close(tfd); return NULL;
     }
     g_relay_fd = rfd;
-    LOGI("relay listening on 127.0.0.1:%d", socks5_port);
+    push_logf("I", "relay listening on 127.0.0.1:%d", socks5_port);
 
-    /* Lanzar threads auxiliares */
+    
     pthread_t trd, tka, twd;
     pthread_create(&trd, NULL, tunnel_reader,  &g_tun_fd);
     pthread_create(&tka, NULL, keepalive_thread, &g_tun_fd);
     pthread_create(&twd, NULL, watchdog_thread,  &g_tun_fd);
     pthread_detach(trd); pthread_detach(tka); pthread_detach(twd);
 
-    /* Accept loop */
+    
     while (g_running) {
         struct sockaddr_in ca; socklen_t cl = sizeof(ca);
         int cfd = accept(rfd, (struct sockaddr *)&ca, &cl);
@@ -550,17 +588,20 @@ static void *main_thread(void *arg) {
     return NULL;
 }
 
-/* ── JNI: nativeStart ───────────────────────────────────────────────────── */
+
 JNIEXPORT jint JNICALL
 Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
                                           jint socks5_port, jobject vpn_svc) {
-    if (g_running) return 0;
+    if (g_running) {
+        push_logf("I", "nativeStart ignored: already running");
+        return 0;
+    }
 
     (*env)->GetJavaVM(env, &g_jvm);
     g_vpn_svc = (*env)->NewGlobalRef(env, vpn_svc);
 
     pthread_spin_init(&g_pool_lock, PTHREAD_PROCESS_PRIVATE);
-    /* Pre-llenar pool de buffers */
+    
     for (int i = 0; i < POOL_SIZE; i++) {
         buf_node_t *n = malloc(sizeof(buf_node_t));
         if (n) { n->next = g_pool; g_pool = n; }
@@ -575,15 +616,18 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     if (pthread_create(&g_main_thread, NULL, main_thread, (void *)(intptr_t)socks5_port) != 0) {
         g_running = 0;
         if (g_vpn_svc) { (*env)->DeleteGlobalRef(env, g_vpn_svc); g_vpn_svc = NULL; }
+        push_logf("E", "failed to create main thread");
         return -1;
     }
     pthread_detach(g_main_thread);
+    push_logf("I", "nativeStart ok");
     return 0;
 }
 
-/* ── JNI: nativeStop ────────────────────────────────────────────────────── */
+
 JNIEXPORT void JNICALL
 Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
+    push_logf("I", "nativeStop begin");
     g_running = 0;
     if (g_relay_fd >= 0) { close(g_relay_fd); g_relay_fd = -1; }
     if (g_tun_fd   >= 0) { close(g_tun_fd);   g_tun_fd   = -1; }
@@ -596,10 +640,27 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     if (g_vpn_svc) { (*env)->DeleteGlobalRef(env, g_vpn_svc); g_vpn_svc = NULL; }
     g_jvm = NULL;
 
-    /* Liberar pool */
+    
     pthread_spin_lock(&g_pool_lock);
     buf_node_t *n = g_pool; g_pool = NULL;
     pthread_spin_unlock(&g_pool_lock);
     while (n) { buf_node_t *nx = n->next; free(n); n = nx; }
     pthread_spin_destroy(&g_pool_lock);
+    push_logf("I", "nativeStop done");
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_blacktunnel_BtProxy_nativeDrainLogs(JNIEnv *env, jclass clazz) {
+    pthread_mutex_lock(&g_logs_mu);
+    if (g_logs_len == 0) {
+        pthread_mutex_unlock(&g_logs_mu);
+        return (*env)->NewStringUTF(env, "");
+    }
+    char out[32768];
+    memcpy(out, g_logs_buf, g_logs_len);
+    out[g_logs_len] = '\0';
+    g_logs_len = 0;
+    g_logs_buf[0] = '\0';
+    pthread_mutex_unlock(&g_logs_mu);
+    return (*env)->NewStringUTF(env, out);
 }
