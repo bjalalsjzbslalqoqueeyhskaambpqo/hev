@@ -21,6 +21,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.Date;
 import java.util.Locale;
@@ -80,20 +81,14 @@ public class BtVpnService extends VpnService {
         createChannel();
         startForeground(NF_ID, buildNotif("BlackTunnel activo"));
 
-        // MTU 1400: equilibrio para LTE/5G. Evita fragmentación sin penalizar
-        // paquetes pequeños de gaming como hace 1500 en redes móviles con overhead PPP/GRE.
-        // 1280 era demasiado conservador: más headers = más overhead por paquete de juego.
         Builder builder = new Builder()
                 .setSession("bt-hev")
                 .setMtu(1400)
                 .addAddress("198.18.0.1", 30)
                 .addAddress("fc00::1", 126)
-                // Rutas divididas para excluir LAN sin usar excludeRoute (mayor compatibilidad).
-                // 0.0.0.0/1 cubre 0.0.0.0–127.255.255.255
-                // 128.0.0.0/1 cubre 128.0.0.0–255.255.255.255
-                // Las rutas más específicas de LAN (10/8, 172.16/12, 192.168/16) que el
-                // sistema agrega automáticamente para la interfaz física tienen precedencia
-                // sobre estas /1, por lo que el tráfico local NO entra al túnel.
+                // /1 + /1 cubre todo el espacio IPv4 público. Las rutas más específicas
+                // de la interfaz física (10/8, 192.168/16, 172.16/12) tienen precedencia
+                // automática → el tráfico LAN nunca entra al túnel.
                 .addRoute("0.0.0.0", 1)
                 .addRoute("128.0.0.0", 1)
                 .addRoute("::", 0)
@@ -145,46 +140,35 @@ public class BtVpnService extends VpnService {
     }
 
     private File writeHevCfg() {
-        // Configuración hev ajustada para móvil + gaming de baja latencia:
+        // Android 8+ (API 26+), ART 64-bit, objetivo: latencia mínima + batería razonable.
         //
-        // mtu: 1400 — alineado con el MTU del Builder de Android.
+        // tcp-buffer-size 16384: lwIP ventana interna. 16 KB cubre paquetes de gaming
+        // (< 1500 B) y ráfagas de redes sociales sin acumular cola innecesaria.
+        // task-stack-size = 20480 + 16384 + 4096 margen = 40960.
         //
-        // tcp-buffer-size: 8192 — en móvil el BDP (bandwidth-delay product) con 20 ms
-        //   de latencia y ~50 Mbps típicos de LTE es ≈125 KB, pero el buffer de hev solo
-        //   afecta la ventana interna de lwIP, no la ventana TCP del socket real.
-        //   8 KB es suficiente para sesiones de gaming (paquetes pequeños y frecuentes).
-        //   Valores grandes como 28 KB solo acumulan datos en memoria aumentando latencia.
+        // udp-copy-buffer-nums 6: suficiente para UDP de gaming y fondo. Menos RAM fija.
         //
-        // task-stack-size: 32768 — regla: 20480 (mínimo lwIP) + tcp-buffer-size (8192)
-        //   + 4096 de margen = 32768. Más stack = más RAM sin ganancia real en móvil.
+        // read-write-timeout 90000: 90 s limpia sesiones TCP muertas sin matar streams
+        // legítimos de apps en background (Instagram, WhatsApp abren sockets largos).
         //
-        // udp-copy-buffer-nums: 8 — el original tenía 16. En gaming UDP los paquetes
-        //   son pequeños (< 512 B). 8 buffers de copia son más que suficientes y reducen
-        //   memoria fija del proceso hev.
+        // udp-read-write-timeout 30000: UDP sin actividad 30 s → cerrado. Gaming y DNS
+        // son transaccionales; nadie mantiene UDP vivo más tiempo útilmente.
         //
-        // connect-timeout: 5000 — 5 s está bien para móvil. Sin cambio.
+        // pipeline true: elimina un RTT entero en cada handshake SOCKS5 nuevo.
+        // Con 20 ms de latencia al server, esto ahorra 20 ms por conexión nueva.
         //
-        // read-write-timeout: 60000 — reducido de 300 s a 60 s. Una sesión de juego
-        //   inactiva 60 s debe cerrarse; 300 s acumulan sesiones zombie en memoria.
-        //
-        // udp-read-write-timeout: 30000 — reducido de 60 s a 30 s. UDP de gaming
-        //   no mantiene sesiones largas sin actividad.
-        //
-        // pipeline: true — envía handshake SOCKS5 sin esperar respuesta intermedia.
-        //   Elimina un RTT completo (20 ms) en cada nueva conexión. Crítico para gaming.
-        //
-        // mapdns cache-size: 512 — el original tenía 4096. En un juego móvil los dominios
-        //   únicos raramente superan los 50. 4096 entradas desperdician RAM en móvil.
+        // mapdns cache-size 256: suficiente para el conjunto de dominios de cualquier
+        // juego + apps cotidianas activas. Reduce RAM de hev sin impacto perceptible.
 
         String yml =
             "tunnel:\n  name: bt-hev\n  mtu: 1400\n  ipv4: 198.18.0.1\n  ipv6: fc00::1\n" +
             "socks5:\n  address: 127.0.0.1\n  port: " + Proxy.PORT + "\n" +
             "  udp: 'tcp'\n  pipeline: true\n" +
             "mapdns:\n  address: 198.18.0.2\n  port: 53\n" +
-            "  network: 100.64.0.0\n  netmask: 255.192.0.0\n  cache-size: 512\n" +
-            "misc:\n  task-stack-size: 32768\n  tcp-buffer-size: 8192\n" +
-            "  udp-copy-buffer-nums: 8\n  connect-timeout: 5000\n" +
-            "  read-write-timeout: 60000\n  udp-read-write-timeout: 30000\n" +
+            "  network: 100.64.0.0\n  netmask: 255.192.0.0\n  cache-size: 256\n" +
+            "misc:\n  task-stack-size: 40960\n  tcp-buffer-size: 16384\n" +
+            "  udp-copy-buffer-nums: 6\n  connect-timeout: 5000\n" +
+            "  read-write-timeout: 90000\n  udp-read-write-timeout: 30000\n" +
             "  log-level: warn\n";
 
         File f = new File(getFilesDir(), "hev.yml");
@@ -231,29 +215,27 @@ public class BtVpnService extends VpnService {
         private static final String T_HOST = "3.brawlpass.com.ar";
 
         private static final byte T_OPEN=0x01, T_DATA=0x02, T_CLOSE=0x03, T_PING=0x04, T_PONG=0x05;
-        private static final int  MAX_PL          = 65535;
-        private static final long IDLE_MS         = 10 * 60 * 1000L;  // 10 min: gaming no tiene sesiones zombie largas
-        private static final long WD_INT          = 60 * 1000L;
-        private static final int  WR_BUF          = 16 * 1024;        // 16 KB: reduce latencia de flush vs 32 KB
-        private static final int  READ_BUF_SIZE   = 8 * 1024;         // 8 KB: paquetes de gaming son pequeños
-        private static final int  WRITE_QUEUE_CAP = 512;              // menor cap = menor latencia máxima en cola
+        private static final int  MAX_PL        = 65535;
+        private static final long IDLE_MS       = 10 * 60 * 1000L;
+        private static final long WD_INT        = 60 * 1000L;
+        private static final int  WR_BUF        = 16 * 1024;
+        private static final int  READ_BUF_SIZE = 8 * 1024;
 
         private static final ThreadLocal<byte[]> READ_BUF =
                 ThreadLocal.withInitial(() -> new byte[READ_BUF_SIZE]);
 
-        // Pool sin límite de espera (SynchronousQueue): cada conexión obtiene su hilo
-        // de inmediato sin pasar por ninguna cola. Para gaming esto elimina la latencia
-        // de encolado. Cap 128 en móvil: ART asigna ~512 KB de stack por hilo nativo,
-        // 128 hilos ≈ 64 MB máximo, razonable en dispositivos con 3+ GB RAM.
-        // keepAlive 15 s: libera hilos inactivos rápido sin thrashing de creación.
+        // SynchronousQueue: entrega inmediata sin cola. Cero latencia de encolado.
+        // Cap 128: razonable en cualquier SoC 64-bit Android 8+.
+        // keepAlive 20 s: balance entre liberar RAM y no crear/destruir hilos en ráfaga.
         private static final ThreadPoolExecutor streamPool = new ThreadPoolExecutor(
-                0, 128, 15L, TimeUnit.SECONDS,
+                0, 128, 20L, TimeUnit.SECONDS,
                 new SynchronousQueue<>(),
                 r -> { Thread t = new Thread(r, "stream"); t.setDaemon(true); return t; },
                 new ThreadPoolExecutor.CallerRunsPolicy());
 
-        private static final LinkedBlockingQueue<byte[]> writeQueue =
-                new LinkedBlockingQueue<>(WRITE_QUEUE_CAP);
+        // Sin cap: TCP del extremo es el único control de flujo legítimo.
+        // Un cap artificial en software bloquea o descarta antes de que TCP pueda actuar.
+        private static final LinkedBlockingQueue<byte[]> writeQueue = new LinkedBlockingQueue<>();
 
         interface Protector { boolean protect(Socket s); }
 
@@ -266,7 +248,7 @@ public class BtVpnService extends VpnService {
         private static final AtomicInteger nextSid    = new AtomicInteger(1);
         private static final AtomicInteger streamCount = new AtomicInteger(0);
 
-        private static final Map<Integer, OutputStream>   clientOuts = new ConcurrentHashMap<>();
+        private static final Map<Integer, LinkedBlockingQueue<byte[]>> clientOuts = new ConcurrentHashMap<>();
         private static final Map<Integer, Socket>          streams    = new ConcurrentHashMap<>();
         private static final Map<Integer, CountDownLatch>  latches    = new ConcurrentHashMap<>();
         private static final Map<Integer, AtomicLong>      active     = new ConcurrentHashMap<>();
@@ -286,8 +268,7 @@ public class BtVpnService extends VpnService {
             latches.values().forEach(CountDownLatch::countDown);
             latches.clear();
             active.clear();
-            clientOuts.clear();
-            try { if (relay != null) relay.close(); } catch (Exception ignored) {}
+            clientOuts.clear();            try { if (relay != null) relay.close(); } catch (Exception ignored) {}
             relay = null;
             streams.values().forEach(s -> { try { s.close(); } catch (Exception ignored) {} });
             streams.clear();
@@ -316,6 +297,7 @@ public class BtVpnService extends VpnService {
 
         private static void startWriter() {
             new Thread(() -> {
+                final ArrayList<byte[]> batch = new ArrayList<>(64);
                 try {
                     while (running) {
                         byte[] frame = writeQueue.poll(1, TimeUnit.SECONDS);
@@ -323,10 +305,9 @@ public class BtVpnService extends VpnService {
                         DataOutputStream out = tunOut;
                         if (out == null) break;
                         out.write(frame);
-                        byte[] next;
-                        while ((next = writeQueue.poll()) != null) {
-                            out.write(next);
-                        }
+                        batch.clear();
+                        writeQueue.drainTo(batch);
+                        for (byte[] f : batch) out.write(f);
                         out.flush();
                     }
                 } catch (Exception ignored) {}
@@ -345,10 +326,11 @@ public class BtVpnService extends VpnService {
                         if (len > 0) in.readFully(rdBuf, 0, len);
 
                         if (t == T_DATA) {
-                            OutputStream out = clientOuts.get(sid);
-                            if (out != null) {
-                                try { out.write(rdBuf, 0, len); out.flush(); }
-                                catch (Exception ignored) {}
+                            LinkedBlockingQueue<byte[]> q = clientOuts.get(sid);
+                            if (q != null) {
+                                byte[] copy = new byte[len];
+                                System.arraycopy(rdBuf, 0, copy, 0, len);
+                                try { q.put(copy); } catch (InterruptedException ignored) {}
                             }
                             AtomicLong ts = active.get(sid);
                             if (ts != null) ts.set(System.currentTimeMillis());
@@ -356,8 +338,8 @@ public class BtVpnService extends VpnService {
                         } else if (t == T_CLOSE) {
                             CountDownLatch l = latches.remove(sid);
                             if (l != null) l.countDown();
-                            Socket s = streams.remove(sid);
                             clientOuts.remove(sid);
+                            Socket s = streams.remove(sid);
                             active.remove(sid);
                             if (s != null) log("streams=" + streamCount.decrementAndGet());
                         }
@@ -369,7 +351,7 @@ public class BtVpnService extends VpnService {
         private static void startKeepalive() {
             new Thread(() -> {
                 while (running && tun != null && tun.isConnected()) {
-                    try { Thread.sleep(30_000); } catch (InterruptedException ignored) { break; }
+                    try { Thread.sleep(90_000); } catch (InterruptedException ignored) { break; }
                     enqueueControl(T_PING, 0);
                 }
             }, "ka").start();
@@ -422,11 +404,10 @@ public class BtVpnService extends VpnService {
         private static void applyTunnelSocketOptions(Socket s) {
             try { s.setKeepAlive(true); }           catch (Exception ignored) {}
             try { s.setTcpNoDelay(true); }          catch (Exception ignored) {}
-            // 128 KB para el túnel externo: en LTE con 20 ms de RTT el BDP es ~125 KB.
-            // 256 KB era excesivo para móvil y podía aumentar bufferbloat.
-            try { s.setReceiveBufferSize(131072); }  catch (Exception ignored) {}
-            try { s.setSendBufferSize(131072); }     catch (Exception ignored) {}
-            // IPTOS_LOWDELAY: pide al stack IP prioridad de latencia baja.
+            // BDP = RTT × bandwidth. 20 ms × ~40 Mbps LTE promedio ≈ 100 KB.
+            // 96 KB cubre el BDP real sin exceso que genere bufferbloat en el modem.
+            try { s.setReceiveBufferSize(98304); }   catch (Exception ignored) {}
+            try { s.setSendBufferSize(98304); }      catch (Exception ignored) {}
             try { s.setTrafficClass(0x10); }         catch (Exception ignored) {}
         }
 
@@ -447,19 +428,46 @@ public class BtVpnService extends VpnService {
 
                 latch = new CountDownLatch(1);
 
-                BufferedOutputStream bco = new BufferedOutputStream(c.getOutputStream(), 8192);
+                // Cola ilimitada: TCP del servidor es el control de flujo.
+                // El reader global deposita con put() no bloqueante (cola ilimitada = instantáneo).
+                final LinkedBlockingQueue<byte[]> recvQ = new LinkedBlockingQueue<>();
+                final int finalSid = sid;
+                final CountDownLatch finalLatch = latch;
 
                 streams.put(sid, c);
-                clientOuts.put(sid, bco);
+                clientOuts.put(sid, recvQ);
                 latches.put(sid, latch);
                 active.put(sid, new AtomicLong(System.currentTimeMillis()));
                 log("streams=" + streamCount.incrementAndGet());
+
+                // Hilo de escritura local por stream. Si este socket se bloquea (descarga grande)
+                // solo este stream espera — los demás fluyen sin interrupción.
+                final OutputStream rawOut = c.getOutputStream();
+                final Thread writer = new Thread(() -> {
+                    final ArrayList<byte[]> drain = new ArrayList<>(32);
+                    try {
+                        while (true) {
+                            byte[] chunk = recvQ.poll(2, TimeUnit.SECONDS);
+                            if (chunk == null) {
+                                if (!streams.containsKey(finalSid)) break;
+                                continue;
+                            }
+                            rawOut.write(chunk);
+                            drain.clear();
+                            recvQ.drainTo(drain);
+                            for (byte[] b : drain) rawOut.write(b);
+                            rawOut.flush();
+                        }
+                    } catch (Exception ignored) {}
+                }, "sw-" + sid);
+                writer.setDaemon(true);
+                writer.start();
 
                 InputStream ci = c.getInputStream();
                 byte[] tmp = new byte[256];
 
                 ci.read(); int nm = ci.read(); readFully(ci, tmp, nm);
-                bco.write(new byte[]{0x05, 0x00}); bco.flush();
+                rawOut.write(new byte[]{0x05, 0x00}); rawOut.flush();
 
                 ci.read(); ci.read(); ci.read();
                 int at = ci.read();
@@ -469,7 +477,7 @@ public class BtVpnService extends VpnService {
                 else              { hb = new byte[16]; readFully(ci, hb, 16); }
                 byte[] pb = new byte[2]; readFully(ci, pb, 2);
 
-                bco.write(new byte[]{0x05,0x00,0x00,0x01,0,0,0,0,0,0}); bco.flush();
+                rawOut.write(new byte[]{0x05,0x00,0x00,0x01,0,0,0,0,0,0}); rawOut.flush();
 
                 byte[] dest;
                 if (at == 1) {
@@ -545,7 +553,7 @@ public class BtVpnService extends VpnService {
             frame[3] = (byte)(sid >> 8);  frame[4] = (byte) sid;
             frame[5] = (byte)(length >> 8); frame[6] = (byte) length;
             System.arraycopy(data, 0, frame, 7, length);
-            writeQueue.offer(frame);
+            try { writeQueue.put(frame); } catch (InterruptedException ignored) {}
         }
 
         private static Socket openTunnel() {
