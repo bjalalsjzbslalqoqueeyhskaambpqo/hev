@@ -221,6 +221,19 @@ public class BtVpnService extends VpnService {
         private static final int  WR_BUF        = 16 * 1024;
         private static final int  READ_BUF_SIZE = 8 * 1024;
 
+        // Safety net de RAM — no es control de flujo, es protección contra OOM.
+        // Cuando se alcanza el techo, TCP del extremo recibe backpressure natural
+        // porque el socket local deja de consumir → la ventana TCP se cierra sola.
+        // 4 MB por stream: cubre cualquier ráfaga de gaming o redes sociales.
+        // Un stream de descarga que llene esto simplemente espera en TCP — correcto.
+        private static final int RECV_Q_CAP  = 4 * 1024 * 1024 / 1460; // ~2800 frames MSS
+        // 16 MB total en writeQueue: suficiente para ~10 streams activos en ráfaga.
+        // En gaming real nunca se llega ni al 1% de esto.
+        private static final int WRITE_Q_CAP = 16 * 1024 * 1024 / 1460; // ~11200 frames
+
+        // Sentinel para señalizar cierre al hilo sw-N de cada stream.
+        private static final byte[] SENTINEL = new byte[0];
+
         private static final ThreadLocal<byte[]> READ_BUF =
                 ThreadLocal.withInitial(() -> new byte[READ_BUF_SIZE]);
 
@@ -233,9 +246,12 @@ public class BtVpnService extends VpnService {
                 r -> { Thread t = new Thread(r, "stream"); t.setDaemon(true); return t; },
                 new ThreadPoolExecutor.CallerRunsPolicy());
 
-        // Sin cap: TCP del extremo es el único control de flujo legítimo.
-        // Un cap artificial en software bloquea o descarta antes de que TCP pueda actuar.
-        private static final LinkedBlockingQueue<byte[]> writeQueue = new LinkedBlockingQueue<>();
+        // controlQueue: OPEN, CLOSE, PING — siempre primero, sin cap.
+        // Son frames de 7 bytes, rarísimamente más de uno o dos en cola.
+        private static final LinkedBlockingQueue<byte[]> controlQueue = new LinkedBlockingQueue<>();
+        // dataQueue: frames DATA — con safety net de RAM. Paquetes pequeños nunca
+        // llegan ni cerca del techo. Una descarga pesada lo llena y TCP retiene solo.
+        private static final LinkedBlockingQueue<byte[]> dataQueue = new LinkedBlockingQueue<>(WRITE_Q_CAP);
 
         interface Protector { boolean protect(Socket s); }
 
@@ -264,11 +280,13 @@ public class BtVpnService extends VpnService {
         static void stop() {
             running   = false;
             protector = null;
-            writeQueue.clear();
+            controlQueue.clear();
+            dataQueue.clear();
             latches.values().forEach(CountDownLatch::countDown);
             latches.clear();
             active.clear();
-            clientOuts.clear();            try { if (relay != null) relay.close(); } catch (Exception ignored) {}
+            clientOuts.clear();
+            try { if (relay != null) relay.close(); } catch (Exception ignored) {}
             relay = null;
             streams.values().forEach(s -> { try { s.close(); } catch (Exception ignored) {} });
             streams.clear();
@@ -300,13 +318,21 @@ public class BtVpnService extends VpnService {
                 final ArrayList<byte[]> batch = new ArrayList<>(64);
                 try {
                     while (running) {
-                        byte[] frame = writeQueue.poll(1, TimeUnit.SECONDS);
+                        // Espera a que haya algo en cualquiera de las dos colas.
+                        // Control tiene prioridad absoluta: un OPEN nuevo sale antes
+                        // que cualquier frame de datos de una descarga en curso.
+                        byte[] frame = controlQueue.poll(50, TimeUnit.MILLISECONDS);
+                        if (frame == null) frame = dataQueue.poll(950, TimeUnit.MILLISECONDS);
                         if (frame == null) continue;
                         DataOutputStream out = tunOut;
                         if (out == null) break;
                         out.write(frame);
+                        // Drena primero todo el control pendiente, luego datos.
                         batch.clear();
-                        writeQueue.drainTo(batch);
+                        controlQueue.drainTo(batch);
+                        for (byte[] f : batch) out.write(f);
+                        batch.clear();
+                        dataQueue.drainTo(batch);
                         for (byte[] f : batch) out.write(f);
                         out.flush();
                     }
@@ -428,11 +454,10 @@ public class BtVpnService extends VpnService {
 
                 latch = new CountDownLatch(1);
 
-                // Cola ilimitada: TCP del servidor es el control de flujo.
-                // El reader global deposita con put() no bloqueante (cola ilimitada = instantáneo).
-                final LinkedBlockingQueue<byte[]> recvQ = new LinkedBlockingQueue<>();
+                // Safety net por stream: 4 MB en frames. Cubre cualquier ráfaga normal.
+                // Una descarga que llene esto hace que TCP del servidor retenga — correcto.
+                final LinkedBlockingQueue<byte[]> recvQ = new LinkedBlockingQueue<>(RECV_Q_CAP);
                 final int finalSid = sid;
-                final CountDownLatch finalLatch = latch;
 
                 streams.put(sid, c);
                 clientOuts.put(sid, recvQ);
@@ -440,8 +465,6 @@ public class BtVpnService extends VpnService {
                 active.put(sid, new AtomicLong(System.currentTimeMillis()));
                 log("streams=" + streamCount.incrementAndGet());
 
-                // Hilo de escritura local por stream. Si este socket se bloquea (descarga grande)
-                // solo este stream espera — los demás fluyen sin interrupción.
                 final OutputStream rawOut = c.getOutputStream();
                 final Thread writer = new Thread(() -> {
                     final ArrayList<byte[]> drain = new ArrayList<>(32);
@@ -452,10 +475,14 @@ public class BtVpnService extends VpnService {
                                 if (!streams.containsKey(finalSid)) break;
                                 continue;
                             }
+                            if (chunk == SENTINEL) break;
                             rawOut.write(chunk);
                             drain.clear();
                             recvQ.drainTo(drain);
-                            for (byte[] b : drain) rawOut.write(b);
+                            for (byte[] b : drain) {
+                                if (b == SENTINEL) break;
+                                rawOut.write(b);
+                            }
                             rawOut.flush();
                         }
                     } catch (Exception ignored) {}
@@ -515,7 +542,8 @@ public class BtVpnService extends VpnService {
             } finally {
                 if (sid >= 0) {
                     Socket removed = streams.remove(sid);
-                    clientOuts.remove(sid);
+                    LinkedBlockingQueue<byte[]> q = clientOuts.remove(sid);
+                    if (q != null) q.offer(SENTINEL);
                     latches.remove(sid);
                     active.remove(sid);
                     if (removed != null) log("streams=" + streamCount.decrementAndGet());
@@ -530,7 +558,7 @@ public class BtVpnService extends VpnService {
             frame[1] = (byte)(sid >> 24); frame[2] = (byte)(sid >> 16);
             frame[3] = (byte)(sid >> 8);  frame[4] = (byte) sid;
             frame[5] = 0; frame[6] = 0;
-            try { writeQueue.put(frame); } catch (InterruptedException ignored) {}
+            try { controlQueue.put(frame); } catch (InterruptedException ignored) {}
         }
 
         private static void enqueueControl(byte type, int sid, byte[] payload) {
@@ -542,7 +570,7 @@ public class BtVpnService extends VpnService {
             frame[3] = (byte)(sid >> 8);  frame[4] = (byte) sid;
             frame[5] = (byte)(plen >> 8); frame[6] = (byte) plen;
             System.arraycopy(payload, 0, frame, 7, plen);
-            try { writeQueue.put(frame); } catch (InterruptedException ignored) {}
+            try { controlQueue.put(frame); } catch (InterruptedException ignored) {}
         }
 
         private static void enqueueData(int sid, byte[] data, int length) {
@@ -553,7 +581,10 @@ public class BtVpnService extends VpnService {
             frame[3] = (byte)(sid >> 8);  frame[4] = (byte) sid;
             frame[5] = (byte)(length >> 8); frame[6] = (byte) length;
             System.arraycopy(data, 0, frame, 7, length);
-            try { writeQueue.put(frame); } catch (InterruptedException ignored) {}
+            // offer(): si la dataQueue está llena (descarga pesada saturando el tubo),
+            // el frame se descarta acá. TCP del socket local no recibe ACK → retransmite.
+            // La presión queda en TCP donde corresponde, no en RAM del proceso.
+            dataQueue.offer(frame);
         }
 
         private static Socket openTunnel() {
