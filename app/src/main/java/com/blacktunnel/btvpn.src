@@ -27,6 +27,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -41,6 +43,7 @@ public class BtVpnService extends VpnService {
     private static final ArrayDeque<String> LOGS = new ArrayDeque<>();
     private static final SimpleDateFormat   TS   = new SimpleDateFormat("HH:mm:ss", Locale.US);
     private ParcelFileDescriptor tunPfd;
+    private final ExecutorService control = Executors.newSingleThreadExecutor(r -> new Thread(r, "bt-control"));
 
     public static synchronized void log(String m) {
         String l = TS.format(new Date()) + "  " + m;
@@ -57,8 +60,14 @@ public class BtVpnService extends VpnService {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : null;
-        if (ACTION_STOP.equals(action)) { stopAll(); stopSelf(); return START_NOT_STICKY; }
-        startAll();
+        if (ACTION_STOP.equals(action)) {
+            control.execute(() -> {
+                stopAll();
+                stopSelf();
+            });
+            return START_NOT_STICKY;
+        }
+        control.execute(this::startAll);
         return START_STICKY;
     }
 
@@ -148,7 +157,16 @@ public class BtVpnService extends VpnService {
                 .setContentTitle("BlackTunnel").setContentText(t).setOngoing(true).build();
     }
 
-    @Override public void onDestroy() { stopAll(); super.onDestroy(); }
+    @Override
+    public void onDestroy() {
+        try {
+            control.submit(this::stopAll).get(2, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            stopAll();
+        }
+        control.shutdownNow();
+        super.onDestroy();
+    }
 
     static final class HevBridge {
         static { System.loadLibrary("hev-jni"); }
