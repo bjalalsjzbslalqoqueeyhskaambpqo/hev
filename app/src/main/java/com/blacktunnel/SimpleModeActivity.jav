@@ -21,11 +21,8 @@ public class SimpleModeActivity extends ComponentActivity {
     private ActivityResultLauncher<Intent> vpnPermissionLauncher;
 
     private final Runnable logTicker = new Runnable() {
-        @Override
-        public void run() {
-            if (logView != null) {
-                logView.setText(BtVpnService.dumpLogs());
-            }
+        @Override public void run() {
+            if (logView != null) logView.setText(BtVpnService.dumpLogs());
             handler.postDelayed(this, 800);
         }
     };
@@ -74,7 +71,7 @@ public class SimpleModeActivity extends ComponentActivity {
 
     private void startVpn() {
         Intent i = new Intent(this, BtVpnService.class);
-        i.setAction("com.blacktunnel.START");
+        i.setAction(BtVpnService.ACTION_START);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
         else startService(i);
         connected = true;
@@ -84,7 +81,7 @@ public class SimpleModeActivity extends ComponentActivity {
 
     private void stopVpn() {
         Intent i = new Intent(this, BtVpnService.class);
-        i.setAction("com.blacktunnel.STOP");
+        i.setAction(BtVpnService.ACTION_STOP);
         startService(i);
         connected = false;
         connectBtn.setText("Conectar");
