@@ -428,23 +428,26 @@ public class BtVpnService extends VpnService {
             log("Túnel UDP listo");
         }
 
-        private static void startUdpRelay() {
-            try {
-                udpRelaySocket = new DatagramSocket(SOCKS5_UDP_PORT, InetAddress.getByName("127.0.0.1"));
-                new Thread(() -> {
-                    byte[] buf = new byte[65535];
-                    while (running) {
-                        try {
-                            DatagramPacket pkt = new DatagramPacket(buf, buf.length);
-                            udpRelaySocket.receive(pkt);
-                            byte[] data = new byte[pkt.getLength()];
-                            System.arraycopy(buf, 0, data, 0, pkt.getLength());
-                            writeUdpRaw(data);
-                        } catch (Exception ignored) { break; }
-                    }
-                }, "udp-relay-recv").start();
-            } catch (Exception e) { log("udpRelay bind: " + e.getMessage()); }
-        }
+        private static volatile int hevUdpPort = -1;
+
+private static void startUdpRelay() {
+    try {
+        udpRelaySocket = new DatagramSocket(SOCKS5_UDP_PORT, InetAddress.getByName("127.0.0.1"));
+        new Thread(() -> {
+            byte[] buf = new byte[65535];
+            while (running) {
+                try {
+                    DatagramPacket pkt = new DatagramPacket(buf, buf.length);
+                    udpRelaySocket.receive(pkt);
+                    hevUdpPort = pkt.getPort(); // guardar puerto de hev
+                    byte[] data = new byte[pkt.getLength()];
+                    System.arraycopy(buf, 0, data, 0, pkt.getLength());
+                    writeUdpRaw(data);
+                } catch (Exception ignored) { break; }
+            }
+        }, "udp-relay-recv").start();
+    } catch (Exception e) { log("udpRelay bind: " + e.getMessage()); }
+}
 
         private static void writeUdpRaw(byte[] data) {
             synchronized (udpLock) {
@@ -458,23 +461,24 @@ public class BtVpnService extends VpnService {
         }
 
         private static void startUdpTunnelReader() {
-            new Thread(() -> {
-                try {
-                    DataInputStream inp = new DataInputStream(udpTunnel.getInputStream());
-                    while (running) {
-                        int    len  = inp.readUnsignedShort();
-                        byte[] data = new byte[len];
-                        inp.readFully(data);
-                        DatagramSocket relay = udpRelaySocket;
-                        if (relay != null && !relay.isClosed()) {
-                            DatagramPacket pkt = new DatagramPacket(
-                                    data, data.length,
-                                    InetAddress.getByName("127.0.0.1"), SOCKS5_UDP_PORT);
-                            relay.send(pkt);
-                        }
-                    }
-                } catch (Exception ignored) {}
-            }, "udp-tunnel-reader").start();
+    new Thread(() -> {
+        try {
+            DataInputStream inp = new DataInputStream(udpTunnel.getInputStream());
+            while (running) {
+                int    len  = inp.readUnsignedShort();
+                byte[] data = new byte[len];
+                inp.readFully(data);
+                DatagramSocket relay = udpRelaySocket;
+                int port = hevUdpPort;
+                if (relay != null && !relay.isClosed() && port > 0) {
+                    DatagramPacket pkt = new DatagramPacket(
+                            data, data.length,
+                            InetAddress.getByName("127.0.0.1"), port);
+                    relay.send(pkt);
+                }
+            }
+        } catch (Exception ignored) {}
+    }, "udp-tunnel-reader").start();
         }
 
         // ----------------------------------------------------------------------
