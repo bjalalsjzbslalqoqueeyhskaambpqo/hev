@@ -80,7 +80,7 @@ public class BtVpnService extends VpnService {
 
         Builder b = new Builder()
                 .setSession("bt-hev")
-                .setMtu(8500)
+                .setMtu(1280)
                 .addAddress("198.18.0.1", 30)
                 .addAddress("fc00::1", 126)
                 .addRoute("0.0.0.0", 0)
@@ -133,7 +133,7 @@ public class BtVpnService extends VpnService {
 
         String yml = "tunnel:\n" +
                 "  name: bt-hev\n" +
-                "  mtu: 1400\n" +
+                "  mtu: 1280\n" +
                 "  ipv4: 198.18.0.1\n" +
                 "  ipv6: fc00::1\n" +
                 "socks5:\n" +
