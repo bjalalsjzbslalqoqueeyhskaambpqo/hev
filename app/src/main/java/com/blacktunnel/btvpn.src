@@ -67,13 +67,22 @@ public class BtVpnService extends VpnService {
     }
 
     private void startAll() {
+        for (int i = 0; i < 30; i++) {
+            synchronized (stateLock) {
+                if (!stopping) break;
+            }
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException ignored) {
+            }
+        }
         synchronized (stateLock) {
             if (starting || SERVICE_RUNNING) {
                 log("start omitido: ya iniciando/activo");
                 return;
             }
             if (stopping) {
-                log("start omitido: apagando, reintenta en 1s");
+                log("start cancelado: sigue apagando");
                 return;
             }
             starting = true;
@@ -152,7 +161,9 @@ public class BtVpnService extends VpnService {
                     String drained = BtProxy.drainLogs();
                     if (drained != null && !drained.isEmpty()) {
                         String[] lines = drained.split("\\n");
+                        int maxLines = 50;
                         for (String line : lines) {
+                            if (maxLines-- <= 0) break;
                             if (!line.isEmpty()) log("[btproxy] " + line);
                         }
                     }

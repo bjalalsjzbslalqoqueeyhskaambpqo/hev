@@ -118,6 +118,7 @@ static void stream_free(stream_t *s) {
 
 
 static volatile int   g_running    = 0;
+static volatile int   g_started    = 0;
 static int            g_relay_fd   = -1;
 static int            g_tun_fd     = -1;
 static int            g_epoll_fd   = -1;
@@ -312,20 +313,30 @@ static int open_tunnel_socket(void) {
     if (fd < 0) { push_logf("E", "tunnel connect failed"); return -1; }
 
     
-    char req[512];
-    int  rlen = snprintf(req, sizeof(req),
-        "GET / HTTP/1.1\r\nHost: %s\r\n\r\n"
-        "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nAction: tunnel\r\n\r\n",
-        PROXY_HOST, TUNNEL_HOST);
-    ssize_t ws = 0;
-    while (ws < rlen) {
-        ssize_t n = send(fd, req + ws, rlen - ws, MSG_NOSIGNAL);
-        if (n > 0) ws += n;
+    char req1[256];
+    int  rlen1 = snprintf(req1, sizeof(req1), "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", PROXY_HOST);
+    ssize_t ws1 = 0;
+    while (ws1 < rlen1) {
+        ssize_t n = send(fd, req1 + ws1, rlen1 - ws1, MSG_NOSIGNAL);
+        if (n > 0) ws1 += n;
         else if (errno != EINTR) { close(fd); return -1; }
     }
 
-    
-    char resp[4096]; int roff = 0, blocks = 0;
+    usleep(5000);
+
+    char req2[256];
+    int  rlen2 = snprintf(req2, sizeof(req2), "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nAction: tunnel\r\n\r\n", TUNNEL_HOST);
+    ssize_t ws2 = 0;
+    while (ws2 < rlen2) {
+        ssize_t n = send(fd, req2 + ws2, rlen2 - ws2, MSG_NOSIGNAL);
+        if (n > 0) ws2 += n;
+        else if (errno != EINTR) { close(fd); return -1; }
+    }
+
+    char resp[4096];
+    int roff = 0;
+    int blocks = 0;
+    int saw_101 = 0;
     struct timeval tv = {8, 0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     while (blocks < 2 && roff < (int)sizeof(resp) - 1) {
@@ -334,11 +345,18 @@ static int open_tunnel_socket(void) {
         roff += (int)n;
         resp[roff] = '\0';
         char *p = resp;
-        while ((p = strstr(p, "\r\n\r\n")) != NULL) { blocks++; p += 4; }
+        while ((p = strstr(p, "\r\n\r\n")) != NULL) {
+            blocks++;
+            char saved = *p;
+            *p = '\0';
+            if (strstr(resp, "101")) saw_101 = 1;
+            *p = saved;
+            p += 4;
+        }
     }
     tv.tv_sec = 0; setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    if (!strstr(resp, "101")) { push_logf("E", "handshake without 101"); close(fd); return -1; }
+    if (!saw_101 && !strstr(resp, "101")) { push_logf("E", "handshake without 101"); close(fd); return -1; }
 
     push_logf("I", "tunnel handshake OK");
     return fd;
@@ -546,6 +564,7 @@ static void *main_thread(void *arg) {
         close(rfd); close(tfd); return NULL;
     }
     g_relay_fd = rfd;
+    g_started = 1;
     push_logf("I", "relay listening on 127.0.0.1:%d", socks5_port);
 
     
@@ -585,6 +604,7 @@ static void *main_thread(void *arg) {
 
     close(rfd); g_relay_fd = -1;
     close(tfd); g_tun_fd   = -1;
+    g_started = 0;
     return NULL;
 }
 
@@ -611,6 +631,7 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     for (int i = 0; i < MAX_STREAMS; i++) g_streams[i].fd = -1;
 
     g_running = 1;
+    g_started = 0;
     atomic_store(&g_next_sid, 1);
 
     if (pthread_create(&g_main_thread, NULL, main_thread, (void *)(intptr_t)socks5_port) != 0) {
@@ -631,6 +652,7 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     g_running = 0;
     if (g_relay_fd >= 0) { close(g_relay_fd); g_relay_fd = -1; }
     if (g_tun_fd   >= 0) { close(g_tun_fd);   g_tun_fd   = -1; }
+    for (int i = 0; i < 50 && g_started; i++) usleep(20000);
 
     pthread_mutex_lock(&g_streams_mu);
     for (int i = 0; i < MAX_STREAMS; i++)
