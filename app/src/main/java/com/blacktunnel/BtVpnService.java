@@ -417,7 +417,7 @@ public class BtVpnService extends VpnService {
                     if (ts != null) ts.set(System.currentTimeMillis());
                 }
                 try { writeTcpFrame(TYPE_CLOSE, sid, new byte[0]); } catch (Exception ignored) {}
-                latch.await(15, TimeUnit.SECONDS);
+                latch.await(5, TimeUnit.SECONDS);
             } catch (Exception e) {
                 log("tcp stream err: " + e.getMessage());
             } finally {
