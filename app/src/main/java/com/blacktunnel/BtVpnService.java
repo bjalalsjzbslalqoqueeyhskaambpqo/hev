@@ -34,8 +34,6 @@ import java.util.concurrent.atomic.AtomicLong;
 public class BtVpnService extends VpnService {
     public static final String ACTION_START = "com.blacktunnel.START";
     public static final String ACTION_STOP  = "com.blacktunnel.STOP";
-    public static final String EXTRA_TCP    = "enable_tcp";
-    public static final String EXTRA_UDP    = "enable_udp";
     private static final String CH_ID  = "bt_vpn";
     private static final int    NF_ID  = 33;
     private static final int    LOG_MAX = 300;
@@ -151,6 +149,13 @@ public class BtVpnService extends VpnService {
     }
 
     @Override public void onDestroy() { stopAll(); super.onDestroy(); }
+
+    static final class HevBridge {
+        static { System.loadLibrary("hev-jni"); }
+        private HevBridge() {}
+        static native int start(String path, int fd);
+        static native void stop();
+    }
 
     static final class Proxy {
         static final int PORT = 10809;
