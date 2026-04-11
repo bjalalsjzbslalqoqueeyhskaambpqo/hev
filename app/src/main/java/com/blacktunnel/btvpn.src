@@ -8,7 +8,6 @@ import android.net.VpnService;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import androidx.core.app.NotificationCompat;
-import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -25,6 +24,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -178,16 +178,23 @@ public class BtVpnService extends VpnService {
         private static final long IDLE_MS = 10 * 60 * 1000L;
         private static final long WD_INT  = 60 * 1000L;
 
+        // Sentinel para cerrar la queue de escritura del túnel
+        private static final byte[] POISON = new byte[0];
+
         interface Protector { boolean protect(Socket s); }
 
-        private static volatile boolean          running;
-        private static volatile Protector        protector;
-        private static volatile ServerSocket     relay;
-        private static volatile Socket           tun;
-        private static volatile OutputStream     tunRaw;
-        private static final Object              tunLock = new Object();
-        private static final AtomicInteger       nextSid = new AtomicInteger(1);
+        private static volatile boolean      running;
+        private static volatile Protector    protector;
+        private static volatile ServerSocket relay;
+        private static volatile Socket       tun;
 
+        // Cola única de escritura al túnel — un solo hilo escribe, sin locks
+        private static final LinkedBlockingQueue<byte[]> tunQ = new LinkedBlockingQueue<>(4096);
+        private static final Object                      tunLock = new Object();
+
+        private static final AtomicInteger nextSid = new AtomicInteger(1);
+
+        // Mapa sid -> OutputStream del cliente local (para bajar datos)
         private static final Map<Integer, OutputStream>   clientOuts = new ConcurrentHashMap<>();
         private static final Map<Integer, Socket>         streams    = new ConcurrentHashMap<>();
         private static final Map<Integer, CountDownLatch> latches    = new ConcurrentHashMap<>();
@@ -200,6 +207,7 @@ public class BtVpnService extends VpnService {
 
         static void stop() {
             running = false; protector = null;
+            tunQ.clear(); tunQ.offer(POISON);
             latches.values().forEach(CountDownLatch::countDown);
             latches.clear(); active.clear(); clientOuts.clear();
             try { if (relay != null) relay.close(); } catch (Exception ignored) {}
@@ -207,43 +215,67 @@ public class BtVpnService extends VpnService {
             streams.values().forEach(s -> { try { s.close(); } catch (Exception ignored) {} });
             streams.clear();
             try { if (tun != null) tun.close(); } catch (Exception ignored) {}
-            tun = null; tunRaw = null;
+            tun = null;
         }
 
         private static void connect() {
             Socket t = openTunnel();
             if (t == null) { log("túnel null"); return; }
             tun = t;
-            try { tunRaw = t.getOutputStream(); }
-            catch (Exception e) { log("tunOut: " + e.getMessage()); return; }
-            startReader();
+            startWriter(t);
+            startReader(t);
             startKeepalive();
             startWatchdog();
             startRelay();
             log("túnel listo");
         }
 
-        private static void startReader() {
+        // ── CANAL DE SUBIDA: un único hilo drena la cola y escribe al túnel ──────
+        private static void startWriter(Socket t) {
             new Thread(() -> {
                 try {
-                    InputStream in = tun.getInputStream();
+                    OutputStream out = t.getOutputStream();
+                    while (running) {
+                        byte[] frame = tunQ.take();
+                        if (frame == POISON || !running) break;
+                        out.write(frame);
+                        // Drena todo lo que haya acumulado sin bloquear más
+                        byte[] next;
+                        while ((next = tunQ.poll()) != null) {
+                            if (next == POISON) { return; }
+                            out.write(next);
+                        }
+                        out.flush();
+                    }
+                } catch (Exception ignored) {}
+            }, "tun-writer").start();
+        }
+
+        // ── CANAL DE BAJADA: lee frames del túnel y los entrega al cliente ────────
+        private static void startReader(Socket t) {
+            new Thread(() -> {
+                try {
+                    InputStream in = t.getInputStream();
                     byte[] hdr = new byte[7];
-                    byte[] buf = new byte[65535];
                     while (running) {
                         readFully(in, hdr, 7);
                         byte ft  = hdr[0];
                         int  sid = ((hdr[1]&0xFF)<<24)|((hdr[2]&0xFF)<<16)|((hdr[3]&0xFF)<<8)|(hdr[4]&0xFF);
                         int  len = ((hdr[5]&0xFF)<<8)|(hdr[6]&0xFF);
-                        if (len > 0) readFully(in, buf, len);
+
+                        // Copia propia por frame — nunca se reutiliza el buffer
+                        byte[] payload = new byte[len];
+                        if (len > 0) readFully(in, payload, len);
 
                         if (ft == T_DATA) {
-                            OutputStream out = clientOuts.get(sid);
-                            if (out != null) {
-                                try { out.write(buf, 0, len); }
+                            OutputStream co = clientOuts.get(sid);
+                            if (co != null) {
+                                try { co.write(payload); co.flush(); }
                                 catch (Exception ignored) {}
                             }
                             AtomicLong ts = active.get(sid);
                             if (ts != null) ts.set(System.currentTimeMillis());
+
                         } else if (ft == T_CLOSE) {
                             CountDownLatch l = latches.remove(sid);
                             if (l != null) l.countDown();
@@ -251,17 +283,21 @@ public class BtVpnService extends VpnService {
                             Socket s = streams.remove(sid);
                             active.remove(sid);
                             if (s != null) try { s.close(); } catch (Exception ignored) {}
+
+                        } else if (ft == T_PONG) {
+                            // nada
                         }
                     }
                 } catch (Exception ignored) {}
-            }, "reader").start();
+            }, "tun-reader").start();
         }
 
         private static void startKeepalive() {
             new Thread(() -> {
-                while (running && tun != null && tun.isConnected()) {
+                while (running) {
                     try { Thread.sleep(90_000); } catch (InterruptedException ignored) { break; }
-                    try { frame(T_PING, 0, null, 0); } catch (Exception ignored) { break; }
+                    try { enqueue(buildFrame(T_PING, 0, null, 0)); }
+                    catch (Exception ignored) { break; }
                 }
             }, "ka").start();
         }
@@ -277,7 +313,7 @@ public class BtVpnService extends VpnService {
                         active.remove(sid); clientOuts.remove(sid);
                         Socket s = streams.remove(sid);
                         CountDownLatch l = latches.remove(sid);
-                        try { frame(T_CLOSE, sid, null, 0); } catch (Exception ignored) {}
+                        try { enqueue(buildFrame(T_CLOSE, sid, null, 0)); } catch (Exception ignored) {}
                         if (l != null) l.countDown();
                         if (s != null) try { s.close(); } catch (Exception ignored) {}
                     }
@@ -311,6 +347,7 @@ public class BtVpnService extends VpnService {
             }
         }
 
+        // ── MANEJO DE CADA CONEXIÓN SOCKS5 LOCAL ─────────────────────────────────
         private static void handle(Socket c) {
             int sid = -1; CountDownLatch latch = null;
             try {
@@ -323,8 +360,8 @@ public class BtVpnService extends VpnService {
                 InputStream  ci = c.getInputStream();
                 OutputStream co = c.getOutputStream();
                 clientOuts.put(sid, co);
-                byte[] tmp = new byte[256];
 
+                byte[] tmp = new byte[256];
                 ci.read(); int nm = ci.read(); readFully(ci, tmp, nm);
                 co.write(new byte[]{0x05, 0x00}); co.flush();
 
@@ -353,18 +390,25 @@ public class BtVpnService extends VpnService {
                     dest[17] = pb[0]; dest[18] = pb[1];
                 }
 
-                frame(T_OPEN, sid, dest, dest.length);
+                // Sube OPEN al túnel
+                enqueue(buildFrame(T_OPEN, sid, dest, dest.length));
                 active.get(sid).set(System.currentTimeMillis());
 
+                // ── SUBIDA: lee del cliente local y encola frames DATA al túnel ──
                 byte[] buf = new byte[16384];
                 while (running) {
-                    int n = ci.read(buf); if (n < 0) break;
-                    frame(T_DATA, sid, buf, n);
+                    int n = ci.read(buf);
+                    if (n < 0) break;
+                    // Copia propia — la cola es concurrente, el buffer se reutiliza
+                    byte[] frame = buildFrame(T_DATA, sid, buf, n);
+                    enqueue(frame);
                     AtomicLong ts = active.get(sid);
                     if (ts != null) ts.set(System.currentTimeMillis());
                 }
-                try { frame(T_CLOSE, sid, null, 0); } catch (Exception ignored) {}
+
+                enqueue(buildFrame(T_CLOSE, sid, null, 0));
                 latch.await(200, TimeUnit.MILLISECONDS);
+
             } catch (Exception ignored) {}
             finally {
                 if (sid >= 0) {
@@ -375,19 +419,20 @@ public class BtVpnService extends VpnService {
             }
         }
 
-        private static void frame(byte type, int sid, byte[] data, int len) throws Exception {
-            byte[] hdr = new byte[7];
-            hdr[0] = type;
-            hdr[1] = (byte)(sid >> 24); hdr[2] = (byte)(sid >> 16);
-            hdr[3] = (byte)(sid >> 8);  hdr[4] = (byte)(sid);
-            hdr[5] = (byte)(len >> 8);  hdr[6] = (byte)(len);
-            synchronized (tunLock) {
-                OutputStream out = tunRaw;
-                if (out == null) return;
-                out.write(hdr);
-                if (data != null && len > 0) out.write(data, 0, len);
-                out.flush();
-            }
+        // Construye el frame completo en un byte[] propio — sin buffers compartidos
+        private static byte[] buildFrame(byte type, int sid, byte[] data, int len) {
+            byte[] frame = new byte[7 + len];
+            frame[0] = type;
+            frame[1] = (byte)(sid >> 24); frame[2] = (byte)(sid >> 16);
+            frame[3] = (byte)(sid >> 8);  frame[4] = (byte)(sid);
+            frame[5] = (byte)(len >> 8);  frame[6] = (byte)(len);
+            if (data != null && len > 0) System.arraycopy(data, 0, frame, 7, len);
+            return frame;
+        }
+
+        // Encola sin bloquear — si la cola está llena descarta (mejor que bloquear el reader)
+        private static void enqueue(byte[] frame) {
+            tunQ.offer(frame);
         }
 
         private static Socket openTunnel() {
