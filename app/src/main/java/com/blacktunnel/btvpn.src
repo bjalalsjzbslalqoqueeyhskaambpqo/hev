@@ -185,8 +185,7 @@ public class BtVpnService extends VpnService {
         try {
             proxyLogPumpRunning = false;
             log("deteniendo proxy");
-            BtProxy.stop();
-            log("proxy detenido");
+            stopProxyWithTimeout();
 
             log("deteniendo hev");
             try {
@@ -227,6 +226,23 @@ public class BtVpnService extends VpnService {
                 stopping = false;
                 starting = false;
             }
+        }
+    }
+
+    private void stopProxyWithTimeout() {
+        Thread t = new Thread(() -> {
+            try {
+                BtProxy.stop();
+                log("proxy detenido");
+            } catch (Throwable e) {
+                log("proxy stop error: " + e.getMessage());
+            }
+        }, "btproxy-stop");
+        t.start();
+        try {
+            t.join(2000);
+            if (t.isAlive()) log("proxy stop timeout, continuando cleanup");
+        } catch (InterruptedException ignored) {
         }
     }
 

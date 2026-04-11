@@ -60,23 +60,18 @@ typedef struct buf_node {
 } buf_node_t;
 
 static buf_node_t          *g_pool      = NULL;
-static pthread_spinlock_t   g_pool_lock;
 
 static uint8_t *pool_get(void) {
-    pthread_spin_lock(&g_pool_lock);
     buf_node_t *n = g_pool;
     if (n) g_pool = n->next;
-    pthread_spin_unlock(&g_pool_lock);
     if (!n) n = malloc(sizeof(buf_node_t));
     return n ? n->data : NULL;
 }
 
 static void pool_put(uint8_t *data) {
     buf_node_t *n = (buf_node_t *)data;
-    pthread_spin_lock(&g_pool_lock);
     n->next = g_pool;
     g_pool  = n;
-    pthread_spin_unlock(&g_pool_lock);
 }
 
 
@@ -620,8 +615,6 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     (*env)->GetJavaVM(env, &g_jvm);
     g_vpn_svc = (*env)->NewGlobalRef(env, vpn_svc);
 
-    pthread_spin_init(&g_pool_lock, PTHREAD_PROCESS_PRIVATE);
-    
     for (int i = 0; i < POOL_SIZE; i++) {
         buf_node_t *n = malloc(sizeof(buf_node_t));
         if (n) { n->next = g_pool; g_pool = n; }
@@ -652,7 +645,7 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     g_running = 0;
     if (g_relay_fd >= 0) { close(g_relay_fd); g_relay_fd = -1; }
     if (g_tun_fd   >= 0) { close(g_tun_fd);   g_tun_fd   = -1; }
-    for (int i = 0; i < 50 && g_started; i++) usleep(20000);
+    for (int i = 0; i < 20 && g_started; i++) usleep(20000);
 
     pthread_mutex_lock(&g_streams_mu);
     for (int i = 0; i < MAX_STREAMS; i++)
@@ -662,12 +655,8 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     if (g_vpn_svc) { (*env)->DeleteGlobalRef(env, g_vpn_svc); g_vpn_svc = NULL; }
     g_jvm = NULL;
 
-    
-    pthread_spin_lock(&g_pool_lock);
     buf_node_t *n = g_pool; g_pool = NULL;
-    pthread_spin_unlock(&g_pool_lock);
     while (n) { buf_node_t *nx = n->next; free(n); n = nx; }
-    pthread_spin_destroy(&g_pool_lock);
     push_logf("I", "nativeStop done");
 }
 
