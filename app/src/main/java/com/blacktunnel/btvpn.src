@@ -10,35 +10,23 @@ import android.os.ParcelFileDescriptor;
 import androidx.core.app.NotificationCompat;
 import java.io.File;
 import java.io.FileOutputStream;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayDeque;
 import java.util.Date;
 import java.util.Locale;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 
 public class BtVpnService extends VpnService {
     public static final String ACTION_START = "com.blacktunnel.START";
     public static final String ACTION_STOP  = "com.blacktunnel.STOP";
-    private static final String CH_ID  = "bt_vpn";
-    private static final int    NF_ID  = 33;
+    private static final String CH_ID = "bt_vpn";
+    private static final int    NF_ID = 33;
     private static final int    LOG_MAX = 300;
 
     private static final ArrayDeque<String> LOGS = new ArrayDeque<>();
     private static final SimpleDateFormat   TS   = new SimpleDateFormat("HH:mm:ss", Locale.US);
     private static volatile boolean SERVICE_RUNNING;
+
     private ParcelFileDescriptor tunPfd;
 
     public static synchronized void log(String m) {
@@ -86,29 +74,28 @@ public class BtVpnService extends VpnService {
         tunPfd = builder.establish();
         if (tunPfd == null) { log("TUN null"); return; }
 
-        int fd;
-        try { fd = ParcelFileDescriptor.dup(tunPfd.getFileDescriptor()).detachFd(); }
-        catch (Exception e) { log("dup: " + e.getMessage()); return; }
+        int tunFd;
+        try {
+            tunFd = ParcelFileDescriptor.dup(tunPfd.getFileDescriptor()).detachFd();
+        } catch (Exception e) { log("dup: " + e.getMessage()); return; }
 
-        File cfg = writeHevCfg();
-        CountDownLatch latch = new CountDownLatch(1);
+        File hevCfg = writeHevCfg();
+
         new Thread(() -> {
-            latch.countDown();
-            int code = HevBridge.start(cfg.getAbsolutePath(), fd);
+            int code = HevBridge.start(hevCfg.getAbsolutePath(), tunFd);
             log("hev exit=" + code);
-            try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
+            try { ParcelFileDescriptor.adoptFd(tunFd).close(); } catch (Exception ignored) {}
         }, "hev").start();
 
-        try { latch.await(500, TimeUnit.MILLISECONDS); Thread.sleep(300); }
-        catch (InterruptedException ignored) {}
+        int relayFd = BtProxy.start(this);
+        if (relayFd < 0) { log("proxy start failed"); return; }
 
-        Proxy.start(this::protect);
         SERVICE_RUNNING = true;
         log("started");
     }
 
     private void stopAll() {
-        Proxy.stop();
+        BtProxy.stop();
         new Thread(() -> { try { HevBridge.stop(); } catch (Exception ignored) {} }).start();
         if (tunPfd != null) {
             try { tunPfd.close(); } catch (Exception ignored) {}
@@ -122,12 +109,12 @@ public class BtVpnService extends VpnService {
     private File writeHevCfg() {
         String yml =
             "tunnel:\n  name: bt-hev\n  mtu: 1400\n  ipv4: 198.18.0.1\n  ipv6: fc00::1\n" +
-            "socks5:\n  address: 127.0.0.1\n  port: " + Proxy.PORT + "\n" +
+            "socks5:\n  address: 127.0.0.1\n  port: " + BtProxy.SOCKS5_PORT + "\n" +
             "  udp: 'tcp'\n  pipeline: true\n" +
             "mapdns:\n  address: 198.18.0.2\n  port: 53\n" +
             "  network: 100.64.0.0\n  netmask: 255.192.0.0\n  cache-size: 256\n" +
-            "misc:\n  task-stack-size: 40960\n  tcp-buffer-size: 16384\n" +
-            "  udp-copy-buffer-nums: 6\n  connect-timeout: 5000\n" +
+            "misc:\n  task-stack-size: 40960\n  tcp-buffer-size: 4096\n" +
+            "  udp-copy-buffer-nums: 4\n  connect-timeout: 3000\n" +
             "  read-write-timeout: 90000\n  udp-read-write-timeout: 30000\n" +
             "  log-level: warn\n";
         File f = new File(getFilesDir(), "hev.yml");
@@ -159,333 +146,5 @@ public class BtVpnService extends VpnService {
         private HevBridge() {}
         static native int start(String path, int fd);
         static native void stop();
-    }
-
-    static final class Proxy {
-        static final int PORT = 10809;
-
-        private static final String P_IPV6 = "2606:4700::6812:16b7";
-        private static final String P_HOST = "emailmarketing.personal.com.ar";
-        private static final int    P_PORT = 80;
-        private static final String T_HOST = "3.brawlpass.com.ar";
-
-        private static final byte T_OPEN  = 0x01;
-        private static final byte T_DATA  = 0x02;
-        private static final byte T_CLOSE = 0x03;
-        private static final byte T_PING  = 0x04;
-        private static final byte T_PONG  = 0x05;
-
-        private static final long IDLE_MS = 10 * 60 * 1000L;
-        private static final long WD_INT  = 60 * 1000L;
-
-        // Sentinel para cerrar la queue de escritura del túnel
-        private static final byte[] POISON = new byte[0];
-
-        interface Protector { boolean protect(Socket s); }
-
-        private static volatile boolean      running;
-        private static volatile Protector    protector;
-        private static volatile ServerSocket relay;
-        private static volatile Socket       tun;
-
-        // Cola única de escritura al túnel — un solo hilo escribe, sin locks
-        private static final LinkedBlockingQueue<byte[]> tunQ = new LinkedBlockingQueue<>(4096);
-        private static final Object                      tunLock = new Object();
-
-        private static final AtomicInteger nextSid = new AtomicInteger(1);
-
-        // Mapa sid -> OutputStream del cliente local (para bajar datos)
-        private static final Map<Integer, OutputStream>   clientOuts = new ConcurrentHashMap<>();
-        private static final Map<Integer, Socket>         streams    = new ConcurrentHashMap<>();
-        private static final Map<Integer, CountDownLatch> latches    = new ConcurrentHashMap<>();
-        private static final Map<Integer, AtomicLong>     active     = new ConcurrentHashMap<>();
-
-        static void start(Protector p) {
-            protector = p; running = true; nextSid.set(1);
-            new Thread(Proxy::connect, "bt-init").start();
-        }
-
-        static void stop() {
-            running = false; protector = null;
-            tunQ.clear(); tunQ.offer(POISON);
-            latches.values().forEach(CountDownLatch::countDown);
-            latches.clear(); active.clear(); clientOuts.clear();
-            try { if (relay != null) relay.close(); } catch (Exception ignored) {}
-            relay = null;
-            streams.values().forEach(s -> { try { s.close(); } catch (Exception ignored) {} });
-            streams.clear();
-            try { if (tun != null) tun.close(); } catch (Exception ignored) {}
-            tun = null;
-        }
-
-        private static void connect() {
-            Socket t = openTunnel();
-            if (t == null) { log("túnel null"); return; }
-            tun = t;
-            startWriter(t);
-            startReader(t);
-            startKeepalive();
-            startWatchdog();
-            startRelay();
-            log("túnel listo");
-        }
-
-        // ── CANAL DE SUBIDA: un único hilo drena la cola y escribe al túnel ──────
-        private static void startWriter(Socket t) {
-            new Thread(() -> {
-                try {
-                    OutputStream out = t.getOutputStream();
-                    while (running) {
-                        byte[] frame = tunQ.take();
-                        if (frame == POISON || !running) break;
-                        out.write(frame);
-                        // Drena todo lo que haya acumulado sin bloquear más
-                        byte[] next;
-                        while ((next = tunQ.poll()) != null) {
-                            if (next == POISON) { return; }
-                            out.write(next);
-                        }
-                        out.flush();
-                    }
-                } catch (Exception ignored) {}
-            }, "tun-writer").start();
-        }
-
-        // ── CANAL DE BAJADA: lee frames del túnel y los entrega al cliente ────────
-        private static void startReader(Socket t) {
-            new Thread(() -> {
-                try {
-                    InputStream in = t.getInputStream();
-                    byte[] hdr = new byte[7];
-                    while (running) {
-                        readFully(in, hdr, 7);
-                        byte ft  = hdr[0];
-                        int  sid = ((hdr[1]&0xFF)<<24)|((hdr[2]&0xFF)<<16)|((hdr[3]&0xFF)<<8)|(hdr[4]&0xFF);
-                        int  len = ((hdr[5]&0xFF)<<8)|(hdr[6]&0xFF);
-
-                        // Copia propia por frame — nunca se reutiliza el buffer
-                        byte[] payload = new byte[len];
-                        if (len > 0) readFully(in, payload, len);
-
-                        if (ft == T_DATA) {
-                            OutputStream co = clientOuts.get(sid);
-                            if (co != null) {
-                                try { co.write(payload); co.flush(); }
-                                catch (Exception ignored) {}
-                            }
-                            AtomicLong ts = active.get(sid);
-                            if (ts != null) ts.set(System.currentTimeMillis());
-
-                        } else if (ft == T_CLOSE) {
-                            CountDownLatch l = latches.remove(sid);
-                            if (l != null) l.countDown();
-                            clientOuts.remove(sid);
-                            Socket s = streams.remove(sid);
-                            active.remove(sid);
-                            if (s != null) try { s.close(); } catch (Exception ignored) {}
-
-                        } else if (ft == T_PONG) {
-                            // nada
-                        }
-                    }
-                } catch (Exception ignored) {}
-            }, "tun-reader").start();
-        }
-
-        private static void startKeepalive() {
-            new Thread(() -> {
-                while (running) {
-                    try { Thread.sleep(90_000); } catch (InterruptedException ignored) { break; }
-                    try { enqueue(buildFrame(T_PING, 0, null, 0)); }
-                    catch (Exception ignored) { break; }
-                }
-            }, "ka").start();
-        }
-
-        private static void startWatchdog() {
-            new Thread(() -> {
-                while (running) {
-                    try { Thread.sleep(WD_INT); } catch (InterruptedException ignored) { break; }
-                    long now = System.currentTimeMillis();
-                    for (Map.Entry<Integer, AtomicLong> e : active.entrySet()) {
-                        int sid = e.getKey();
-                        if (now - e.getValue().get() < IDLE_MS) continue;
-                        active.remove(sid); clientOuts.remove(sid);
-                        Socket s = streams.remove(sid);
-                        CountDownLatch l = latches.remove(sid);
-                        try { enqueue(buildFrame(T_CLOSE, sid, null, 0)); } catch (Exception ignored) {}
-                        if (l != null) l.countDown();
-                        if (s != null) try { s.close(); } catch (Exception ignored) {}
-                    }
-                }
-            }, "wd").start();
-        }
-
-        private static void startRelay() {
-            try {
-                relay = new ServerSocket(PORT, 512, InetAddress.getByName("127.0.0.1"));
-                new Thread(() -> {
-                    while (running) {
-                        try {
-                            Socket c = relay.accept();
-                            c.setTcpNoDelay(true);
-                            c.setReceiveBufferSize(131072);
-                            c.setSendBufferSize(131072);
-                            new Thread(() -> handle(c), "s").start();
-                        } catch (Exception ignored) { break; }
-                    }
-                }, "relay").start();
-            } catch (Exception e) { log("relay: " + e.getMessage()); }
-        }
-
-        private static void readFully(InputStream in, byte[] buf, int len) throws Exception {
-            int off = 0;
-            while (off < len) {
-                int n = in.read(buf, off, len - off);
-                if (n < 0) throw new Exception("EOF");
-                off += n;
-            }
-        }
-
-        // ── MANEJO DE CADA CONEXIÓN SOCKS5 LOCAL ─────────────────────────────────
-        private static void handle(Socket c) {
-            int sid = -1; CountDownLatch latch = null;
-            try {
-                do { sid = nextSid.getAndIncrement() & 0x7FFFFFFF; } while (sid == 0);
-                latch = new CountDownLatch(1);
-                streams.put(sid, c);
-                latches.put(sid, latch);
-                active.put(sid, new AtomicLong(System.currentTimeMillis()));
-
-                InputStream  ci = c.getInputStream();
-                OutputStream co = c.getOutputStream();
-                clientOuts.put(sid, co);
-
-                byte[] tmp = new byte[256];
-                ci.read(); int nm = ci.read(); readFully(ci, tmp, nm);
-                co.write(new byte[]{0x05, 0x00}); co.flush();
-
-                ci.read(); ci.read(); ci.read();
-                int at = ci.read();
-                byte[] hb;
-                if      (at == 1) { hb = new byte[4];  readFully(ci, hb, 4); }
-                else if (at == 3) { int l = ci.read(); hb = new byte[l]; readFully(ci, hb, l); }
-                else              { hb = new byte[16]; readFully(ci, hb, 16); }
-                byte[] pb = new byte[2]; readFully(ci, pb, 2);
-
-                co.write(new byte[]{0x05,0x00,0x00,0x01,0,0,0,0,0,0}); co.flush();
-
-                byte[] dest;
-                if (at == 1) {
-                    dest = new byte[7]; dest[0] = 0x01;
-                    System.arraycopy(hb, 0, dest, 1, 4);
-                    dest[5] = pb[0]; dest[6] = pb[1];
-                } else if (at == 3) {
-                    dest = new byte[2 + hb.length + 2]; dest[0] = 0x03; dest[1] = (byte)hb.length;
-                    System.arraycopy(hb, 0, dest, 2, hb.length);
-                    dest[2 + hb.length] = pb[0]; dest[2 + hb.length + 1] = pb[1];
-                } else {
-                    dest = new byte[19]; dest[0] = 0x04;
-                    System.arraycopy(hb, 0, dest, 1, 16);
-                    dest[17] = pb[0]; dest[18] = pb[1];
-                }
-
-                // Sube OPEN al túnel
-                enqueue(buildFrame(T_OPEN, sid, dest, dest.length));
-                active.get(sid).set(System.currentTimeMillis());
-
-                // ── SUBIDA: lee del cliente local y encola frames DATA al túnel ──
-                byte[] buf = new byte[16384];
-                while (running) {
-                    int n = ci.read(buf);
-                    if (n < 0) break;
-                    // Copia propia — la cola es concurrente, el buffer se reutiliza
-                    byte[] frame = buildFrame(T_DATA, sid, buf, n);
-                    enqueue(frame);
-                    AtomicLong ts = active.get(sid);
-                    if (ts != null) ts.set(System.currentTimeMillis());
-                }
-
-                enqueue(buildFrame(T_CLOSE, sid, null, 0));
-                latch.await(200, TimeUnit.MILLISECONDS);
-
-            } catch (Exception ignored) {}
-            finally {
-                if (sid >= 0) {
-                    streams.remove(sid); latches.remove(sid);
-                    active.remove(sid); clientOuts.remove(sid);
-                }
-                try { c.close(); } catch (Exception ignored) {}
-            }
-        }
-
-        // Construye el frame completo en un byte[] propio — sin buffers compartidos
-        private static byte[] buildFrame(byte type, int sid, byte[] data, int len) {
-            byte[] frame = new byte[7 + len];
-            frame[0] = type;
-            frame[1] = (byte)(sid >> 24); frame[2] = (byte)(sid >> 16);
-            frame[3] = (byte)(sid >> 8);  frame[4] = (byte)(sid);
-            frame[5] = (byte)(len >> 8);  frame[6] = (byte)(len);
-            if (data != null && len > 0) System.arraycopy(data, 0, frame, 7, len);
-            return frame;
-        }
-
-        // Encola sin bloquear — si la cola está llena descarta (mejor que bloquear el reader)
-        private static void enqueue(byte[] frame) {
-            tunQ.offer(frame);
-        }
-
-        private static Socket openTunnel() {
-            try {
-                Socket s = openProxy(); if (s == null) return null;
-                s.setTcpNoDelay(true);
-                OutputStream out = s.getOutputStream();
-                InputStream  in  = s.getInputStream();
-                out.write(("GET / HTTP/1.1\r\nHost: "+P_HOST+"\r\n\r\n").getBytes()); out.flush();
-                try { Thread.sleep(10); } catch (InterruptedException ignored) {}
-                out.write(("- / HTTP/1.1\r\nHost: "+T_HOST+"\r\nUpgrade: websocket\r\nAction: tunnel\r\n\r\n").getBytes());
-                out.flush();
-                s.setSoTimeout(8000);
-                StringBuilder raw = new StringBuilder();
-                long dl = System.currentTimeMillis() + 8000;
-                while (System.currentTimeMillis() < dl) {
-                    try {
-                        byte[] tmp = new byte[4096]; int n = in.read(tmp);
-                        if (n < 0) break;
-                        raw.append(new String(tmp, 0, n));
-                        int cnt=0, idx=0;
-                        while ((idx=raw.indexOf("\r\n\r\n",idx))>=0){cnt++;idx+=4;}
-                        if (cnt >= 2) break;
-                    } catch (java.net.SocketTimeoutException ignored) { break; }
-                }
-                if (!raw.toString().contains("101")) { log("sin 101"); s.close(); return null; }
-                s.setSoTimeout(0); return s;
-            } catch (Exception e) { log("openTunnel: " + e.getMessage()); return null; }
-        }
-
-        private static Socket openProxy() {
-            Protector p = protector;
-            try {
-                Socket s = new Socket(); if (p != null) p.protect(s);
-                s.setKeepAlive(true); s.setTcpNoDelay(true);
-                s.setReceiveBufferSize(131072); s.setSendBufferSize(131072);
-                try { s.setTrafficClass(0x10); } catch (Exception ignored) {}
-                s.connect(new InetSocketAddress(InetAddress.getByName(P_IPV6), P_PORT), 10000);
-                log("IPv6 OK"); return s;
-            } catch (Exception e) { log("IPv6: " + e.getMessage()); }
-            try {
-                for (InetAddress a : InetAddress.getAllByName(P_HOST)) {
-                    try {
-                        Socket s = new Socket(); if (p != null) p.protect(s);
-                        s.setKeepAlive(true); s.setTcpNoDelay(true);
-                        s.setReceiveBufferSize(131072); s.setSendBufferSize(131072);
-                        try { s.setTrafficClass(0x10); } catch (Exception ignored) {}
-                        s.connect(new InetSocketAddress(a, P_PORT), 10000);
-                        log("DNS OK"); return s;
-                    } catch (Exception ignored) {}
-                }
-            } catch (Exception ignored) {}
-            return null;
-        }
     }
 }
