@@ -1,4 +1,4 @@
-name: Build Simple Mode
+name: Build Release
 
 on:
   push:
@@ -30,15 +30,28 @@ jobs:
           fi
 
       - name: Restore Java source extensions
+        run: ./scripts/prepare_ci_sources.sh
+
+      - name: Prepare release keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
-          mv app/src/main/java/com/blacktunnel/btvpn.src app/src/main/java/com/blacktunnel/BtVpnService.java
-          mv app/src/main/java/com/blacktunnel/smode.src app/src/main/java/com/blacktunnel/SimpleModeActivity.java
+          if [ -z "${ANDROID_KEYSTORE_BASE64}" ]; then
+            echo "ANDROID_KEYSTORE_BASE64 secret is required for release signing."
+            exit 1
+          fi
+          echo "${ANDROID_KEYSTORE_BASE64}" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
 
-      - name: Build debug APK (simple mode)
-        run: gradle --no-daemon :app:assembleDebug -x lint -x test
+      - name: Build release APK (minified)
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: gradle --no-daemon :app:assembleRelease -x lint -x test
 
-      - name: Upload debug APK
+      - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
-          name: apk-debug-simple-mode
-          path: app/build/outputs/apk/debug/*.apk
+          name: apk-release
+          path: app/build/outputs/apk/release/*.apk
