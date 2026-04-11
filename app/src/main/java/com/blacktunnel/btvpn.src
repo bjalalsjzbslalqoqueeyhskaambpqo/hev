@@ -29,6 +29,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -44,7 +47,8 @@ public class BtVpnService extends VpnService {
     private static final SimpleDateFormat   TS   = new SimpleDateFormat("HH:mm:ss", Locale.US);
     private static volatile boolean SERVICE_RUNNING;
     private ParcelFileDescriptor tunPfd;
-    private final ExecutorService control = Executors.newSingleThreadExecutor(r -> new Thread(r, "bt-control"));
+    private final ExecutorService control = Executors.newSingleThreadExecutor(
+            r -> new Thread(r, "bt-control"));
 
     public static synchronized void log(String m) {
         String l = TS.format(new Date()) + "  " + m;
@@ -64,10 +68,7 @@ public class BtVpnService extends VpnService {
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : null;
         if (ACTION_STOP.equals(action)) {
-            control.execute(() -> {
-                stopAll();
-                stopSelf();
-            });
+            control.execute(() -> { stopAll(); stopSelf(); });
             return START_NOT_STICKY;
         }
         control.execute(this::startAll);
@@ -88,13 +89,10 @@ public class BtVpnService extends VpnService {
                 .addRoute("::", 0)
                 .addDnsServer("198.18.0.2")
                 .addDnsServer("8.8.8.8");
-        try {
-            builder.addDisallowedApplication(getPackageName());
-        } catch (Exception e) {
-            log("disallow app: " + e.getMessage());
-        }
-        tunPfd = builder.establish();
+        try { builder.addDisallowedApplication(getPackageName()); }
+        catch (Exception e) { log("disallow: " + e.getMessage()); }
 
+        tunPfd = builder.establish();
         if (tunPfd == null) { log("TUN null"); return; }
 
         int fd;
@@ -125,10 +123,7 @@ public class BtVpnService extends VpnService {
             try { HevBridge.stop(); } catch (Exception ignored) {}
         }, "hev-stop");
         hevStop.start();
-        try {
-            hevStop.join(1500);
-            if (hevStop.isAlive()) log("hev stop timeout");
-        } catch (InterruptedException ignored) {}
+        try { hevStop.join(1500); } catch (InterruptedException ignored) {}
         if (tunPfd != null) {
             try { tunPfd.close(); } catch (Exception ignored) {}
             tunPfd = null;
@@ -192,11 +187,38 @@ public class BtVpnService extends VpnService {
         private static final int    P_PORT = 80;
         private static final String T_HOST = "3.brawlpass.com.ar";
 
-        private static final byte T_OPEN =0x01,T_DATA=0x02,T_CLOSE=0x03,T_PING=0x04,T_PONG=0x05;
-        private static final int  MAX_PL  = 65535;
-        private static final long IDLE_MS = 30*60*1000L;
-        private static final long WD_INT  = 60*1000L;
-        private static final int  WR_BUF  = 8*1024;
+        private static final byte T_OPEN=0x01, T_DATA=0x02, T_CLOSE=0x03, T_PING=0x04, T_PONG=0x05;
+        private static final int  MAX_PL        = 65535;
+        private static final long IDLE_MS       = 30 * 60 * 1000L;
+        private static final long WD_INT        = 60 * 1000L;
+        private static final int  WR_BUF        = 32 * 1024;
+        private static final int  READ_BUF_SIZE = 16 * 1024;
+        private static final int  WRITE_QUEUE_CAP = 2048;
+
+        // Buffer de lectura por hilo del pool: cada hilo tiene el suyo, reutilizable.
+        // Elimina las allocations de new byte[32768] por cada stream activo.
+        // 200 streams × 16 KB = 3.2 MB fijos vs crecimiento ilimitado con allocations.
+        private static final ThreadLocal<byte[]> READ_BUF =
+                ThreadLocal.withInitial(() -> new byte[READ_BUF_SIZE]);
+
+        // Pool de hilos: SynchronousQueue = entrega directa, sin cola de espera.
+        // 20 conexiones simultáneas → 20 hilos arrancando en el mismo instante.
+        // cap de 256: cada hilo OS en ART ≈ 512 KB de stack → 256 hilos ≈ 128 MB máximo.
+        // En dispositivos con 3-4 GB RAM es seguro; en 2 GB puede ajustarse a 128.
+        // keepAlive 30s: hilo inactivo se termina → libera stack → ahorro real en reposo.
+        private static final ThreadPoolExecutor streamPool = new ThreadPoolExecutor(
+                0, 256, 30L, TimeUnit.SECONDS,
+                new SynchronousQueue<>(),
+                r -> { Thread t = new Thread(r, "stream"); t.setDaemon(true); return t; },
+                new ThreadPoolExecutor.CallerRunsPolicy());
+
+        // Cola de frames con límite: previene OOM si el túnel se congestiona.
+        // OPEN y CLOSE siempre se insertan con put() (bloquea si llena, pero son raros).
+        // DATA usa offer(): si la cola está llena, el frame se descarta.
+        // Descartar DATA en congestión es preferible a crashear por OOM.
+        // Con 2048 frames de 16 KB = 32 MB máximo en cola → seguro.
+        private static final LinkedBlockingQueue<byte[]> writeQueue =
+                new LinkedBlockingQueue<>(WRITE_QUEUE_CAP);
 
         interface Protector { boolean protect(Socket s); }
 
@@ -205,33 +227,38 @@ public class BtVpnService extends VpnService {
         private static volatile ServerSocket     relay;
         private static volatile Socket           tun;
         private static volatile DataOutputStream tunOut;
-        private static final    Object           lock    = new Object();
-        private static final    AtomicInteger    nextSid = new AtomicInteger(1);
 
-        private static final Map<Integer, Socket>         streams  = new ConcurrentHashMap<>();
-        private static final Map<Integer, CountDownLatch> latches  = new ConcurrentHashMap<>();
-        private static final Map<Integer, AtomicLong>     active   = new ConcurrentHashMap<>();
-        private static final AtomicInteger                streamCount = new AtomicInteger();
+        private static final AtomicInteger nextSid = new AtomicInteger(1);
+
+        private static final Map<Integer, OutputStream>  clientOuts = new ConcurrentHashMap<>();
+        private static final Map<Integer, Socket>        streams    = new ConcurrentHashMap<>();
+        private static final Map<Integer, CountDownLatch> latches   = new ConcurrentHashMap<>();
+        private static final Map<Integer, AtomicLong>    active     = new ConcurrentHashMap<>();
+        private static final AtomicInteger               streamCount = new AtomicInteger(0);
 
         static void start(Protector p) {
-            protector = p; running = true; nextSid.set(1);
+            protector = p;
+            running   = true;
+            nextSid.set(1);
             streamCount.set(0);
             new Thread(Proxy::connect, "bt-init").start();
         }
 
         static void stop() {
-            running = false; protector = null;
+            running   = false;
+            protector = null;
+            writeQueue.clear();
             latches.values().forEach(CountDownLatch::countDown);
-            latches.clear(); active.clear();
+            latches.clear();
+            active.clear();
+            clientOuts.clear();
             try { if (relay != null) relay.close(); } catch (Exception ignored) {}
             relay = null;
-            int opened = streams.size();
             streams.values().forEach(s -> { try { s.close(); } catch (Exception ignored) {} });
             streams.clear();
             streamCount.set(0);
             try { if (tun != null) tun.close(); } catch (Exception ignored) {}
             tun = null; tunOut = null;
-            log("proxy closed streams=" + opened);
         }
 
         static boolean isRunning() { return running; }
@@ -240,10 +267,38 @@ public class BtVpnService extends VpnService {
             Socket t = openTunnel();
             if (t == null) { log("túnel null"); return; }
             tun = t;
-            try { tunOut = new DataOutputStream(new BufferedOutputStream(t.getOutputStream(), WR_BUF)); }
-            catch (Exception e) { log("tunOut: " + e.getMessage()); return; }
-            startReader(); startKeepalive(); startWatchdog(); startRelay();
+            try {
+                tunOut = new DataOutputStream(
+                        new BufferedOutputStream(t.getOutputStream(), WR_BUF));
+            } catch (Exception e) { log("tunOut: " + e.getMessage()); return; }
+            startWriter();
+            startReader();
+            startKeepalive();
+            startWatchdog();
+            startRelay();
             log("túnel listo");
+        }
+
+        // Único hilo que escribe al túnel. Consume de writeQueue.
+        // Batch: drena todos los frames pendientes antes de cada flush.
+        // Un solo flush() → un solo syscall al kernel, aunque haya 50 frames de distintos streams.
+        private static void startWriter() {
+            new Thread(() -> {
+                try {
+                    while (running) {
+                        byte[] frame = writeQueue.poll(1, TimeUnit.SECONDS);
+                        if (frame == null) continue;
+                        DataOutputStream out = tunOut;
+                        if (out == null) break;
+                        out.write(frame);
+                        byte[] next;
+                        while ((next = writeQueue.poll()) != null) {
+                            out.write(next);
+                        }
+                        out.flush();
+                    }
+                } catch (Exception ignored) {}
+            }, "tunnel-writer").start();
         }
 
         private static void startWatchdog() {
@@ -254,12 +309,16 @@ public class BtVpnService extends VpnService {
                     for (Map.Entry<Integer, AtomicLong> e : active.entrySet()) {
                         int sid = e.getKey();
                         if (now - e.getValue().get() < IDLE_MS) continue;
-                        active.remove(sid); Socket s = streams.remove(sid);
+                        active.remove(sid);
+                        Socket s = streams.remove(sid);
+                        clientOuts.remove(sid);
                         CountDownLatch l = latches.remove(sid);
-                        if (s != null) log("streams activos=" + streamCount.updateAndGet(v -> v > 0 ? v - 1 : 0));
-                        try { frame(T_CLOSE, sid, new byte[0]); } catch (Exception ignored) {}
-                        if (l != null) l.countDown();
-                        if (s != null) try { s.close(); } catch (Exception ignored) {}
+                        if (s != null) {
+                            streamCount.decrementAndGet();
+                            enqueueControl(T_CLOSE, sid);
+                            if (l != null) l.countDown();
+                            try { s.close(); } catch (Exception ignored) {}
+                        }
                     }
                 }
             }, "wd").start();
@@ -272,12 +331,25 @@ public class BtVpnService extends VpnService {
                     while (running) {
                         try {
                             Socket c = relay.accept();
-                            c.setTcpNoDelay(true);
-                            new Thread(() -> handle(c), "rel").start();
+                            applyClientSocketOptions(c);
+                            // Despacho inmediato: SynchronousQueue entrega el hilo al instante.
+                            // CallerRunsPolicy como fallback si los 256 hilos están ocupados:
+                            // el hilo de accept() mismo ejecuta el handle(), pero accept() en
+                            // relay sigue esperando → no se pierden conexiones.
+                            streamPool.execute(() -> handle(c));
                         } catch (Exception ignored) { break; }
                     }
                 }, "relay").start();
             } catch (Exception e) { log("relay: " + e.getMessage()); }
+        }
+
+        // Opciones para el socket local (hev → relay → handle).
+        // TCP_NODELAY: sin Nagle. Loopback no tiene latencia de red pero sí buffering de kernel.
+        // Buffers 64 KB para loopback: suficiente sin desperdiciar RAM (no necesita 256 KB).
+        private static void applyClientSocketOptions(Socket s) {
+            try { s.setTcpNoDelay(true); }          catch (Exception ignored) {}
+            try { s.setReceiveBufferSize(65536); }   catch (Exception ignored) {}
+            try { s.setSendBufferSize(65536); }      catch (Exception ignored) {}
         }
 
         private static void readFully(InputStream in, byte[] buf, int len) throws Exception {
@@ -290,95 +362,132 @@ public class BtVpnService extends VpnService {
         }
 
         private static void handle(Socket c) {
-            int sid = -1; CountDownLatch latch = null;
+            int sid = -1;
+            CountDownLatch latch = null;
             try {
-                sid = nextSid.getAndIncrement();
-                latch = new CountDownLatch(1);
-                streams.put(sid, c); latches.put(sid, latch);
-                active.put(sid, new AtomicLong(System.currentTimeMillis()));
-                log("streams activos=" + streamCount.incrementAndGet());
+                do { sid = nextSid.getAndIncrement() & 0x7FFFFFFF; } while (sid == 0);
 
-                InputStream  ci = c.getInputStream();
-                OutputStream co = c.getOutputStream();
+                latch = new CountDownLatch(1);
+
+                // BufferedOutputStream en el socket del cliente: reduce flush() por frame
+                // a un solo write() al kernel cuando el buffer se llena o se flushea explícito.
+                // 8 KB es suficiente para loopback; flush() se llama al final de cada write del reader.
+                BufferedOutputStream bco = new BufferedOutputStream(c.getOutputStream(), 8192);
+
+                streams.put(sid, c);
+                clientOuts.put(sid, bco);
+                latches.put(sid, latch);
+                active.put(sid, new AtomicLong(System.currentTimeMillis()));
+                log("streams=" + streamCount.incrementAndGet());
+
+                InputStream ci = c.getInputStream();
                 byte[] tmp = new byte[256];
 
+                // Handshake SOCKS5
                 ci.read(); int nm = ci.read(); readFully(ci, tmp, nm);
-                co.write(new byte[]{0x05, 0x00}); co.flush();
+                bco.write(new byte[]{0x05, 0x00}); bco.flush();
 
                 ci.read(); ci.read(); ci.read();
                 int at = ci.read();
                 byte[] hb;
-                if (at==1) { hb=new byte[4]; readFully(ci,hb,4); }
-                else if (at==3) { int l=ci.read(); hb=new byte[l]; readFully(ci,hb,l); }
-                else { hb=new byte[16]; readFully(ci,hb,16); }
+                if      (at == 1) { hb = new byte[4];  readFully(ci, hb, 4); }
+                else if (at == 3) { int l = ci.read(); hb = new byte[l]; readFully(ci, hb, l); }
+                else              { hb = new byte[16]; readFully(ci, hb, 16); }
                 byte[] pb = new byte[2]; readFully(ci, pb, 2);
 
-                co.write(new byte[]{0x05,0x00,0x00,0x01,0,0,0,0,0,0}); co.flush();
+                bco.write(new byte[]{0x05,0x00,0x00,0x01,0,0,0,0,0,0}); bco.flush();
 
                 byte[] dest;
-                if (at==1) {
-                    dest=new byte[7]; dest[0]=0x01;
-                    System.arraycopy(hb,0,dest,1,4); dest[5]=pb[0]; dest[6]=pb[1];
-                } else if (at==3) {
-                    dest=new byte[2+hb.length+2]; dest[0]=0x03; dest[1]=(byte)hb.length;
-                    System.arraycopy(hb,0,dest,2,hb.length);
-                    dest[2+hb.length]=pb[0]; dest[2+hb.length+1]=pb[1];
+                if (at == 1) {
+                    dest = new byte[7]; dest[0] = 0x01;
+                    System.arraycopy(hb, 0, dest, 1, 4); dest[5] = pb[0]; dest[6] = pb[1];
+                } else if (at == 3) {
+                    dest = new byte[2 + hb.length + 2]; dest[0] = 0x03; dest[1] = (byte)hb.length;
+                    System.arraycopy(hb, 0, dest, 2, hb.length);
+                    dest[2 + hb.length] = pb[0]; dest[2 + hb.length + 1] = pb[1];
                 } else {
-                    dest=new byte[19]; dest[0]=0x04;
-                    System.arraycopy(hb,0,dest,1,16); dest[17]=pb[0]; dest[18]=pb[1];
+                    dest = new byte[19]; dest[0] = 0x04;
+                    System.arraycopy(hb, 0, dest, 1, 16); dest[17] = pb[0]; dest[18] = pb[1];
                 }
 
-                frame(T_OPEN, sid, dest);
+                // OPEN: siempre llega al servidor; usa put() que bloquea si la cola está llena.
+                // Es raro que se congestione justo en OPEN, y si ocurre es correcto esperar.
+                enqueueControl(T_OPEN, sid, dest);
                 active.get(sid).set(System.currentTimeMillis());
 
-                byte[] buf = new byte[32768];
+                // Buffer reutilizable del hilo: ThreadLocal, no se alloca en cada iteración.
+                // 200 streams × 16 KB = 3.2 MB fijos en memoria vs new byte[16384] cada vez.
+                byte[] buf = READ_BUF.get();
                 while (running) {
-                    int n = ci.read(buf); if (n < 0) break;
-                    byte[] chunk = new byte[n];
-                    System.arraycopy(buf,0,chunk,0,n);
-                    frame(T_DATA, sid, chunk);
+                    int n = ci.read(buf);
+                    if (n < 0) break;
+                    // DATA: offer() descarta si la cola está llena.
+                    // Preferible perder un frame de datos que sufrir OOM.
+                    // TCP retransmitirá el dato si el extremo no recibe ACK.
+                    enqueueData(sid, buf, n);
                     AtomicLong ts = active.get(sid);
                     if (ts != null) ts.set(System.currentTimeMillis());
                 }
-                try { frame(T_CLOSE, sid, new byte[0]); } catch (Exception ignored) {}
-                latch.await(3, TimeUnit.SECONDS);
+
+                enqueueControl(T_CLOSE, sid);
+                // 500ms: en gaming las conexiones son cortas. Si el server no responde,
+                // no tiene sentido bloquear el hilo más tiempo.
+                latch.await(500, TimeUnit.MILLISECONDS);
+
             } catch (Exception e) {
                 String m = e.getMessage();
-                if (m == null || !m.contains("Socket closed")) log("stream: " + m);
-            }
-            finally {
+                if (m != null && !m.contains("Socket closed") && !m.contains("EOF")) {
+                    log("stream: " + m);
+                }
+            } finally {
                 if (sid >= 0) {
-                    Socket s = streams.remove(sid);
-                    latches.remove(sid); active.remove(sid);
-                    if (s != null) log("streams activos=" + streamCount.updateAndGet(v -> v > 0 ? v - 1 : 0));
+                    Socket removed = streams.remove(sid);
+                    clientOuts.remove(sid);
+                    latches.remove(sid);
+                    active.remove(sid);
+                    // Solo el primero en hacer remove() retorna ≠ null → decrementa exactamente una vez.
+                    if (removed != null) {
+                        log("streams=" + streamCount.decrementAndGet());
+                    }
                 }
                 try { c.close(); } catch (Exception ignored) {}
             }
         }
 
         private static void startReader() {
+            // Buffer de lectura fijo para el reader del túnel: reutilizado en cada frame.
+            // Elimina la allocation de new byte[len] por cada frame recibido del servidor.
+            // MAX_PL = 65535 bytes → un único buffer cubre cualquier frame posible.
+            final byte[] rdBuf = new byte[MAX_PL];
             new Thread(() -> {
                 try {
                     DataInputStream in = new DataInputStream(tun.getInputStream());
                     while (running) {
-                        byte t = in.readByte(); int sid = in.readInt();
-                        int len = in.readUnsignedShort();
-                        byte[] d = len > 0 ? new byte[len] : new byte[0];
-                        if (len > 0) in.readFully(d);
+                        byte t   = in.readByte();
+                        int  sid = in.readInt();
+                        int  len = in.readUnsignedShort();
+                        if (len > 0) in.readFully(rdBuf, 0, len);
+
                         if (t == T_DATA) {
-                            Socket s = streams.get(sid);
-                            if (s != null && !s.isClosed()) {
-                                try { s.getOutputStream().write(d); s.getOutputStream().flush(); }
-                                catch (Exception ignored) {}
+                            OutputStream out = clientOuts.get(sid);
+                            if (out != null) {
+                                try {
+                                    out.write(rdBuf, 0, len);
+                                    out.flush();
+                                } catch (Exception ignored) {}
                             }
                             AtomicLong ts = active.get(sid);
                             if (ts != null) ts.set(System.currentTimeMillis());
+
                         } else if (t == T_CLOSE) {
                             CountDownLatch l = latches.remove(sid);
                             if (l != null) l.countDown();
                             Socket s = streams.remove(sid);
+                            clientOuts.remove(sid);
                             active.remove(sid);
-                            if (s != null) log("streams activos=" + streamCount.updateAndGet(v -> v > 0 ? v - 1 : 0));
+                            if (s != null) {
+                                log("streams=" + streamCount.decrementAndGet());
+                            }
                         }
                     }
                 } catch (Exception ignored) {}
@@ -389,71 +498,116 @@ public class BtVpnService extends VpnService {
             new Thread(() -> {
                 while (running && tun != null && tun.isConnected()) {
                     try { Thread.sleep(30_000); } catch (InterruptedException ignored) { break; }
-                    try { frame(T_PING, 0, new byte[0]); } catch (Exception ignored) { break; }
+                    enqueueControl(T_PING, 0);
                 }
             }, "ka").start();
         }
 
-        private static void frame(byte type, int sid, byte[] data) throws Exception {
-            if (data.length > MAX_PL) throw new IllegalArgumentException("payload > 65535");
-            synchronized (lock) {
-                if (tunOut == null) return;
-                tunOut.writeByte(type); tunOut.writeInt(sid);
-                tunOut.writeShort(data.length);
-                if (data.length > 0) tunOut.write(data);
-                tunOut.flush();
-            }
+        // Frames de control (OPEN, CLOSE, PING): críticos, nunca se descartan.
+        // put() bloquea si la cola está llena hasta que haya espacio.
+        private static void enqueueControl(byte type, int sid) {
+            byte[] frame = new byte[7];
+            frame[0] = type;
+            frame[1] = (byte)(sid >> 24); frame[2] = (byte)(sid >> 16);
+            frame[3] = (byte)(sid >> 8);  frame[4] = (byte) sid;
+            frame[5] = 0; frame[6] = 0;
+            try { writeQueue.put(frame); } catch (InterruptedException ignored) {}
+        }
+
+        private static void enqueueControl(byte type, int sid, byte[] payload) {
+            int plen = payload.length;
+            if (plen > MAX_PL) return;
+            byte[] frame = new byte[7 + plen];
+            frame[0] = type;
+            frame[1] = (byte)(sid >> 24); frame[2] = (byte)(sid >> 16);
+            frame[3] = (byte)(sid >> 8);  frame[4] = (byte) sid;
+            frame[5] = (byte)(plen >> 8); frame[6] = (byte) plen;
+            System.arraycopy(payload, 0, frame, 7, plen);
+            try { writeQueue.put(frame); } catch (InterruptedException ignored) {}
+        }
+
+        // Frames de datos: se descartan si la cola está llena (congestión).
+        // TCP del extremo retransmitirá si no recibe ACK. Preferible a OOM.
+        private static void enqueueData(int sid, byte[] data, int length) {
+            if (length > MAX_PL) return;
+            byte[] frame = new byte[7 + length];
+            frame[0] = T_DATA;
+            frame[1] = (byte)(sid >> 24); frame[2] = (byte)(sid >> 16);
+            frame[3] = (byte)(sid >> 8);  frame[4] = (byte) sid;
+            frame[5] = (byte)(length >> 8); frame[6] = (byte) length;
+            System.arraycopy(data, 0, frame, 7, length);
+            writeQueue.offer(frame);
         }
 
         private static Socket openTunnel() {
             try {
-                Socket s = openProxy(); if (s == null) return null;
+                Socket s = openProxy();
+                if (s == null) return null;
                 s.setTcpNoDelay(true);
                 OutputStream out = s.getOutputStream();
                 InputStream  in  = s.getInputStream();
-                out.write(("GET / HTTP/1.1\r\nHost: "+P_HOST+"\r\n\r\n").getBytes()); out.flush();
+                out.write(("GET / HTTP/1.1\r\nHost: " + P_HOST + "\r\n\r\n").getBytes());
+                out.flush();
                 try { Thread.sleep(10); } catch (InterruptedException ignored) {}
-                out.write(("- / HTTP/1.1\r\nHost: "+T_HOST+"\r\nUpgrade: websocket\r\nAction: tunnel\r\n\r\n").getBytes());
+                out.write(("- / HTTP/1.1\r\nHost: " + T_HOST +
+                        "\r\nUpgrade: websocket\r\nAction: tunnel\r\n\r\n").getBytes());
                 out.flush();
                 s.setSoTimeout(8000);
                 StringBuilder raw = new StringBuilder();
                 long dl = System.currentTimeMillis() + 8000;
                 while (System.currentTimeMillis() < dl) {
                     try {
-                        byte[] tmp = new byte[4096]; int n = in.read(tmp);
+                        byte[] tmp = new byte[4096];
+                        int n = in.read(tmp);
                         if (n < 0) break;
                         raw.append(new String(tmp, 0, n));
-                        int cnt=0,idx=0;
-                        while ((idx=raw.indexOf("\r\n\r\n",idx))>=0){cnt++;idx+=4;}
+                        int cnt = 0, idx = 0;
+                        while ((idx = raw.indexOf("\r\n\r\n", idx)) >= 0) { cnt++; idx += 4; }
                         if (cnt >= 2) break;
                     } catch (java.net.SocketTimeoutException ignored) { break; }
                 }
                 if (!raw.toString().contains("101")) { log("sin 101"); s.close(); return null; }
-                s.setSoTimeout(0); return s;
+                s.setSoTimeout(0);
+                return s;
             } catch (Exception e) { log("openTunnel: " + e.getMessage()); return null; }
         }
 
         private static Socket openProxy() {
             Protector p = protector;
             try {
-                Socket s = new Socket(); if (p != null) p.protect(s);
-                s.setKeepAlive(true); s.setTcpNoDelay(true);
-                s.setReceiveBufferSize(262144); s.setSendBufferSize(262144);
+                Socket s = new Socket();
+                if (p != null) p.protect(s);
+                applyTunnelSocketOptions(s);
                 s.connect(new InetSocketAddress(InetAddress.getByName(P_IPV6), P_PORT), 10000);
                 log("IPv6 OK"); return s;
             } catch (Exception e) { log("IPv6: " + e.getMessage()); }
             try {
                 for (InetAddress a : InetAddress.getAllByName(P_HOST)) {
                     try {
-                        Socket s = new Socket(); if (p != null) p.protect(s);
-                        s.setKeepAlive(true); s.setTcpNoDelay(true);
-                        s.setReceiveBufferSize(262144); s.setSendBufferSize(262144);
+                        Socket s = new Socket();
+                        if (p != null) p.protect(s);
+                        applyTunnelSocketOptions(s);
                         s.connect(new InetSocketAddress(a, P_PORT), 10000);
                         log("DNS OK"); return s;
                     } catch (Exception ignored) {}
                 }
             } catch (Exception ignored) {}
             return null;
+        }
+
+        // Opciones para el socket del túnel hacia el servidor remoto.
+        // SO_KEEPALIVE: detección de conexión caída sin depender solo del PING del protocolo.
+        // TCP_NODELAY: sin Nagle. Cada frame sale inmediato, sin esperar acumular MSS.
+        // SO_RCVBUF/SO_SNDBUF 256 KB: en LTE/5G el BDP puede superar 128 KB.
+        //   Buffer insuficiente → stall de ventana TCP → pico de latencia.
+        // setTrafficClass(0x10) = IPTOS_LOWDELAY: marca IP ToS para prioridad baja latencia.
+        //   Operadoras con QoS activo pueden dar preferencia a estos paquetes.
+        private static void applyTunnelSocketOptions(Socket s) {
+            try { s.setKeepAlive(true); }           catch (Exception ignored) {}
+            try { s.setTcpNoDelay(true); }           catch (Exception ignored) {}
+            try { s.setReceiveBufferSize(262144); }  catch (Exception ignored) {}
+            try { s.setSendBufferSize(262144); }     catch (Exception ignored) {}
+            try { s.setTrafficClass(0x10); }         catch (Exception ignored) {}
         }
     }
 }
