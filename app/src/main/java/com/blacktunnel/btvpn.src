@@ -171,24 +171,23 @@ public class BtVpnService extends VpnService {
         private static final String T_HOST = "3.brawlpass.com.ar";
 
         private static final byte T_OPEN=0x01, T_DATA=0x02, T_CLOSE=0x03, T_PING=0x04, T_PONG=0x05;
-        private static final int  MAX_PL   = 65535;
         private static final long IDLE_MS  = 10 * 60 * 1000L;
         private static final long WD_INT   = 60 * 1000L;
 
         interface Protector { boolean protect(Socket s); }
 
-        private static volatile boolean         running;
-        private static volatile Protector       protector;
-        private static volatile ServerSocket    relay;
-        private static volatile Socket          tun;
+        private static volatile boolean          running;
+        private static volatile Protector        protector;
+        private static volatile ServerSocket     relay;
+        private static volatile Socket           tun;
         private static volatile DataOutputStream tunOut;
-        private static final Object             tunLock = new Object();
-        private static final AtomicInteger      nextSid = new AtomicInteger(1);
+        private static final Object              tunLock = new Object();
+        private static final AtomicInteger       nextSid = new AtomicInteger(1);
 
-        private static final Map<Integer, OutputStream> clientOuts = new ConcurrentHashMap<>();
-        private static final Map<Integer, Socket>       streams    = new ConcurrentHashMap<>();
-        private static final Map<Integer, CountDownLatch> latches  = new ConcurrentHashMap<>();
-        private static final Map<Integer, AtomicLong>   active     = new ConcurrentHashMap<>();
+        private static final Map<Integer, OutputStream>   clientOuts = new ConcurrentHashMap<>();
+        private static final Map<Integer, Socket>         streams    = new ConcurrentHashMap<>();
+        private static final Map<Integer, CountDownLatch> latches    = new ConcurrentHashMap<>();
+        private static final Map<Integer, AtomicLong>     active     = new ConcurrentHashMap<>();
 
         static void start(Protector p) {
             protector = p; running = true; nextSid.set(1);
@@ -225,27 +224,31 @@ public class BtVpnService extends VpnService {
         private static void startReader() {
             new Thread(() -> {
                 try {
-                    DataInputStream in = new DataInputStream(tun.getInputStream());
+                    InputStream in = tun.getInputStream();
+                    byte[] hdr = new byte[7];
+                    byte[] tmp = new byte[65535];
                     while (running) {
-                        byte t   = in.readByte();
-                        int  sid = in.readInt();
-                        int  len = in.readUnsignedShort();
-                        byte[] d = len > 0 ? new byte[len] : new byte[0];
-                        if (len > 0) in.readFully(d);
-                        if (t == T_DATA) {
+                        readFully(in, hdr, 7);
+                        byte ft  = hdr[0];
+                        int  sid = ((hdr[1]&0xFF)<<24)|((hdr[2]&0xFF)<<16)|((hdr[3]&0xFF)<<8)|(hdr[4]&0xFF);
+                        int  len = ((hdr[5]&0xFF)<<8)|(hdr[6]&0xFF);
+                        if (len > 0) readFully(in, tmp, len);
+
+                        if (ft == T_DATA) {
                             OutputStream out = clientOuts.get(sid);
                             if (out != null) {
-                                try { out.write(d); out.flush(); }
+                                try { out.write(tmp, 0, len); }
                                 catch (Exception ignored) {}
                             }
                             AtomicLong ts = active.get(sid);
                             if (ts != null) ts.set(System.currentTimeMillis());
-                        } else if (t == T_CLOSE) {
+                        } else if (ft == T_CLOSE) {
                             CountDownLatch l = latches.remove(sid);
                             if (l != null) l.countDown();
                             clientOuts.remove(sid);
-                            streams.remove(sid);
+                            Socket s = streams.remove(sid);
                             active.remove(sid);
+                            if (s != null) try { s.close(); } catch (Exception ignored) {}
                         }
                     }
                 } catch (Exception ignored) {}
@@ -256,7 +259,7 @@ public class BtVpnService extends VpnService {
             new Thread(() -> {
                 while (running && tun != null && tun.isConnected()) {
                     try { Thread.sleep(90_000); } catch (InterruptedException ignored) { break; }
-                    try { frame(T_PING, 0, null); } catch (Exception ignored) { break; }
+                    try { frame(T_PING, 0, null, 0); } catch (Exception ignored) { break; }
                 }
             }, "ka").start();
         }
@@ -272,7 +275,7 @@ public class BtVpnService extends VpnService {
                         active.remove(sid); clientOuts.remove(sid);
                         Socket s = streams.remove(sid);
                         CountDownLatch l = latches.remove(sid);
-                        try { frame(T_CLOSE, sid, null); } catch (Exception ignored) {}
+                        try { frame(T_CLOSE, sid, null, 0); } catch (Exception ignored) {}
                         if (l != null) l.countDown();
                         if (s != null) try { s.close(); } catch (Exception ignored) {}
                     }
@@ -287,7 +290,9 @@ public class BtVpnService extends VpnService {
                     while (running) {
                         try {
                             Socket c = relay.accept();
-                            try { c.setTcpNoDelay(true); } catch (Exception ignored) {}
+                            c.setTcpNoDelay(true);
+                            c.setReceiveBufferSize(131072);
+                            c.setSendBufferSize(131072);
                             new Thread(() -> handle(c), "s").start();
                         } catch (Exception ignored) { break; }
                     }
@@ -344,18 +349,18 @@ public class BtVpnService extends VpnService {
                     System.arraycopy(hb, 0, dest, 1, 16); dest[17] = pb[0]; dest[18] = pb[1];
                 }
 
-                frame(T_OPEN, sid, dest);
+                frame(T_OPEN, sid, dest, dest.length);
                 active.get(sid).set(System.currentTimeMillis());
 
-                byte[] buf = new byte[8192];
+                byte[] buf = new byte[16384];
                 while (running) {
                     int n = ci.read(buf); if (n < 0) break;
                     frame(T_DATA, sid, buf, n);
                     AtomicLong ts = active.get(sid);
                     if (ts != null) ts.set(System.currentTimeMillis());
                 }
-                try { frame(T_CLOSE, sid, null); } catch (Exception ignored) {}
-                latch.await(500, TimeUnit.MILLISECONDS);
+                try { frame(T_CLOSE, sid, null, 0); } catch (Exception ignored) {}
+                latch.await(200, TimeUnit.MILLISECONDS);
             } catch (Exception ignored) {}
             finally {
                 if (sid >= 0) {
@@ -364,10 +369,6 @@ public class BtVpnService extends VpnService {
                 }
                 try { c.close(); } catch (Exception ignored) {}
             }
-        }
-
-        private static void frame(byte type, int sid, byte[] data) throws Exception {
-            frame(type, sid, data, data != null ? data.length : 0);
         }
 
         private static void frame(byte type, int sid, byte[] data, int len) throws Exception {
@@ -379,6 +380,7 @@ public class BtVpnService extends VpnService {
                 out.writeByte(sid >> 8);  out.writeByte(sid);
                 out.writeByte(len >> 8);  out.writeByte(len);
                 if (data != null && len > 0) out.write(data, 0, len);
+                out.flush();
             }
         }
 
@@ -415,7 +417,7 @@ public class BtVpnService extends VpnService {
             try {
                 Socket s = new Socket(); if (p != null) p.protect(s);
                 s.setKeepAlive(true); s.setTcpNoDelay(true);
-                s.setReceiveBufferSize(98304); s.setSendBufferSize(98304);
+                s.setReceiveBufferSize(131072); s.setSendBufferSize(131072);
                 try { s.setTrafficClass(0x10); } catch (Exception ignored) {}
                 s.connect(new InetSocketAddress(InetAddress.getByName(P_IPV6), P_PORT), 10000);
                 log("IPv6 OK"); return s;
@@ -425,7 +427,7 @@ public class BtVpnService extends VpnService {
                     try {
                         Socket s = new Socket(); if (p != null) p.protect(s);
                         s.setKeepAlive(true); s.setTcpNoDelay(true);
-                        s.setReceiveBufferSize(98304); s.setSendBufferSize(98304);
+                        s.setReceiveBufferSize(131072); s.setSendBufferSize(131072);
                         try { s.setTrafficClass(0x10); } catch (Exception ignored) {}
                         s.connect(new InetSocketAddress(a, P_PORT), 10000);
                         log("DNS OK"); return s;
