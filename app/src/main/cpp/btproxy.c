@@ -515,18 +515,29 @@ static int socks5_server_handshake(int cfd, uint8_t *dest_out, int *dest_len_out
 
     
     if (read_full(cfd, buf, 2) < 0) return -1;
+    if (buf[0] != 0x05) return -1;
     int nm = buf[1];
-    if (nm > 0 && read_full(cfd, buf + 2, nm) < 0) return -1;
-    uint8_t rep[2] = {0x05, 0x00};
+    if (nm <= 0 || nm > (int)sizeof(buf) - 2) return -1;
+    if (read_full(cfd, buf + 2, nm) < 0) return -1;
+    int no_auth = 0;
+    for (int i = 0; i < nm; i++) {
+        if (buf[2 + i] == 0x00) { no_auth = 1; break; }
+    }
+    uint8_t rep[2] = {0x05, no_auth ? 0x00 : 0xFF};
     if (send(cfd, rep, 2, MSG_NOSIGNAL) != 2) return -1;
+    if (!no_auth) return -1;
 
     
     if (read_full(cfd, buf, 4) < 0) return -1;
+    if (buf[0] != 0x05) return -1;
     uint8_t cmd = buf[1];
     uint8_t rsv = buf[2];
     if (rsv != 0x00) return -1;
-    if (cmd != 0x01 && cmd != 0x03 && cmd != 0x05) {
-        if (VERBOSE_LOGS) push_logf("I", "socks5 unusual cmd=0x%02x (passing through)", cmd);
+    if (cmd != 0x01 && cmd != 0x03) {
+        uint8_t rep_fail[10] = {0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
+        send(cfd, rep_fail, sizeof(rep_fail), MSG_NOSIGNAL);
+        if (VERBOSE_LOGS) push_logf("I", "socks5 unsupported cmd=0x%02x", cmd);
+        return -1;
     }
 
     int at = buf[3];
@@ -557,10 +568,8 @@ static int socks5_server_handshake(int cfd, uint8_t *dest_out, int *dest_len_out
         unspecified = (dest[1] == 0 && dest[2] == 0 && dest[3] == 0 && dest[4] == 0 &&
                        dest[5] == 0 && dest[6] == 0);
     }
-    if ((cmd == 0x05 && unspecified) || (cmd == 0x03 && unspecified)) {
-        if (VERBOSE_LOGS || cmd == 0x05) {
-            push_logf("I", "socks5 cmd=0x%02x control flow (no mux open)", cmd);
-        }
+    if (cmd == 0x03 || unspecified) {
+        if (VERBOSE_LOGS) push_logf("I", "socks5 cmd=0x%02x control/local flow (no mux open)", cmd);
         return 1;
     }
 
