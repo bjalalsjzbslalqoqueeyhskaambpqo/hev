@@ -94,6 +94,9 @@ static pthread_mutex_t g_start_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_start_cv = PTHREAD_COND_INITIALIZER;
 static int             g_start_st = 0;
 
+JNIEXPORT void JNICALL
+Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz);
+
 static void push_log(const char *level, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     char msg[512]; vsnprintf(msg, sizeof(msg), fmt, ap); va_end(ap);
