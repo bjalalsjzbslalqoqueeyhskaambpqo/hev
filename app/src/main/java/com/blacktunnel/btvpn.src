@@ -11,9 +11,13 @@ import android.os.SystemClock;
 import androidx.core.app.NotificationCompat;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -113,46 +117,10 @@ public class BtVpnService extends VpnService {
                 .setMtu(1400)
                 .addAddress("10.10.10.1", 30)
                 .addAddress("fc00::1", 126)
-                .addRoute("1.0.0.0", 8)
-                .addRoute("2.0.0.0", 7)
-                .addRoute("4.0.0.0", 6)
-                .addRoute("8.0.0.0", 7)
-                .addRoute("11.0.0.0", 8)
-                .addRoute("12.0.0.0", 6)
-                .addRoute("16.0.0.0", 4)
-                .addRoute("32.0.0.0", 3)
-                .addRoute("64.0.0.0", 3)
-                .addRoute("96.0.0.0", 4)
-                .addRoute("112.0.0.0", 5)
-                .addRoute("120.0.0.0", 6)
-                .addRoute("124.0.0.0", 7)
-                .addRoute("126.0.0.0", 8)
-                .addRoute("128.0.0.0", 3)
-                .addRoute("160.0.0.0", 5)
-                .addRoute("168.0.0.0", 6)
-                .addRoute("172.0.0.0", 12)
-                .addRoute("172.32.0.0", 11)
-                .addRoute("172.64.0.0", 10)
-                .addRoute("172.128.0.0", 9)
-                .addRoute("173.0.0.0", 8)
-                .addRoute("174.0.0.0", 7)
-                .addRoute("176.0.0.0", 4)
-                .addRoute("192.0.0.0", 9)
-                .addRoute("192.128.0.0", 11)
-                .addRoute("192.160.0.0", 13)
-                .addRoute("192.169.0.0", 8)
-                .addRoute("192.170.0.0", 15)
-                .addRoute("192.172.0.0", 14)
-                .addRoute("192.176.0.0", 12)
-                .addRoute("192.192.0.0", 10)
-                .addRoute("193.0.0.0", 8)
-                .addRoute("194.0.0.0", 7)
-                .addRoute("196.0.0.0", 6)
-                .addRoute("200.0.0.0", 5)
-                .addRoute("208.0.0.0", 4)
-                .addRoute("::", 0)
                 .addDnsServer("10.10.10.2")
                 .addDnsServer("8.8.8.8");
+        addPublicRoutes(builder);
+        builder.addRoute("::", 0);
         try { builder.addDisallowedApplication(getPackageName()); } catch (Exception ignored) {}
 
         tunPfd = builder.establish();
@@ -188,6 +156,75 @@ public class BtVpnService extends VpnService {
         running.set(true);
         runningState.set(true);
         log("Servicio VPN en ejecución");
+    }
+
+    private void addPublicRoutes(Builder builder) {
+        String[] excludes = {
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "169.254.0.0/16",
+            "224.0.0.0/4",
+            "240.0.0.0/4",
+            "255.255.255.255/32"
+        };
+
+        List<long[]> excluded = new ArrayList<>();
+        for (String cidr : excludes) {
+            try {
+                String[] parts = cidr.split("/");
+                long base = inet2long(InetAddress.getByName(parts[0]));
+                int prefix = Integer.parseInt(parts[1]);
+                long mask = prefix == 0 ? 0L : (~0L << (32 - prefix)) & 0xFFFFFFFFL;
+                long start = base & mask;
+                long end = start + (~mask & 0xFFFFFFFFL);
+                excluded.add(new long[]{start, end});
+            } catch (UnknownHostException ignored) {}
+        }
+        excluded.sort((a, b) -> Long.compare(a[0], b[0]));
+
+        long current = 0L;
+        long universeEnd = 0xFFFFFFFEL;
+        for (long[] ex : excluded) {
+            if (current < ex[0]) addCIDRs(builder, current, ex[0] - 1);
+            if (current <= ex[1]) current = ex[1] + 1;
+        }
+        if (current <= universeEnd) addCIDRs(builder, current, universeEnd);
+    }
+
+    private void addCIDRs(Builder builder, long start, long end) {
+        while (start <= end) {
+            int prefix = maxBlockPrefix(start, end);
+            builder.addRoute(long2inet(start), prefix);
+            start += (1L << (32 - prefix));
+        }
+    }
+
+    private int maxBlockPrefix(long start, long end) {
+        int alignmentPrefix = 32 - Math.min(32, Long.numberOfTrailingZeros(start));
+        int prefix = Math.max(0, alignmentPrefix);
+        long remaining = end - start + 1;
+        while (prefix < 32) {
+            long blockSize = 1L << (32 - prefix);
+            if (blockSize <= remaining) break;
+            prefix++;
+        }
+        return prefix;
+    }
+
+    private long inet2long(InetAddress addr) {
+        byte[] b = addr.getAddress();
+        return ((long) (b[0] & 0xFF) << 24)
+             | ((long) (b[1] & 0xFF) << 16)
+             | ((long) (b[2] & 0xFF) << 8)
+             | ((long) (b[3] & 0xFF));
+    }
+
+    private String long2inet(long value) {
+        return ((value >> 24) & 0xFF) + "."
+             + ((value >> 16) & 0xFF) + "."
+             + ((value >> 8) & 0xFF) + "."
+             + (value & 0xFF);
     }
 
     private void stopAll() {
