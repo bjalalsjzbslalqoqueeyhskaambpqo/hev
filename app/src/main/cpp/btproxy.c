@@ -35,6 +35,7 @@
 #define FRAME_HDR   7
 #define MAX_PAYLOAD 32768
 #define FRAME_MAX   (FRAME_HDR + MAX_PAYLOAD)
+#define VERBOSE_LOGS 0
 
 
 #define PROXY_HOST_IPV6 "2606:4700::6812:16b7"
@@ -263,8 +264,8 @@ static int tun_send_frame(int tfd, uint8_t type, uint32_t sid, const uint8_t *da
     int niov = (dlen > 0) ? 2 : 1;
     ssize_t total = FRAME_HDR + dlen;
     ssize_t sent  = 0;
-    push_logf("I", "mux TX %s sid=%u len=%u", frame_name(type), sid, dlen);
-    if (dlen > 0 && (type == T_OPEN || type == T_DATA)) {
+    if (VERBOSE_LOGS || type != T_DATA) push_logf("I", "mux TX %s sid=%u len=%u", frame_name(type), sid, dlen);
+    if (dlen > 0 && (type == T_OPEN || (VERBOSE_LOGS && type == T_DATA))) {
         log_bytes_preview("mux TX payload", data, dlen);
     }
     pthread_mutex_lock(&g_tun_write_mu);
@@ -452,8 +453,6 @@ static int open_tunnel_socket(void) {
         return -1;
     }
 
-    usleep(5000);
-
     char req2[256];
     int  rlen2 = snprintf(req2, sizeof(req2),
                           "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\naction: tunnel\r\n\r\n",
@@ -513,11 +512,8 @@ static int socks5_server_handshake(int cfd, uint8_t *dest_out, int *dest_len_out
     uint8_t cmd = buf[1];
     uint8_t rsv = buf[2];
     if (rsv != 0x00) return -1;
-    if (cmd != 0x01 && cmd != 0x03) {
-        uint8_t rep_fail[10] = {0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
-        send(cfd, rep_fail, sizeof(rep_fail), MSG_NOSIGNAL);
-        push_logf("I", "socks5 unsupported cmd=0x%02x", cmd);
-        return -1;
+    if (cmd != 0x01 && cmd != 0x03 && cmd != 0x05) {
+        if (VERBOSE_LOGS) push_logf("I", "socks5 unusual cmd=0x%02x (passing through)", cmd);
     }
 
     int at = buf[3];
@@ -543,14 +539,9 @@ static int socks5_server_handshake(int cfd, uint8_t *dest_out, int *dest_len_out
     uint8_t ok[10] = {0x05,0x00,0x00,0x01,0,0,0,0,0,0};
     if (send(cfd, ok, sizeof(ok), MSG_NOSIGNAL) != sizeof(ok)) return -1;
 
-    if (cmd == 0x03) {
-        push_logf("I", "socks5 UDP ASSOCIATE atyp=0x%02x (local-only, no mux stream)", at);
-        return 1;
-    }
-
     memcpy(dest_out, dest, dlen);
     *dest_len_out = dlen;
-    push_logf("I", "socks5 cmd=CONNECT atyp=0x%02x dlen=%d", at, dlen);
+    push_logf("I", "socks5 cmd=0x%02x atyp=0x%02x dlen=%d", cmd, at, dlen);
     log_bytes_preview("socks5 dest", dest_out, (size_t)dlen);
     return 0;
 }
@@ -577,16 +568,8 @@ static void *conn_thread(void *arg) {
 
     
     uint8_t dest[260]; int dest_len = 0;
-    int hs = socks5_server_handshake(cfd, dest, &dest_len);
-    if (hs < 0) {
+    if (socks5_server_handshake(cfd, dest, &dest_len) < 0) {
         push_logf("I", "stream sid=%u socks5 handshake failed", sid);
-        pthread_mutex_lock(&g_streams_mu);
-        stream_free(s);
-        pthread_mutex_unlock(&g_streams_mu);
-        return NULL;
-    }
-    if (hs == 1) {
-        push_logf("I", "stream sid=%u udp-associate completed without tunnel open", sid);
         pthread_mutex_lock(&g_streams_mu);
         stream_free(s);
         pthread_mutex_unlock(&g_streams_mu);
@@ -606,7 +589,7 @@ static void *conn_thread(void *arg) {
     while (g_running) {
         ssize_t n = recv(cfd, buf, sizeof(buf), 0);
         if (n <= 0) break;
-        push_logf("I", "stream sid=%u client->mux bytes=%zd", sid, n);
+        if (VERBOSE_LOGS) push_logf("I", "stream sid=%u client->mux bytes=%zd", sid, n);
         pthread_mutex_lock(&g_streams_mu);
         if (s->used) s->last_active = (int64_t)time(NULL);
         pthread_mutex_unlock(&g_streams_mu);
@@ -632,13 +615,13 @@ static void *tunnel_reader(void *arg) {
         uint32_t sid = ((uint32_t)hdr[1] << 24) | ((uint32_t)hdr[2] << 16)
                      | ((uint32_t)hdr[3] <<  8) |  (uint32_t)hdr[4];
         uint16_t len = ((uint16_t)hdr[5] << 8) | hdr[6];
-        push_logf("I", "mux RX %s sid=%u len=%u", frame_name(ft), sid, len);
+        if (VERBOSE_LOGS || ft != T_DATA) push_logf("I", "mux RX %s sid=%u len=%u", frame_name(ft), sid, len);
         if (len > MAX_PAYLOAD) {
             push_logf("E", "mux RX oversize sid=%u len=%u max=%u", sid, len, (unsigned)MAX_PAYLOAD);
             break;
         }
         if (len > 0 && read_full(tfd, payload, len) < 0) break;
-        if (len > 0 && (ft == T_OPEN || ft == T_DATA)) {
+        if (len > 0 && (ft == T_OPEN || (VERBOSE_LOGS && ft == T_DATA))) {
             log_bytes_preview("mux RX payload", payload, len);
         }
 
@@ -657,7 +640,7 @@ static void *tunnel_reader(void *arg) {
                     else if (errno == EINTR) continue;
                     else break;
                 }
-                push_logf("I", "stream sid=%u mux->client bytes=%u", sid, len);
+                if (VERBOSE_LOGS) push_logf("I", "stream sid=%u mux->client bytes=%u", sid, len);
             }
         } else if (ft == T_CLOSE) {
             pthread_mutex_lock(&g_streams_mu);
