@@ -109,7 +109,6 @@ android {
 dependencies {
     implementation("androidx.core:core:1.13.1")
     implementation("androidx.activity:activity:1.9.2")
-    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     constraints {
         implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.24")
     }

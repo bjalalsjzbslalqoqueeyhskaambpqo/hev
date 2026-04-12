@@ -1,40 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@android:color/transparent"
-    android:padding="16dp">
+    android:background="@android:color/transparent">
 
     <ImageView
         android:id="@+id/imgBackground"
-        android:layout_width="0dp"
-        android:layout_height="0dp"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
         android:scaleType="centerCrop"
-        android:src="@drawable/strike_bg"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
+        android:src="@drawable/strike_bg" />
 
     <LinearLayout
-        android:id="@+id/mainCard"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:background="@drawable/strike_card_main"
-        android:backgroundTintMode="add"
-        android:elevation="4dp"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
         android:orientation="vertical"
-        android:padding="16dp"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent">
+        android:padding="16dp">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="56dp"
-            android:background="@drawable/strike_header_bg"
+            android:background="@drawable/strike_panel_surface"
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingStart="16dp"
@@ -44,7 +30,7 @@
                 android:id="@+id/imgLogo"
                 android:layout_width="24dp"
                 android:layout_height="24dp"
-                android:src="@drawable/strike_logo" />
+                android:src="@drawable/ic_xtunnel_logo" />
 
             <TextView
                 android:layout_width="0dp"
@@ -52,16 +38,19 @@
                 android:layout_marginStart="8dp"
                 android:layout_weight="1"
                 android:text="@string/app_brand"
-                android:textColor="@color/text_primary"
+                android:textColor="#E6EDF3"
                 android:textSize="20sp"
                 android:textStyle="bold" />
         </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:orientation="vertical">
+            android:layout_height="0dp"
+            android:layout_marginTop="12dp"
+            android:layout_weight="1"
+            android:background="@drawable/strike_panel_body"
+            android:orientation="vertical"
+            android:padding="16dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -74,15 +63,15 @@
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:text="Ping"
-                    android:textColor="@color/text_secondary"
+                    android:textColor="#9FB3C8"
                     android:textSize="14sp" />
 
                 <TextView
                     android:id="@+id/txtPing"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="18 ms"
-                    android:textColor="@color/text_primary"
+                    android:text="— ms"
+                    android:textColor="#E6EDF3"
                     android:textSize="16sp"
                     android:textStyle="bold" />
             </LinearLayout>
@@ -99,7 +88,7 @@
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:text="Usuario"
-                    android:textColor="@color/text_secondary"
+                    android:textColor="#9FB3C8"
                     android:textSize="14sp" />
 
                 <TextView
@@ -107,7 +96,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="Gamer123"
-                    android:textColor="@color/text_primary"
+                    android:textColor="#E6EDF3"
                     android:textSize="16sp"
                     android:textStyle="bold" />
             </LinearLayout>
@@ -124,7 +113,7 @@
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:text="Días"
-                    android:textColor="@color/text_secondary"
+                    android:textColor="#9FB3C8"
                     android:textSize="14sp" />
 
                 <TextView
@@ -132,94 +121,86 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="15"
-                    android:textColor="@color/text_primary"
+                    android:textColor="#E6EDF3"
                     android:textSize="16sp"
                     android:textStyle="bold" />
             </LinearLayout>
-        </LinearLayout>
 
-        <Button
-            android:id="@+id/btnConnect"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="16dp"
-            android:background="@drawable/strike_btn_connect"
-            android:backgroundTintMode="add"
-            android:elevation="6dp"
-            android:letterSpacing="0.05"
-            android:text="@string/connect"
-            android:textAllCaps="false"
-            android:textColor="@color/text_primary"
-            android:textSize="16sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="@string/log_label"
-            android:textColor="@color/text_secondary"
-            android:textSize="14sp" />
-
-        <ScrollView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:background="@drawable/strike_log_bg"
-            android:padding="10dp"
-            android:scrollbars="vertical">
+            <Button
+                android:id="@+id/btnConnect"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="16dp"
+                android:background="@drawable/strike_btn_primary"
+                android:elevation="6dp"
+                android:letterSpacing="0.05"
+                android:text="@string/connect"
+                android:textAllCaps="false"
+                android:textColor="#E6EDF3"
+                android:textSize="16sp"
+                android:textStyle="bold" />
 
             <TextView
-                android:id="@+id/txtLogs"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="@string/log_label"
+                android:textColor="#9FB3C8"
+                android:textSize="14sp" />
+
+            <ScrollView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:fontFamily="monospace"
-                android:maxLines="3"
-                android:text="Conectando...&#10;Autenticando usuario&#10;Conectado ✔"
-                android:textColor="@color/text_primary"
-                android:textSize="12sp" />
-        </ScrollView>
-    </LinearLayout>
+                android:layout_marginTop="8dp"
+                android:background="@drawable/strike_panel_surface"
+                android:padding="10dp">
 
-    <LinearLayout
-        android:layout_width="0dp"
-        android:layout_height="44dp"
-        android:layout_marginTop="16dp"
-        android:background="@drawable/strike_card_main"
-        android:backgroundTintMode="add"
-        android:elevation="4dp"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:padding="4dp"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/mainCard">
+                <TextView
+                    android:id="@+id/txtLogs"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:fontFamily="monospace"
+                    android:maxLines="3"
+                    android:text="Conectando...&#10;Autenticando usuario&#10;Conectado ✔"
+                    android:textColor="#E6EDF3"
+                    android:textSize="12sp" />
+            </ScrollView>
+        </LinearLayout>
 
-        <TextView
-            android:id="@+id/txtDeviceId"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="7"
-            android:background="@drawable/strike_id_bg"
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/strike_panel_surface"
             android:gravity="center_vertical"
-            android:paddingHorizontal="10dp"
-            android:text="@string/device_id_default"
-            android:textColor="@color/text_primary"
-            android:textSize="14sp" />
+            android:orientation="horizontal"
+            android:padding="4dp">
 
-        <Button
-            android:id="@+id/btnCopyLogs"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_marginStart="8dp"
-            android:layout_weight="3"
-            android:background="@drawable/strike_copy_btn"
-            android:text="@string/copy"
-            android:textAllCaps="false"
-            android:textColor="@android:color/white"
-            android:textSize="14sp"
-            android:textStyle="bold" />
+            <TextView
+                android:id="@+id/txtDeviceId"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="7"
+                android:background="@drawable/strike_chip_left"
+                android:gravity="center_vertical"
+                android:paddingHorizontal="10dp"
+                android:text="@string/device_id_default"
+                android:textColor="#E6EDF3"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/btnCopyLogs"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_marginStart="8dp"
+                android:layout_weight="3"
+                android:background="@drawable/strike_btn_secondary"
+                android:text="@string/copy"
+                android:textAllCaps="false"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+        </LinearLayout>
     </LinearLayout>
-
-</androidx.constraintlayout.widget.ConstraintLayout>
+</FrameLayout>
