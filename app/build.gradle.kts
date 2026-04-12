@@ -2,6 +2,11 @@ plugins {
     id("com.android.application")
 }
 
+configurations.configureEach {
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-jdk7")
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-jdk8")
+}
+
 android {
     val hasReleaseSigning =
         !System.getenv("ANDROID_KEYSTORE_PATH").isNullOrBlank() &&
@@ -92,4 +97,7 @@ android {
 dependencies {
     implementation("androidx.core:core:1.13.1")
     implementation("androidx.activity:activity:1.9.2")
+    constraints {
+        implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.24")
+    }
 }
