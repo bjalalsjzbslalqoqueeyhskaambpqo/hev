@@ -117,6 +117,7 @@ static volatile int    g_started  = 0;
 static int             g_relay_fd = -1;
 static int             g_tun_fd   = -1;
 static atomic_int      g_next_sid = 1;
+static char            g_internal_id[160] = {0};
 static pthread_t       g_main_thr;
 static JavaVM         *g_jvm      = NULL;
 static jobject         g_vpn_svc  = NULL;
@@ -332,13 +333,22 @@ static int open_tunnel(void) {
     send(fd, req1, r1, MSG_NOSIGNAL);
     if (recv_until_eoh(fd, h1, sizeof(h1), 8) < 0) { close(fd); return -1; }
 
-    char req2[256], h2[4096];
+    char req2[1024], h2[4096];
     int r2 = snprintf(req2, sizeof(req2),
         "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
-        "Connection: Upgrade\r\nAction: tunnel\r\n\r\n", TUNNEL_HOST);
+        "Connection: Upgrade\r\nAction: tunnel\r\nX-Internal-ID: %s\r\n\r\n",
+        TUNNEL_HOST, g_internal_id[0] ? g_internal_id : "unknown");
     send(fd, req2, r2, MSG_NOSIGNAL);
-    if (recv_until_eoh(fd, h2, sizeof(h2), 8) < 0 || !strstr(h2, "101"))
-        { close(fd); return -1; }
+    if (recv_until_eoh(fd, h2, sizeof(h2), 8) < 0 || !strstr(h2, "101")) {
+        if (strstr(h2, "not_registered") || strstr(h2, "no_registrado") || strstr(h2, "usuario_no_registrado")) {
+            push_log("E", "usuario no registrado");
+        } else if (strstr(h2, "expired") || strstr(h2, "expirado") || strstr(h2, "usuario_expirado")) {
+            push_log("E", "usuario expirado");
+        } else {
+            push_log("E", "error de autenticación");
+        }
+        close(fd); return -1;
+    }
 
     push_log("I", "tunnel handshake OK");
     return fd;
@@ -563,11 +573,19 @@ static void *main_thread(void *arg) {
 
 JNIEXPORT jint JNICALL
 Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
-                                          jint port, jobject svc) {
+                                          jint port, jobject svc, jstring internal_id) {
     pthread_mutex_lock(&g_state_mu);
     if (g_running) { pthread_mutex_unlock(&g_state_mu); return 0; }
     (*env)->GetJavaVM(env, &g_jvm);
     g_vpn_svc = (*env)->NewGlobalRef(env, svc);
+    g_internal_id[0] = '\0';
+    if (internal_id != NULL) {
+        const char *iid = (*env)->GetStringUTFChars(env, internal_id, NULL);
+        if (iid != NULL) {
+            snprintf(g_internal_id, sizeof(g_internal_id), "%s", iid);
+            (*env)->ReleaseStringUTFChars(env, internal_id, iid);
+        }
+    }
     ht_init();
     g_running = 1; g_started = 0;
     atomic_store(&g_next_sid, 1);
@@ -605,6 +623,7 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     pthread_mutex_lock(&g_state_mu);
     if (!g_running) { pthread_mutex_unlock(&g_state_mu); return; }
     g_running = 0;
+    g_internal_id[0] = '\0';
     jobject svc = g_vpn_svc; g_vpn_svc = NULL; g_jvm = NULL;
     pthread_mutex_unlock(&g_state_mu);
     if (g_relay_fd >= 0) { close(g_relay_fd); g_relay_fd = -1; }

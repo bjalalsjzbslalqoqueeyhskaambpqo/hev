@@ -1,10 +1,10 @@
 <resources>
-    <string name="app_name">XTunnel</string>
-    <string name="app_brand">StrikeVPN</string>
+    <string name="app_name">Strike</string>
+    <string name="app_brand">STRIKE</string>
     <string name="connect">Conectar</string>
     <string name="disconnect">Desconectar</string>
     <string name="copy_logs">Copiar logs</string>
-    <string name="copy">Copiar</string>
+    <string name="copy">Copiar ID</string>
     <string name="ping_default">Ping: — ms</string>
     <string name="user_default">Usuario: Gamer123</string>
     <string name="days_default">Días disponibles: 15</string>
