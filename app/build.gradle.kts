@@ -36,15 +36,6 @@ android {
         }
     }
 
-    splits {
-        abi {
-            isEnable = true
-            reset()
-            include("arm64-v8a")
-            isUniversalApk = false
-        }
-    }
-
     signingConfigs {
         create("release") {
             val storeFilePath = System.getenv("ANDROID_KEYSTORE_PATH")
