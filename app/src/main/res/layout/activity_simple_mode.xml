@@ -1,37 +1,159 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="16dp"
-    android:background="#0B1220">
+    android:layout_height="match_parent">
 
-    <Button
-        android:id="@+id/btnConnect"
+    <ImageView
+        android:id="@+id/imgBackground"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="@string/connect" />
+        android:layout_height="match_parent"
+        android:scaleType="centerCrop"
+        android:src="@drawable/strike_bg" />
 
-    <Button
-        android:id="@+id/btnCopyLogs"
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="@string/copy_logs" />
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:padding="16dp">
 
-    <ScrollView
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:layout_marginTop="12dp">
-
-        <TextView
-            android:id="@+id/txtLogs"
+        <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="#C8D1E6"
-            android:textSize="12sp"
-            android:typeface="monospace" />
-    </ScrollView>
+            android:layout_height="56dp"
+            android:background="@drawable/strike_panel_surface"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="14dp">
 
-</LinearLayout>
+            <ImageView
+                android:id="@+id/imgLogo"
+                android:layout_width="34dp"
+                android:layout_height="34dp"
+                android:src="@drawable/strike_logo" />
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:layout_weight="1"
+                android:fontFamily="sans-serif-medium"
+                android:text="@string/app_brand"
+                android:textColor="#E8EEF9"
+                android:textSize="28sp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:text="☰"
+                android:textColor="#D7E2F5"
+                android:textSize="20sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="8dp"
+            android:layout_weight="1"
+            android:background="@drawable/strike_panel_body"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <TextView
+                android:id="@+id/txtPing"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/ping_default"
+                android:textColor="#D3DEEE"
+                android:textSize="26sp" />
+
+            <TextView
+                android:id="@+id/txtUser"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="@string/user_default"
+                android:textColor="#D3DEEE"
+                android:textSize="24sp" />
+
+            <TextView
+                android:id="@+id/txtDays"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="@string/days_default"
+                android:textColor="#D3DEEE"
+                android:textSize="24sp" />
+
+            <Button
+                android:id="@+id/btnConnect"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:layout_marginTop="20dp"
+                android:background="@drawable/strike_btn_primary"
+                android:fontFamily="sans-serif-black"
+                android:letterSpacing="0.03"
+                android:text="@string/connect"
+                android:textAllCaps="true"
+                android:textColor="#E8EEF9"
+                android:textSize="28sp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:fontFamily="sans-serif-medium"
+                android:text="@string/log_label"
+                android:textColor="#E4ECFC"
+                android:textSize="24sp" />
+
+            <ScrollView
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_marginTop="6dp"
+                android:layout_weight="1">
+
+                <TextView
+                    android:id="@+id/txtLogs"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="sans-serif"
+                    android:textColor="#D2DBEA"
+                    android:textSize="21sp" />
+            </ScrollView>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="54dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/strike_panel_surface"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:padding="4dp">
+
+            <TextView
+                android:id="@+id/txtDeviceId"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="@drawable/strike_chip_left"
+                android:gravity="center_vertical"
+                android:paddingHorizontal="12dp"
+                android:text="@string/device_id_default"
+                android:textColor="#D6E0F3"
+                android:textSize="20sp" />
+
+            <Button
+                android:id="@+id/btnCopyLogs"
+                android:layout_width="112dp"
+                android:layout_height="match_parent"
+                android:layout_marginStart="6dp"
+                android:background="@drawable/strike_btn_secondary"
+                android:fontFamily="sans-serif-medium"
+                android:text="@string/copy"
+                android:textAllCaps="true"
+                android:textColor="#E8EEF9"
+                android:textSize="22sp" />
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

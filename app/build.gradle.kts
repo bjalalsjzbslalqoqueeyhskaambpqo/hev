@@ -68,6 +68,15 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    buildFeatures {
+        buildConfig = false
+    }
+
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
+
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
@@ -76,6 +85,16 @@ android {
     }
 
     packaging {
+        jniLibs {
+            useLegacyPackaging = true
+            excludes += setOf(
+                "**/armeabi-v7a/**",
+                "**/x86/**",
+                "**/x86_64/**",
+                "**/mips/**",
+                "**/mips64/**"
+            )
+        }
         resources {
             excludes += setOf(
                 "META-INF/LICENSE*",
@@ -91,6 +110,6 @@ dependencies {
     implementation("androidx.core:core:1.13.1")
     implementation("androidx.activity:activity:1.9.2")
     constraints {
-        implementation("org.jetbrains.kotlin:kotlin-stdlib:1.8.22")
+        implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.24")
     }
 }
