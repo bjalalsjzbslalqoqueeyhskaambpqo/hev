@@ -210,12 +210,15 @@ public class SimpleModeActivity extends ComponentActivity {
             if (newState == UiState.CONNECTING) {
                 statusBadgeView.setText("● CONECTANDO");
                 statusBadgeView.setTextColor(Color.parseColor("#FFB020"));
+                statusBadgeView.setShadowLayer(8f, 0f, 0f, Color.parseColor("#88FFB020"));
             } else if (newState == UiState.CONNECTED) {
                 statusBadgeView.setText("● CONECTADO");
                 statusBadgeView.setTextColor(Color.parseColor("#00FFA3"));
+                statusBadgeView.setShadowLayer(10f, 0f, 0f, Color.parseColor("#9900FFA3"));
             } else {
                 statusBadgeView.setText("● DESCONECTADO");
                 statusBadgeView.setTextColor(Color.parseColor("#FF4D4D"));
+                statusBadgeView.setShadowLayer(8f, 0f, 0f, Color.parseColor("#88FF4D4D"));
             }
         }
 

@@ -8,9 +8,14 @@
         android:id="@+id/imgBackground"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:alpha="0.32"
+        android:alpha="0.22"
         android:scaleType="centerCrop"
         android:src="@drawable/strike_bg" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/strike_bg_depth" />
 
     <ScrollView
         android:layout_width="match_parent"
@@ -47,6 +52,10 @@
                         android:layout_height="wrap_content"
                         android:layout_marginStart="8dp"
                         android:fontFamily="monospace"
+                        android:shadowColor="#6600E0FF"
+                        android:shadowDx="0"
+                        android:shadowDy="0"
+                        android:shadowRadius="6"
                         android:text="STRIKE VPN"
                         android:textColor="#E6EDF3"
                         android:textSize="22sp"
@@ -57,8 +66,12 @@
                     android:id="@+id/txtStatusBadge"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
+                    android:layout_marginTop="14dp"
                     android:fontFamily="monospace"
+                    android:shadowColor="#7700FFA3"
+                    android:shadowDx="0"
+                    android:shadowDy="0"
+                    android:shadowRadius="9"
                     android:text="● DESCONECTADO"
                     android:textColor="#FF4D4D"
                     android:textSize="18sp"
@@ -68,7 +81,7 @@
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
+                android:layout_marginTop="16dp"
                 android:background="@drawable/strike_panel_body"
                 android:orientation="horizontal"
                 android:padding="16dp">
@@ -83,6 +96,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:fontFamily="monospace"
+                        android:letterSpacing="0.06"
                         android:text="PING"
                         android:textColor="#8B9BB0"
                         android:textSize="12sp" />
@@ -93,6 +107,10 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="6dp"
                         android:fontFamily="monospace"
+                        android:shadowColor="#6600E0FF"
+                        android:shadowDx="0"
+                        android:shadowDy="0"
+                        android:shadowRadius="7"
                         android:text="24 ms"
                         android:textColor="#00E0FF"
                         android:textSize="24sp"
@@ -109,6 +127,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:fontFamily="monospace"
+                        android:letterSpacing="0.06"
                         android:text="USUARIO"
                         android:textColor="#8B9BB0"
                         android:textSize="12sp" />
@@ -135,6 +154,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:fontFamily="monospace"
+                        android:letterSpacing="0.06"
                         android:text="TIEMPO"
                         android:textColor="#8B9BB0"
                         android:textSize="12sp" />
@@ -145,6 +165,10 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="6dp"
                         android:fontFamily="monospace"
+                        android:shadowColor="#7700FFA3"
+                        android:shadowDx="0"
+                        android:shadowDy="0"
+                        android:shadowRadius="7"
                         android:text="15 días"
                         android:textColor="#00FFA3"
                         android:textSize="24sp"
@@ -156,11 +180,11 @@
                 android:id="@+id/btnConnect"
                 android:layout_width="match_parent"
                 android:layout_height="56dp"
-                android:layout_marginTop="16dp"
+                android:layout_marginTop="18dp"
                 android:background="@drawable/strike_btn_primary"
-                android:elevation="6dp"
+                android:elevation="8dp"
                 android:fontFamily="monospace"
-                android:letterSpacing="0.04"
+                android:letterSpacing="0.05"
                 android:text="Conectar"
                 android:textAllCaps="true"
                 android:textColor="#101820"
@@ -170,7 +194,7 @@
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
+                android:layout_marginTop="18dp"
                 android:background="@drawable/strike_panel_body"
                 android:orientation="vertical"
                 android:padding="16dp">
@@ -188,7 +212,7 @@
                     android:id="@+id/txtStatusDetails"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
+                    android:layout_marginTop="12dp"
                     android:background="@drawable/strike_chip_left"
                     android:fontFamily="monospace"
                     android:padding="12dp"
@@ -200,7 +224,7 @@
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
+                android:layout_marginTop="16dp"
                 android:background="@drawable/strike_panel_body"
                 android:orientation="vertical"
                 android:padding="16dp">
@@ -218,13 +242,13 @@
                     android:id="@+id/txtLogs"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
+                    android:layout_marginTop="12dp"
                     android:background="@drawable/strike_chip_left"
                     android:ellipsize="end"
                     android:fontFamily="monospace"
                     android:maxLines="4"
                     android:padding="12dp"
-                    android:text="[16:36:33] Sistema listo&#10;[16:36:37] Conectando...&#10;[16:36:38] Conexión establecida ✔"
+                    android:text="[17:01:08] Sistema listo&#10;[17:01:08] Conectando...&#10;[17:01:09] Conectado ✔"
                     android:textColor="#E6EDF3"
                     android:textSize="13sp" />
             </LinearLayout>
@@ -232,7 +256,7 @@
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="44dp"
-                android:layout_marginTop="16dp"
+                android:layout_marginTop="18dp"
                 android:layout_marginBottom="12dp"
                 android:background="@drawable/strike_panel_surface"
                 android:gravity="center_vertical"
