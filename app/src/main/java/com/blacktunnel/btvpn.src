@@ -99,9 +99,12 @@ public class BtVpnService extends VpnService {
         createChannel();
         startForeground(NF_ID, buildNotif());
 
+        // Limpieza preventiva: evita que una instancia previa del proxy bloquee el puerto.
+        stopProxyFully();
+
         if (BtProxy.start(this) < 0) {
             log("BtProxy no pudo iniciar (primer intento), limpiando y reintentando");
-            try { BtProxy.stop(); } catch (Throwable ignored) {}
+            stopProxyFully();
             SystemClock.sleep(250);
             if (BtProxy.start(this) < 0) {
                 log("BtProxy no pudo iniciar");
@@ -126,7 +129,7 @@ public class BtVpnService extends VpnService {
         tunPfd = builder.establish();
         if (tunPfd == null) {
             log("No se pudo establecer TUN");
-            if (proxyStarted.compareAndSet(true, false)) BtProxy.stop();
+            if (proxyStarted.compareAndSet(true, false)) stopProxyFully();
             stopForeground(STOP_FOREGROUND_REMOVE);
             return;
         }
@@ -135,7 +138,7 @@ public class BtVpnService extends VpnService {
             hevTunFd = ParcelFileDescriptor.dup(tunPfd.getFileDescriptor()).detachFd();
         } catch (Exception e) {
             log("Error duplicando descriptor TUN: " + e.getClass().getSimpleName());
-            if (proxyStarted.compareAndSet(true, false)) BtProxy.stop();
+            if (proxyStarted.compareAndSet(true, false)) stopProxyFully();
             try { tunPfd.close(); } catch (Exception ignored) {}
             tunPfd = null;
             stopForeground(STOP_FOREGROUND_REMOVE);
@@ -227,6 +230,12 @@ public class BtVpnService extends VpnService {
              + (value & 0xFF);
     }
 
+    private void stopProxyFully() {
+        try { BtProxy.stop(); } catch (Throwable ignored) {}
+        SystemClock.sleep(120);
+        try { BtProxy.stop(); } catch (Throwable ignored) {}
+    }
+
     private void stopAll() {
         if (!stopping.compareAndSet(false, true)) return;
         try {
@@ -241,7 +250,7 @@ public class BtVpnService extends VpnService {
             if (ht != null) try { ht.join(2000); } catch (InterruptedException ignored) {}
 
             if (proxyStarted.compareAndSet(true, false)) {
-                try { BtProxy.stop(); } catch (Throwable ignored) {}
+                stopProxyFully();
             }
 
             ParcelFileDescriptor pfd = tunPfd; tunPfd = null;
