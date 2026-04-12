@@ -610,7 +610,7 @@ static int socks5_server_handshake(int cfd, uint8_t *dest_out, int *dest_len_out
                        dest[5] == 0 && dest[6] == 0);
     }
     if (cmd == 0x03 || unspecified) {
-        if (VERBOSE_LOGS) push_logf("I", "socks5 cmd=0x%02x control/local flow (no mux open)", cmd);
+        push_logf("I", "socks5 cmd=0x%02x handled locally (no mux open)", cmd);
         return 1;
     }
 
@@ -652,6 +652,11 @@ static void *conn_thread(void *arg) {
         return NULL;
     }
     if (hs == 1) {
+        uint8_t sink[512];
+        while (g_running) {
+            ssize_t n = recv(cfd, sink, sizeof(sink), 0);
+            if (n <= 0) break;
+        }
         pthread_mutex_lock(&g_streams_mu);
         stream_free(s);
         pthread_mutex_unlock(&g_streams_mu);
