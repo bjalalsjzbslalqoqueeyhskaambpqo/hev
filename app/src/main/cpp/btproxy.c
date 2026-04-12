@@ -54,6 +54,9 @@
 #define POOL_SIZE 256
 #define BUF_SIZE  FRAME_MAX
 
+JNIEXPORT void JNICALL
+Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz);
+
 typedef struct buf_node {
     struct buf_node *next;
     uint8_t          data[BUF_SIZE];
@@ -122,6 +125,9 @@ static pthread_t      g_main_thread;
 static JavaVM        *g_jvm        = NULL;
 static jobject        g_vpn_svc    = NULL;
 static pthread_mutex_t g_state_mu  = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_start_mu  = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_start_cv  = PTHREAD_COND_INITIALIZER;
+static int             g_start_state = 0;
 static pthread_mutex_t g_logs_mu   = PTHREAD_MUTEX_INITIALIZER;
 static char            g_logs_buf[32768];
 static size_t          g_logs_len   = 0;
@@ -548,7 +554,13 @@ static void *main_thread(void *arg) {
 
     
     int tfd = open_tunnel_socket();
-    if (tfd < 0) return NULL;
+    if (tfd < 0) {
+        pthread_mutex_lock(&g_start_mu);
+        g_start_state = -1;
+        pthread_cond_broadcast(&g_start_cv);
+        pthread_mutex_unlock(&g_start_mu);
+        return NULL;
+    }
     g_tun_fd = tfd;
 
     
@@ -563,11 +575,19 @@ static void *main_thread(void *arg) {
     la.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (bind(rfd, (struct sockaddr *)&la, sizeof(la)) < 0 ||
         listen(rfd, RELAY_BACKLOG) < 0) {
+        pthread_mutex_lock(&g_start_mu);
+        g_start_state = -1;
+        pthread_cond_broadcast(&g_start_cv);
+        pthread_mutex_unlock(&g_start_mu);
         close(rfd); close(tfd); return NULL;
     }
     g_relay_fd = rfd;
     g_started = 1;
     push_logf("I", "relay listening on 127.0.0.1:%d", socks5_port);
+    pthread_mutex_lock(&g_start_mu);
+    g_start_state = 1;
+    pthread_cond_broadcast(&g_start_cv);
+    pthread_mutex_unlock(&g_start_mu);
 
     
     pthread_t trd, tka, twd;
@@ -636,6 +656,9 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     g_started = 0;
     atomic_store(&g_next_sid, 1);
     pthread_mutex_unlock(&g_state_mu);
+    pthread_mutex_lock(&g_start_mu);
+    g_start_state = 0;
+    pthread_mutex_unlock(&g_start_mu);
 
     if (pthread_create(&g_main_thread, NULL, main_thread, (void *)(intptr_t)socks5_port) != 0) {
         pthread_mutex_lock(&g_state_mu);
@@ -647,6 +670,20 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
         return -1;
     }
     pthread_detach(g_main_thread);
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += 10;
+    pthread_mutex_lock(&g_start_mu);
+    while (g_start_state == 0) {
+        if (pthread_cond_timedwait(&g_start_cv, &g_start_mu, &ts) != 0) break;
+    }
+    int start_state = g_start_state;
+    pthread_mutex_unlock(&g_start_mu);
+    if (start_state != 1) {
+        push_logf("E", "nativeStart timeout/failure waiting relay ready");
+        Java_com_blacktunnel_BtProxy_nativeStop(env, clazz);
+        return -1;
+    }
     push_logf("I", "nativeStart ok");
     return 0;
 }
@@ -668,6 +705,12 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     pthread_mutex_unlock(&g_state_mu);
     if (g_relay_fd >= 0) { close(g_relay_fd); g_relay_fd = -1; }
     if (g_tun_fd   >= 0) { close(g_tun_fd);   g_tun_fd   = -1; }
+    pthread_mutex_lock(&g_start_mu);
+    if (g_start_state == 0) {
+        g_start_state = -1;
+        pthread_cond_broadcast(&g_start_cv);
+    }
+    pthread_mutex_unlock(&g_start_mu);
     for (int i = 0; i < 10 && g_started; i++) usleep(10000);
 
     pthread_mutex_lock(&g_streams_mu);

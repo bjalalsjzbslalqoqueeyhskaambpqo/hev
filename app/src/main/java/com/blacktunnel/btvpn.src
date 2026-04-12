@@ -126,6 +126,13 @@ public class BtVpnService extends VpnService {
             final int localHevTunFd = hevTunFd;
 
             File hevCfg = writeHevCfg();
+            int relayFd = BtProxy.start(this);
+            if (relayFd < 0) {
+                log("proxy start failed");
+                return;
+            }
+            log("proxy listo, iniciando hev");
+
             hevThread = new Thread(() -> {
                 int code = HevBridge.start(hevCfg.getAbsolutePath(), localHevTunFd);
                 log("hev exit=" + code);
@@ -138,21 +145,43 @@ public class BtVpnService extends VpnService {
             hevThread.start();
             log("hev iniciado");
 
-            int relayFd = BtProxy.start(this);
-            if (relayFd < 0) {
-                log("proxy start failed");
-                return;
-            }
-            log("proxy iniciado");
-
             startProxyLogPump();
             SERVICE_RUNNING = true;
             log("started");
         } finally {
             synchronized (stateLock) {
                 starting = false;
-                if (!SERVICE_RUNNING) stopForeground(STOP_FOREGROUND_REMOVE);
+                if (!SERVICE_RUNNING) {
+                    cleanupFailedStart();
+                    stopForeground(STOP_FOREGROUND_REMOVE);
+                }
             }
+        }
+    }
+
+    private void cleanupFailedStart() {
+        proxyLogPumpRunning = false;
+        try {
+            BtProxy.stop();
+        } catch (Throwable ignored) {
+        }
+        try {
+            HevBridge.stop();
+        } catch (Throwable ignored) {
+        }
+        if (tunPfd != null) {
+            try {
+                tunPfd.close();
+            } catch (Exception ignored) {
+            }
+            tunPfd = null;
+        }
+        if (hevTunFd >= 0) {
+            try {
+                ParcelFileDescriptor.adoptFd(hevTunFd).close();
+            } catch (Exception ignored) {
+            }
+            hevTunFd = -1;
         }
     }
 
