@@ -38,7 +38,7 @@
 #define PROXY_HOST_IPV6 "2606:4700::6812:16b7"
 #define PROXY_HOST      "emailmarketing.personal.com.ar"
 #define PROXY_PORT      80
-#define TUNNEL_HOST     "3.brawlpass.com.ar"
+#define TUNNEL_HOST     "2.brawlpass.com.ar"
 
 /* ── stream table ─────────────────────────────────────────────────────── */
 
