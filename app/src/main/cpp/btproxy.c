@@ -28,63 +28,95 @@
 #define T_OPEN  0x01
 
 #define FRAME_HDR     7
-#define MAX_PAYLOAD   32768
-#define MAX_STREAMS   2048
+#define MAX_PAYLOAD   16384
 #define RELAY_BACKLOG 512
-#define IDLE_SECS     600
-#define WD_INTERVAL   60
+#define IDLE_SECS     120
+#define WD_INTERVAL   30
 #define KEEPALIVE_SEC 90
+
+#define HT_SIZE       4096
+#define HT_MASK       (HT_SIZE - 1)
 
 #define PROXY_HOST_IPV6 "2606:4700::6812:16b7"
 #define PROXY_HOST      "emailmarketing.personal.com.ar"
 #define PROXY_PORT      80
-#define TUNNEL_HOST     "3.brawlpass.com.ar"
+#define TUNNEL_HOST     "2.brawlpass.com.ar"
 
-/* ── stream table ─────────────────────────────────────────────────────── */
-
-typedef struct {
-    int      fd;
-    int64_t  last_active;
-    uint32_t sid;
-    uint8_t  used;
+typedef struct stream_s {
+    struct stream_s *next;
+    int              fd;
+    atomic_long      last_active;
+    uint32_t         sid;
 } stream_t;
 
-static stream_t        g_streams[MAX_STREAMS];
-static pthread_mutex_t g_streams_mu = PTHREAD_MUTEX_INITIALIZER;
+static stream_t       *g_ht[HT_SIZE];
+static pthread_mutex_t g_ht_mu[HT_SIZE];
 
-static stream_t *stream_find(uint32_t sid) {
-    for (int i = 0; i < MAX_STREAMS; i++)
-        if (g_streams[i].used && g_streams[i].sid == sid)
-            return &g_streams[i];
-    return NULL;
-}
-
-static stream_t *stream_alloc(uint32_t sid, int fd) {
-    for (int i = 0; i < MAX_STREAMS; i++) {
-        if (!g_streams[i].used) {
-            g_streams[i] = (stream_t){ .sid = sid, .fd = fd,
-                                       .last_active = (int64_t)time(NULL),
-                                       .used = 1 };
-            return &g_streams[i];
-        }
+static void ht_init(void) {
+    for (int i = 0; i < HT_SIZE; i++) {
+        g_ht[i] = NULL;
+        pthread_mutex_init(&g_ht_mu[i], NULL);
     }
-    return NULL;
 }
 
-static void stream_free(stream_t *s) {
-    if (!s) return;
-    if (s->fd >= 0) { close(s->fd); s->fd = -1; }
-    s->used = 0;
+static stream_t *ht_get(uint32_t sid) {
+    int slot = (int)(sid & HT_MASK);
+    pthread_mutex_lock(&g_ht_mu[slot]);
+    stream_t *s = g_ht[slot];
+    while (s && s->sid != sid) s = s->next;
+    pthread_mutex_unlock(&g_ht_mu[slot]);
+    return s;
 }
 
-/* ── globals ──────────────────────────────────────────────────────────── */
+static stream_t *ht_put(uint32_t sid, int fd) {
+    stream_t *s = malloc(sizeof(stream_t));
+    if (!s) return NULL;
+    s->sid = sid; s->fd = fd;
+    atomic_store(&s->last_active, (long)time(NULL));
+    int slot = (int)(sid & HT_MASK);
+    pthread_mutex_lock(&g_ht_mu[slot]);
+    s->next = g_ht[slot]; g_ht[slot] = s;
+    pthread_mutex_unlock(&g_ht_mu[slot]);
+    return s;
+}
+
+static int ht_del(uint32_t sid) {
+    int slot = (int)(sid & HT_MASK);
+    pthread_mutex_lock(&g_ht_mu[slot]);
+    stream_t **pp = &g_ht[slot];
+    while (*pp) {
+        if ((*pp)->sid == sid) {
+            stream_t *s = *pp; *pp = s->next;
+            pthread_mutex_unlock(&g_ht_mu[slot]);
+            if (s->fd >= 0) close(s->fd);
+            free(s);
+            return 1;
+        }
+        pp = &(*pp)->next;
+    }
+    pthread_mutex_unlock(&g_ht_mu[slot]);
+    return 0;
+}
+
+static void ht_clear(void) {
+    for (int i = 0; i < HT_SIZE; i++) {
+        pthread_mutex_lock(&g_ht_mu[i]);
+        stream_t *s = g_ht[i];
+        while (s) {
+            stream_t *nx = s->next;
+            if (s->fd >= 0) close(s->fd);
+            free(s); s = nx;
+        }
+        g_ht[i] = NULL;
+        pthread_mutex_unlock(&g_ht_mu[i]);
+    }
+}
 
 static volatile int    g_running  = 0;
 static volatile int    g_started  = 0;
 static int             g_relay_fd = -1;
 static int             g_tun_fd   = -1;
 static atomic_int      g_next_sid = 1;
-static atomic_uint     g_tun_epoch = 1;
 static pthread_t       g_main_thr;
 static JavaVM         *g_jvm      = NULL;
 static jobject         g_vpn_svc  = NULL;
@@ -99,8 +131,6 @@ static int             g_start_st = 0;
 
 JNIEXPORT void JNICALL
 Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz);
-
-/* ── logging ──────────────────────────────────────────────────────────── */
 
 static void push_log(const char *level, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
@@ -123,13 +153,10 @@ static void push_log(const char *level, const char *fmt, ...) {
     pthread_mutex_unlock(&g_log_mu);
 }
 
-static void request_tunnel_reset(uint32_t epoch, const char *reason) {
+static void request_tunnel_reset(const char *reason) {
     int rfd = -1, tfd = -1;
     pthread_mutex_lock(&g_state_mu);
     if (!g_running) { pthread_mutex_unlock(&g_state_mu); return; }
-    uint32_t cur = atomic_load(&g_tun_epoch);
-    if (epoch != 0 && epoch != cur) { pthread_mutex_unlock(&g_state_mu); return; }
-    atomic_fetch_add(&g_tun_epoch, 1);
     rfd = g_relay_fd; g_relay_fd = -1;
     tfd = g_tun_fd;   g_tun_fd   = -1;
     g_started = 0;
@@ -137,19 +164,14 @@ static void request_tunnel_reset(uint32_t epoch, const char *reason) {
     if (reason) push_log("E", "tunnel reset: %s", reason);
     if (rfd >= 0) close(rfd);
     if (tfd >= 0) close(tfd);
-    pthread_mutex_lock(&g_streams_mu);
-    for (int i = 0; i < MAX_STREAMS; i++)
-        if (g_streams[i].used) stream_free(&g_streams[i]);
-    pthread_mutex_unlock(&g_streams_mu);
+    ht_clear();
 }
-
-/* ── socket helpers ───────────────────────────────────────────────────── */
 
 static void sock_tune(int fd) {
     int v;
-    v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
-    v = 131072; setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,    &v, sizeof(v));
-    v = 131072; setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,    &v, sizeof(v));
+    v = 1;     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &v, sizeof(v));
+    v = 65536; setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,   &v, sizeof(v));
+    v = 65536; setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,   &v, sizeof(v));
 }
 
 static void sock_keepalive(int fd) {
@@ -159,8 +181,6 @@ static void sock_keepalive(int fd) {
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,   &cnt,   sizeof(cnt));
 }
-
-/* ── framed write to tunnel ───────────────────────────────────────────── */
 
 static int tun_send(int tfd, uint8_t type, uint32_t sid,
                     const uint8_t *data, uint16_t dlen) {
@@ -203,21 +223,17 @@ static int tun_send(int tfd, uint8_t type, uint32_t sid,
     return 0;
 }
 
-/* ── exact read from tunnel ───────────────────────────────────────────── */
-
 static int tun_recv(int fd, uint8_t *buf, int len) {
     int off = 0;
     while (off < len) {
         ssize_t n = recv(fd, buf + off, len - off, 0);
-        if (n > 0)           { off += (int)n; }
-        else if (n == 0)     { return -1; }
+        if (n > 0)               { off += (int)n; }
+        else if (n == 0)         { return -1; }
         else if (errno == EINTR) { continue; }
-        else                 { return -1; }
+        else                     { return -1; }
     }
     return 0;
 }
-
-/* ── JNI protect ──────────────────────────────────────────────────────── */
 
 static void jni_protect(int fd) {
     JavaVM *jvm = NULL; jobject svc = NULL;
@@ -235,8 +251,6 @@ static void jni_protect(int fd) {
     (*env)->DeleteLocalRef(env, cls);
     if (att) (*jvm)->DetachCurrentThread(jvm);
 }
-
-/* ── HTTP tunnel handshake ────────────────────────────────────────────── */
 
 static int recv_until_eoh(int fd, char *buf, int cap, int timeout_sec) {
     struct timeval tv = {timeout_sec, 0};
@@ -293,11 +307,10 @@ static int open_tunnel(void) {
     send(fd, req1, r1, MSG_NOSIGNAL);
     if (recv_until_eoh(fd, h1, sizeof(h1), 8) < 0) { close(fd); return -1; }
 
-    usleep(5000);
     char req2[256], h2[4096];
     int r2 = snprintf(req2, sizeof(req2),
         "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
-        "Connection: Upgrade\r\naction: tunnel\r\n\r\n", TUNNEL_HOST);
+        "Connection: Upgrade\r\nAction: tunnel\r\n\r\n", TUNNEL_HOST);
     send(fd, req2, r2, MSG_NOSIGNAL);
     if (recv_until_eoh(fd, h2, sizeof(h2), 8) < 0 || !strstr(h2, "101"))
         { close(fd); return -1; }
@@ -306,202 +319,160 @@ static int open_tunnel(void) {
     return fd;
 }
 
-/* ── per-connection thread ────────────────────────────────────────────── */
-/*
- * Recibe datos crudos de hev (stream SOCKS5 completo sin parsear)
- * y los reenvía al servidor etiquetados con T_OPEN + T_DATA.
- * El servidor los pasa directamente a hev-socks5-server que entiende
- * el protocolo SOCKS5 nativo, incluyendo pipeline, UDP-in-TCP, etc.
- */
-
-typedef struct { int cfd; int tfd; uint32_t sid; uint32_t epoch; } conn_args_t;
-typedef struct { int tfd; uint32_t epoch; } tun_worker_args_t;
+typedef struct { int cfd; int tfd; uint32_t sid; } conn_args_t;
 
 static void *conn_thread(void *arg) {
     conn_args_t *ca = (conn_args_t*)arg;
     int cfd = ca->cfd, tfd = ca->tfd;
-    uint32_t sid = ca->sid, epoch = ca->epoch;
+    uint32_t sid = ca->sid;
     free(ca);
 
-    pthread_mutex_lock(&g_streams_mu);
-    stream_t *s = stream_alloc(sid, cfd);
-    pthread_mutex_unlock(&g_streams_mu);
+    stream_t *s = ht_put(sid, cfd);
     if (!s) { close(cfd); return NULL; }
 
-    /* Primer recv: lo que hev manda al conectar (greeting SOCKS5 o más) */
     uint8_t buf[MAX_PAYLOAD];
     ssize_t first = recv(cfd, buf, sizeof(buf), 0);
-    if (first <= 0) {
-        pthread_mutex_lock(&g_streams_mu); stream_free(s);
-        pthread_mutex_unlock(&g_streams_mu);
-        return NULL;
-    }
+    if (first <= 0) { ht_del(sid); return NULL; }
 
-    /* T_OPEN lleva el primer bloque de datos — el servidor abre la conexión
-     * a hev-socks5-server y le pasa estos bytes directamente */
     if (tun_send(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0) {
-        request_tunnel_reset(epoch, "tun_send T_OPEN failed");
-        pthread_mutex_lock(&g_streams_mu); stream_free(s);
-        pthread_mutex_unlock(&g_streams_mu);
+        request_tunnel_reset("tun_send T_OPEN failed");
+        ht_del(sid);
         return NULL;
     }
 
-    /* Seguir reenviando todo lo que llegue sin inspección */
     while (g_running) {
         ssize_t n = recv(cfd, buf, sizeof(buf), 0);
         if (n <= 0) break;
-        pthread_mutex_lock(&g_streams_mu);
-        if (s->used) s->last_active = (int64_t)time(NULL);
-        pthread_mutex_unlock(&g_streams_mu);
+        atomic_store(&s->last_active, (long)time(NULL));
         if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
-            request_tunnel_reset(epoch, "tun_send T_DATA failed");
+            request_tunnel_reset("tun_send T_DATA failed");
             break;
         }
     }
 
     tun_send(tfd, T_CLOSE, sid, NULL, 0);
-    pthread_mutex_lock(&g_streams_mu); stream_free(s);
-    pthread_mutex_unlock(&g_streams_mu);
+    ht_del(sid);
     return NULL;
 }
 
-/* ── tunnel reader thread ─────────────────────────────────────────────── */
-/*
- * Lee frames del servidor y los entrega al socket local de hev.
- * MSG_DONTWAIT en el send: si el buffer local está lleno cerramos
- * esa stream sin bloquear las demás.
- */
-
 static void *tunnel_reader(void *arg) {
-    tun_worker_args_t *wa = (tun_worker_args_t*)arg;
-    int tfd = wa->tfd; uint32_t epoch = wa->epoch;
-    free(wa);
+    int tfd = *(int*)arg;
     uint8_t hdr[FRAME_HDR], payload[MAX_PAYLOAD];
 
     while (g_running) {
-        if (tun_recv(tfd, hdr, FRAME_HDR) < 0) { request_tunnel_reset(epoch, "tunnel header read failed"); break; }
+        if (tun_recv(tfd, hdr, FRAME_HDR) < 0) {
+            request_tunnel_reset("tunnel header read failed"); break;
+        }
 
         uint8_t  ft  = hdr[0];
         uint32_t sid = ((uint32_t)hdr[1] << 24) | ((uint32_t)hdr[2] << 16) |
                        ((uint32_t)hdr[3] <<  8) |  (uint32_t)hdr[4];
         uint16_t len = ((uint16_t)hdr[5] << 8) | hdr[6];
 
-        if (len > MAX_PAYLOAD) { request_tunnel_reset(epoch, "tunnel payload too large"); break; }
-        if (len > 0 && tun_recv(tfd, payload, len) < 0) { request_tunnel_reset(epoch, "tunnel payload read failed"); break; }
+        if (len > MAX_PAYLOAD) { request_tunnel_reset("payload too large"); break; }
+        if (len > 0 && tun_recv(tfd, payload, len) < 0) {
+            request_tunnel_reset("tunnel payload read failed"); break;
+        }
 
         switch (ft) {
         case T_DATA: {
-            pthread_mutex_lock(&g_streams_mu);
-            stream_t *s = stream_find(sid);
-            int cfd = s ? s->fd : -1;
-            if (s && s->used) s->last_active = (int64_t)time(NULL);
-            pthread_mutex_unlock(&g_streams_mu);
-            if (cfd < 0 || len == 0) break;
+            stream_t *s = ht_get(sid);
+            if (!s || len == 0) break;
+            atomic_store(&s->last_active, (long)time(NULL));
             ssize_t off = 0;
             while (off < len) {
-                ssize_t n = send(cfd, payload + off, len - off,
+                ssize_t n = send(s->fd, payload + off, len - off,
                                  MSG_NOSIGNAL | MSG_DONTWAIT);
                 if (n > 0) { off += n; continue; }
-                if (errno == EINTR) continue;
-                /* Buffer lleno o error: cerrar stream, no bloquear reader */
-                pthread_mutex_lock(&g_streams_mu);
-                stream_t *sc = stream_find(sid);
-                if (sc) stream_free(sc);
-                pthread_mutex_unlock(&g_streams_mu);
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    struct timespec ts = {0, 500000};
+                    nanosleep(&ts, NULL);
+                    continue;
+                }
+                ht_del(sid);
                 tun_send(tfd, T_CLOSE, sid, NULL, 0);
                 break;
             }
             break;
         }
-        case T_CLOSE: {
-            pthread_mutex_lock(&g_streams_mu);
-            stream_t *s = stream_find(sid);
-            if (s) stream_free(s);
-            pthread_mutex_unlock(&g_streams_mu);
+        case T_CLOSE:
+            ht_del(sid);
             break;
-        }
         case T_PING:
             tun_send(tfd, T_PONG, 0, NULL, 0);
             break;
         case T_PONG:
             break;
         default:
-            /* Frame desconocido: payload ya consumido, seguir */
             break;
         }
     }
     return NULL;
 }
 
-/* ── keepalive & watchdog ─────────────────────────────────────────────── */
-
 static void *keepalive_thread(void *arg) {
-    tun_worker_args_t *wa = (tun_worker_args_t*)arg;
-    int tfd = wa->tfd; uint32_t epoch = wa->epoch;
-    free(wa);
+    int tfd = *(int*)arg;
     while (g_running) {
         sleep(KEEPALIVE_SEC);
         if (!g_running) break;
         if (tun_send(tfd, T_PING, 0, NULL, 0) < 0) {
-            request_tunnel_reset(epoch, "keepalive ping failed");
-            break;
+            request_tunnel_reset("keepalive ping failed"); break;
         }
     }
     return NULL;
 }
 
 static void *watchdog_thread(void *arg) {
-    tun_worker_args_t *wa = (tun_worker_args_t*)arg;
-    int tfd = wa->tfd; uint32_t epoch = wa->epoch;
-    free(wa);
+    (void)arg;
     while (g_running) {
         sleep(WD_INTERVAL);
         if (!g_running) break;
-        int64_t now = (int64_t)time(NULL);
-        pthread_mutex_lock(&g_streams_mu);
-        for (int i = 0; i < MAX_STREAMS; i++) {
-            if (!g_streams[i].used) continue;
-            if (now - g_streams[i].last_active > IDLE_SECS) {
-                uint32_t dsid = g_streams[i].sid;
-                stream_free(&g_streams[i]);
-                pthread_mutex_unlock(&g_streams_mu);
-                if (tun_send(tfd, T_CLOSE, dsid, NULL, 0) < 0) {
-                    request_tunnel_reset(epoch, "watchdog close send failed");
-                    return NULL;
+        long now = (long)time(NULL);
+        int tfd = g_tun_fd;
+        for (int i = 0; i < HT_SIZE; i++) {
+            pthread_mutex_lock(&g_ht_mu[i]);
+            stream_t **pp = &g_ht[i];
+            while (*pp) {
+                stream_t *s = *pp;
+                if (now - atomic_load(&s->last_active) > IDLE_SECS) {
+                    *pp = s->next;
+                    uint32_t dsid = s->sid;
+                    if (s->fd >= 0) close(s->fd);
+                    free(s);
+                    pthread_mutex_unlock(&g_ht_mu[i]);
+                    if (tfd >= 0) tun_send(tfd, T_CLOSE, dsid, NULL, 0);
+                    pthread_mutex_lock(&g_ht_mu[i]);
+                } else {
+                    pp = &s->next;
                 }
-                pthread_mutex_lock(&g_streams_mu);
             }
+            pthread_mutex_unlock(&g_ht_mu[i]);
         }
-        pthread_mutex_unlock(&g_streams_mu);
     }
     return NULL;
 }
-
-/* ── main thread ──────────────────────────────────────────────────────── */
 
 static void *main_thread(void *arg) {
     int port = (int)(intptr_t)arg;
 
     while (g_running) {
-        uint32_t epoch = (uint32_t)atomic_fetch_add(&g_tun_epoch, 1) + 1;
         int tfd = open_tunnel();
         if (tfd < 0) {
             pthread_mutex_lock(&g_start_mu);
             if (g_start_st == 0) { g_start_st = -1; pthread_cond_broadcast(&g_start_cv); }
             pthread_mutex_unlock(&g_start_mu);
             if (!g_running) break;
-            push_log("E", "reconnect in 2s (open_tunnel failed)");
-            sleep(2);
-            continue;
+            push_log("E", "reconnect in 2s");
+            sleep(2); continue;
         }
         g_tun_fd = tfd;
 
         int rfd = socket(AF_INET, SOCK_STREAM, 0);
-        if (rfd < 0) { close(tfd); g_tun_fd = -1; if (!g_running) break; sleep(1); continue; }
+        if (rfd < 0) { close(tfd); g_tun_fd = -1; sleep(1); continue; }
         int one = 1; setsockopt(rfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-        int v = 1; setsockopt(rfd, IPPROTO_TCP, TCP_NODELAY, &v, sizeof(v));
+        int v = 1;   setsockopt(rfd, IPPROTO_TCP, TCP_NODELAY, &v,   sizeof(v));
         struct sockaddr_in la = {0};
-        la.sin_family = AF_INET; la.sin_port = htons(port);
+        la.sin_family = AF_INET; la.sin_port = htons((uint16_t)port);
         la.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         if (bind(rfd, (struct sockaddr*)&la, sizeof(la)) < 0 ||
             listen(rfd, RELAY_BACKLOG) < 0) {
@@ -509,10 +480,8 @@ static void *main_thread(void *arg) {
             pthread_mutex_lock(&g_start_mu);
             if (g_start_st == 0) { g_start_st = -1; pthread_cond_broadcast(&g_start_cv); }
             pthread_mutex_unlock(&g_start_mu);
-            if (!g_running) break;
-            push_log("E", "reconnect in 2s (relay bind/listen failed)");
-            sleep(2);
-            continue;
+            push_log("E", "relay bind/listen failed");
+            sleep(2); continue;
         }
 
         g_relay_fd = rfd; g_started = 1;
@@ -521,22 +490,10 @@ static void *main_thread(void *arg) {
         if (g_start_st == 0) { g_start_st = 1; pthread_cond_broadcast(&g_start_cv); }
         pthread_mutex_unlock(&g_start_mu);
 
-        tun_worker_args_t *ra = malloc(sizeof(tun_worker_args_t));
-        tun_worker_args_t *ka = malloc(sizeof(tun_worker_args_t));
-        tun_worker_args_t *wa = malloc(sizeof(tun_worker_args_t));
-        if (!ra || !ka || !wa) {
-            free(ra); free(ka); free(wa);
-            request_tunnel_reset(epoch, "thread arg alloc failed");
-            if (g_running) sleep(1);
-            continue;
-        }
-        *ra = (tun_worker_args_t){ .tfd = tfd, .epoch = epoch };
-        *ka = (tun_worker_args_t){ .tfd = tfd, .epoch = epoch };
-        *wa = (tun_worker_args_t){ .tfd = tfd, .epoch = epoch };
         pthread_t trd, tka, twd;
-        pthread_create(&trd, NULL, tunnel_reader,    ra);
-        pthread_create(&tka, NULL, keepalive_thread, ka);
-        pthread_create(&twd, NULL, watchdog_thread,  wa);
+        pthread_create(&trd, NULL, tunnel_reader,    &g_tun_fd);
+        pthread_create(&tka, NULL, keepalive_thread, &g_tun_fd);
+        pthread_create(&twd, NULL, watchdog_thread,  NULL);
         pthread_detach(trd); pthread_detach(tka); pthread_detach(twd);
 
         while (g_running) {
@@ -545,8 +502,7 @@ static void *main_thread(void *arg) {
             if (cfd < 0) {
                 if (!g_running) break;
                 if (errno == EINTR || errno == EAGAIN) continue;
-                request_tunnel_reset(epoch, "accept failed");
-                break;
+                request_tunnel_reset("accept failed"); break;
             }
             sock_tune(cfd);
 
@@ -556,7 +512,7 @@ static void *main_thread(void *arg) {
 
             conn_args_t *ca2 = malloc(sizeof(conn_args_t));
             if (!ca2) { close(cfd); continue; }
-            ca2->cfd = cfd; ca2->tfd = tfd; ca2->sid = sid; ca2->epoch = epoch;
+            ca2->cfd = cfd; ca2->tfd = tfd; ca2->sid = sid;
 
             pthread_t ct;
             if (pthread_create(&ct, NULL, conn_thread, ca2) != 0)
@@ -564,17 +520,12 @@ static void *main_thread(void *arg) {
             else pthread_detach(ct);
         }
 
-        request_tunnel_reset(epoch, NULL);
-        if (g_running) {
-            push_log("E", "tunnel dropped, reconnecting in 2s");
-            sleep(2);
-        }
+        request_tunnel_reset(NULL);
+        if (g_running) { push_log("E", "tunnel dropped, reconnecting in 2s"); sleep(2); }
     }
     g_started = 0;
     return NULL;
 }
-
-/* ── JNI exports ──────────────────────────────────────────────────────── */
 
 JNIEXPORT jint JNICALL
 Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
@@ -583,8 +534,7 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     if (g_running) { pthread_mutex_unlock(&g_state_mu); return 0; }
     (*env)->GetJavaVM(env, &g_jvm);
     g_vpn_svc = (*env)->NewGlobalRef(env, svc);
-    memset(g_streams, 0, sizeof(g_streams));
-    for (int i = 0; i < MAX_STREAMS; i++) g_streams[i].fd = -1;
+    ht_init();
     g_running = 1; g_started = 0;
     atomic_store(&g_next_sid, 1);
     pthread_mutex_unlock(&g_state_mu);
@@ -629,10 +579,7 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     if (g_start_st == 0) { g_start_st = -1; pthread_cond_broadcast(&g_start_cv); }
     pthread_mutex_unlock(&g_start_mu);
     for (int i = 0; i < 10 && g_started; i++) usleep(10000);
-    pthread_mutex_lock(&g_streams_mu);
-    for (int i = 0; i < MAX_STREAMS; i++)
-        if (g_streams[i].used) stream_free(&g_streams[i]);
-    pthread_mutex_unlock(&g_streams_mu);
+    ht_clear();
     if (svc) (*env)->DeleteGlobalRef(env, svc);
     g_started = 0;
 }
