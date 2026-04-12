@@ -353,17 +353,10 @@ static void *conn_thread(void *arg) {
     uint32_t     sid = ca->sid;
     free(ca);
 
-    pthread_mutex_lock(&g_streams_mu);
-    stream_t *s = stream_alloc(sid, cfd);
-    pthread_mutex_unlock(&g_streams_mu);
-    if (!s) { close(cfd); return NULL; }
-
     uint8_t dest[260]; int dest_len = 0;
     int hs = socks5_server_handshake(cfd, dest, &dest_len);
     if (hs < 0) {
-        pthread_mutex_lock(&g_streams_mu);
-        stream_free(s);
-        pthread_mutex_unlock(&g_streams_mu);
+        close(cfd);
         return NULL;
     }
     if (hs == 1) {
@@ -372,11 +365,21 @@ static void *conn_thread(void *arg) {
             ssize_t n = recv(cfd, sink, sizeof(sink), 0);
             if (n <= 0) break;
         }
-        pthread_mutex_lock(&g_streams_mu);
-        stream_free(s);
-        pthread_mutex_unlock(&g_streams_mu);
+        close(cfd);
         return NULL;
     }
+
+    uint8_t buf[MAX_PAYLOAD];
+    ssize_t first = recv(cfd, buf, sizeof(buf), 0);
+    if (first <= 0) {
+        close(cfd);
+        return NULL;
+    }
+
+    pthread_mutex_lock(&g_streams_mu);
+    stream_t *s = stream_alloc(sid, cfd);
+    pthread_mutex_unlock(&g_streams_mu);
+    if (!s) { close(cfd); return NULL; }
 
     if (tun_send_frame(tfd, T_OPEN, sid, dest, (uint16_t)dest_len) < 0) {
         pthread_mutex_lock(&g_streams_mu);
@@ -385,7 +388,13 @@ static void *conn_thread(void *arg) {
         return NULL;
     }
 
-    uint8_t buf[MAX_PAYLOAD];
+    if (tun_send_frame(tfd, T_DATA, sid, buf, (uint16_t)first) < 0) {
+        pthread_mutex_lock(&g_streams_mu);
+        stream_free(s);
+        pthread_mutex_unlock(&g_streams_mu);
+        return NULL;
+    }
+
     while (g_running) {
         ssize_t n = recv(cfd, buf, sizeof(buf), 0);
         if (n <= 0) break;
@@ -401,6 +410,7 @@ static void *conn_thread(void *arg) {
     pthread_mutex_unlock(&g_streams_mu);
     return NULL;
 }
+
 
 static void *tunnel_reader(void *arg) {
     int tfd = *(int *)arg;
