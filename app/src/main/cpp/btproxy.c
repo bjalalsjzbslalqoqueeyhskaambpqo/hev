@@ -520,14 +520,9 @@ static int open_tunnel_socket(void) {
         eoh += 4;
         size_t extra = (size_t)(h2 + h2_len - eoh);
         if (extra > 0) {
-            if (extra > sizeof(g_tun_prefetch)) extra = sizeof(g_tun_prefetch);
-            memcpy(g_tun_prefetch, eoh, extra);
-            g_tun_prefetch_len = extra;
+            push_logf("I", "discarding %zu post-handshake bytes before mux", extra);
         }
     }
-
-    strip_prefetch_http_junk();
-    sync_prefetch_to_frame();
 
     push_logf("I", "tunnel handshake OK");
     return fd;
