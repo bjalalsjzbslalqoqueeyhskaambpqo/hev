@@ -121,6 +121,7 @@ static atomic_int     g_next_sid   = 1;
 static pthread_t      g_main_thread;
 static JavaVM        *g_jvm        = NULL;
 static jobject        g_vpn_svc    = NULL;
+static pthread_mutex_t g_state_mu  = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_logs_mu   = PTHREAD_MUTEX_INITIALIZER;
 static char            g_logs_buf[32768];
 static size_t          g_logs_len   = 0;
@@ -247,18 +248,24 @@ static int read_full(int fd, uint8_t *buf, int len) {
 
 
 static void jni_protect(int fd) {
-    if (!g_jvm || !g_vpn_svc) return;
+    JavaVM *jvm = NULL;
+    jobject svc = NULL;
+    pthread_mutex_lock(&g_state_mu);
+    jvm = g_jvm;
+    svc = g_vpn_svc;
+    pthread_mutex_unlock(&g_state_mu);
+    if (!jvm || !svc) return;
     JNIEnv *env = NULL;
     int attached = 0;
-    if ((*g_jvm)->GetEnv(g_jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {
-        (*g_jvm)->AttachCurrentThread(g_jvm, &env, NULL);
+    if ((*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {
+        (*jvm)->AttachCurrentThread(jvm, &env, NULL);
         attached = 1;
     }
-    jclass   cls = (*env)->GetObjectClass(env, g_vpn_svc);
+    jclass   cls = (*env)->GetObjectClass(env, svc);
     jmethodID m  = (*env)->GetMethodID(env, cls, "protect", "(I)Z");
-    if (m) (*env)->CallBooleanMethod(env, g_vpn_svc, m, fd);
+    if (m) (*env)->CallBooleanMethod(env, svc, m, fd);
     (*env)->DeleteLocalRef(env, cls);
-    if (attached) (*g_jvm)->DetachCurrentThread(g_jvm);
+    if (attached) (*jvm)->DetachCurrentThread(jvm);
 }
 
 
@@ -607,7 +614,9 @@ static void *main_thread(void *arg) {
 JNIEXPORT jint JNICALL
 Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
                                           jint socks5_port, jobject vpn_svc) {
+    pthread_mutex_lock(&g_state_mu);
     if (g_running) {
+        pthread_mutex_unlock(&g_state_mu);
         push_logf("I", "nativeStart ignored: already running");
         return 0;
     }
@@ -626,10 +635,14 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     g_running = 1;
     g_started = 0;
     atomic_store(&g_next_sid, 1);
+    pthread_mutex_unlock(&g_state_mu);
 
     if (pthread_create(&g_main_thread, NULL, main_thread, (void *)(intptr_t)socks5_port) != 0) {
+        pthread_mutex_lock(&g_state_mu);
         g_running = 0;
         if (g_vpn_svc) { (*env)->DeleteGlobalRef(env, g_vpn_svc); g_vpn_svc = NULL; }
+        g_jvm = NULL;
+        pthread_mutex_unlock(&g_state_mu);
         push_logf("E", "failed to create main thread");
         return -1;
     }
@@ -642,7 +655,17 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
 JNIEXPORT void JNICALL
 Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     push_logf("I", "nativeStop begin");
+    pthread_mutex_lock(&g_state_mu);
+    if (!g_running) {
+        pthread_mutex_unlock(&g_state_mu);
+        push_logf("I", "nativeStop ignored: already stopped");
+        return;
+    }
     g_running = 0;
+    jobject svc = g_vpn_svc;
+    g_vpn_svc = NULL;
+    g_jvm = NULL;
+    pthread_mutex_unlock(&g_state_mu);
     if (g_relay_fd >= 0) { close(g_relay_fd); g_relay_fd = -1; }
     if (g_tun_fd   >= 0) { close(g_tun_fd);   g_tun_fd   = -1; }
     for (int i = 0; i < 10 && g_started; i++) usleep(10000);
@@ -656,8 +679,7 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     }
     pthread_mutex_unlock(&g_streams_mu);
 
-    if (g_vpn_svc) { (*env)->DeleteGlobalRef(env, g_vpn_svc); g_vpn_svc = NULL; }
-    g_jvm = NULL;
+    if (svc) { (*env)->DeleteGlobalRef(env, svc); }
     g_started = 0;
     push_logf("I", "nativeStop done");
 }
