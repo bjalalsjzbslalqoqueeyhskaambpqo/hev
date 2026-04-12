@@ -604,16 +604,6 @@ static int socks5_server_handshake(int cfd, uint8_t *dest_out, int *dest_len_out
     uint8_t ok[10] = {0x05,0x00,0x00,0x01,0,0,0,0,0,0};
     if (send(cfd, ok, sizeof(ok), MSG_NOSIGNAL) != sizeof(ok)) return -1;
 
-    int unspecified = 0;
-    if (at == 0x01 && dlen >= 7) {
-        unspecified = (dest[1] == 0 && dest[2] == 0 && dest[3] == 0 && dest[4] == 0 &&
-                       dest[5] == 0 && dest[6] == 0);
-    }
-    if (cmd == 0x03 || unspecified) {
-        push_logf("I", "socks5 cmd=0x%02x handled locally (no mux open)", cmd);
-        return 1;
-    }
-
     memcpy(dest_out, dest, dlen);
     *dest_len_out = dlen;
     push_logf("I", "socks5 cmd=0x%02x atyp=0x%02x dlen=%d", cmd, at, dlen);
@@ -644,23 +634,6 @@ static void *conn_thread(void *arg) {
         return NULL;
     }
 
-    if (hs == 1) {
-        uint8_t sink[512];
-        while (g_running) {
-            ssize_t n = recv(cfd, sink, sizeof(sink), 0);
-            if (n <= 0) break;
-        }
-        close(cfd);
-        return NULL;
-    }
-
-    uint8_t buf[MAX_PAYLOAD];
-    ssize_t first = recv(cfd, buf, sizeof(buf), 0);
-    if (first <= 0) {
-        close(cfd);
-        return NULL;
-    }
-
     pthread_mutex_lock(&g_streams_mu);
     stream_t *s = stream_alloc(sid, cfd);
     pthread_mutex_unlock(&g_streams_mu);
@@ -676,13 +649,7 @@ static void *conn_thread(void *arg) {
         return NULL;
     }
 
-    if (tun_send_frame(tfd, T_DATA, sid, buf, (uint16_t)first) < 0) {
-        pthread_mutex_lock(&g_streams_mu);
-        stream_free(s);
-        pthread_mutex_unlock(&g_streams_mu);
-        return NULL;
-    }
-
+    uint8_t buf[MAX_PAYLOAD];
     while (g_running) {
         ssize_t n = recv(cfd, buf, sizeof(buf), 0);
         if (n <= 0) break;
