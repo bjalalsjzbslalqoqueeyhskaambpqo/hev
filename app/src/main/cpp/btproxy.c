@@ -321,17 +321,22 @@ static int read_full(int fd, uint8_t *buf, int len) {
     return 0;
 }
 
-static int recv_http_headers(int fd, char *out, size_t out_cap, int timeout_sec) {
+static int recv_http_headers(int fd, char *out, size_t out_cap, int timeout_sec, const char *stage) {
     size_t used = 0;
+    int saw_eoh = 0;
     struct timeval tv = {timeout_sec, 0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     while (used + 1 < out_cap) {
         ssize_t n = recv(fd, out + used, out_cap - 1 - used, 0);
-        if (n <= 0) break;
+        if (n <= 0) {
+            if (n < 0) push_logf("E", "http %s recv error: %s", stage, strerror(errno));
+            else push_logf("E", "http %s recv EOF", stage);
+            break;
+        }
         used += (size_t)n;
         out[used] = '\0';
-        if (strstr(out, "\r\n\r\n")) break;
+        if (strstr(out, "\r\n\r\n")) { saw_eoh = 1; break; }
     }
 
     tv.tv_sec = 0;
@@ -339,6 +344,10 @@ static int recv_http_headers(int fd, char *out, size_t out_cap, int timeout_sec)
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     if (used == 0) return -1;
+    if (!saw_eoh) {
+        push_logf("E", "http %s incomplete headers bytes=%zu cap=%zu", stage, used, out_cap);
+        return -1;
+    }
     log_http_block("http recv", out, used);
     return (int)used;
 }
@@ -446,13 +455,15 @@ static int open_tunnel_socket(void) {
     }
 
     char h1[2048], h2[4096];
-    int h1_len = recv_http_headers(fd, h1, sizeof(h1), 8);
+    push_logf("I", "handshake step1: send req1");
+    int h1_len = recv_http_headers(fd, h1, sizeof(h1), 8, "resp1");
     if (h1_len < 0) {
         push_logf("E", "handshake failed reading request-1 response");
         close(fd);
         return -1;
     }
 
+    push_logf("I", "handshake step2: pause then send req2");
     usleep(5000);
 
     char req2[256];
@@ -467,7 +478,7 @@ static int open_tunnel_socket(void) {
         else if (errno != EINTR) { close(fd); return -1; }
     }
 
-    int h2_len = recv_http_headers(fd, h2, sizeof(h2), 8);
+    int h2_len = recv_http_headers(fd, h2, sizeof(h2), 8, "resp2");
     (void)h1_len;
     if (h2_len < 0) {
         push_logf("E", "handshake failed reading tunnel response");
