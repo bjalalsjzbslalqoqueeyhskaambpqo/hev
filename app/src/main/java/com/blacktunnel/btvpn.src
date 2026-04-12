@@ -23,7 +23,7 @@ public class BtVpnService extends VpnService {
     public static final String ACTION_STOP = "com.blacktunnel.STOP";
     private static final String CH_ID = "bt_vpn";
     private static final int NF_ID = 33;
-    private static final int LOG_MAX = 500;
+    private static final int LOG_MAX = 4000;
 
     private static final ArrayDeque<String> LOGS = new ArrayDeque<>();
     private static final SimpleDateFormat TS = new SimpleDateFormat("HH:mm:ss", Locale.US);
