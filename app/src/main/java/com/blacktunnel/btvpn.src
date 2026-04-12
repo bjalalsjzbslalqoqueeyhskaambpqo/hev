@@ -332,11 +332,6 @@ final class BtProxy {
         nativeStop();
     }
 
-    static String drainLogs() {
-        return nativeDrainLogs();
-    }
-
     private static native int nativeStart(int socks5Port, VpnService svc);
     private static native void nativeStop();
-    private static native String nativeDrainLogs();
 }
