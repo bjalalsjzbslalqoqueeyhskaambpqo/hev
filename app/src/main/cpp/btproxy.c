@@ -292,6 +292,29 @@ static int recv_until_eoh(int fd, char *buf, int cap, int timeout_sec) {
     return ok ? used : -1;
 }
 
+static int parse_http_status(const char *headers) {
+    if (!headers) return -1;
+    int code = -1;
+    if (sscanf(headers, "HTTP/%*d.%*d %d", &code) == 1) return code;
+    return -1;
+}
+
+static int extract_header_value(const char *headers, const char *key, char *out, int out_cap) {
+    if (!headers || !key || !out || out_cap <= 1) return 0;
+    const char *p = strstr(headers, key);
+    if (!p) return 0;
+    p += strlen(key);
+    while (*p == ' ' || *p == ':') p++;
+    const char *e = strstr(p, "\r\n");
+    if (!e) return 0;
+    int n = (int)(e - p);
+    if (n <= 0) return 0;
+    if (n >= out_cap) n = out_cap - 1;
+    memcpy(out, p, n);
+    out[n] = '\0';
+    return 1;
+}
+
 static int open_tunnel(void) {
     int fd = -1;
 
@@ -339,15 +362,59 @@ static int open_tunnel(void) {
         "Connection: Upgrade\r\nAction: tunnel\r\nX-Internal-ID: %s\r\n\r\n",
         TUNNEL_HOST, g_internal_id[0] ? g_internal_id : "unknown");
     send(fd, req2, r2, MSG_NOSIGNAL);
-    if (recv_until_eoh(fd, h2, sizeof(h2), 8) < 0 || !strstr(h2, "101")) {
-        if (strstr(h2, "not_registered") || strstr(h2, "no_registrado") || strstr(h2, "usuario_no_registrado")) {
+    int h2_len = recv_until_eoh(fd, h2, sizeof(h2), 8);
+    int status = parse_http_status(h2);
+    if (h2_len < 0 || status != 101) {
+        char body[1024] = {0};
+        const char *eoh = strstr(h2, "\r\n\r\n");
+        int body_len = 0;
+        if (eoh) {
+            const char *body_start = eoh + 4;
+            body_len = h2_len - (int)(body_start - h2);
+            if (body_len > 0) {
+                int c = body_len >= (int)sizeof(body) ? (int)sizeof(body) - 1 : body_len;
+                memcpy(body, body_start, c);
+                body[c] = '\0';
+            }
+        }
+        char clbuf[32] = {0};
+        if (extract_header_value(h2, "Content-Length", clbuf, sizeof(clbuf))) {
+            int want = atoi(clbuf);
+            if (want > body_len && want < (int)sizeof(body)) {
+                int remaining = want - body_len;
+                if (remaining > 0) {
+                    ssize_t rn = recv(fd, body + body_len, remaining, 0);
+                    if (rn > 0) {
+                        body_len += (int)rn;
+                        body[body_len] = '\0';
+                    }
+                }
+            }
+        }
+
+        if (strstr(h2, "not_registered") || strstr(body, "not_registered")
+            || strstr(h2, "no_registrado") || strstr(body, "no_registrado")
+            || strstr(h2, "usuario_no_registrado") || strstr(body, "usuario_no_registrado")) {
             push_log("E", "usuario no registrado");
-        } else if (strstr(h2, "expired") || strstr(h2, "expirado") || strstr(h2, "usuario_expirado")) {
+        } else if (strstr(h2, "expired") || strstr(body, "expired")
+                   || strstr(h2, "expirado") || strstr(body, "expirado")
+                   || strstr(h2, "usuario_expirado") || strstr(body, "usuario_expirado")) {
             push_log("E", "usuario expirado");
+        } else if (status == 403) {
+            push_log("E", "error de autenticación 403");
         } else {
             push_log("E", "error de autenticación");
         }
         close(fd); return -1;
+    }
+
+    char user_name[128] = {0};
+    char user_days[32] = {0};
+    if (extract_header_value(h2, "X-User-Name", user_name, sizeof(user_name))) {
+        push_log("I", "user_name=%s", user_name);
+    }
+    if (extract_header_value(h2, "X-User-Days", user_days, sizeof(user_days))) {
+        push_log("I", "user_days=%s", user_days);
     }
 
     push_log("I", "tunnel handshake OK");

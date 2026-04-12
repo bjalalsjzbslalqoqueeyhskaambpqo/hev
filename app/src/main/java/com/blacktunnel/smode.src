@@ -32,6 +32,8 @@ public class SimpleModeActivity extends ComponentActivity {
     private TextView statusBadgeView;
     private TextView statusDetailsView;
     private TextView deviceIdView;
+    private TextView userValueView;
+    private TextView daysValueView;
     private String internalId = "";
     private UiState uiState = UiState.DISCONNECTED;
     private long connectingSinceMs = 0L;
@@ -72,6 +74,8 @@ public class SimpleModeActivity extends ComponentActivity {
         statusBadgeView = findViewById(R.id.txtStatusBadge);
         statusDetailsView = findViewById(R.id.txtStatusDetails);
         deviceIdView = findViewById(R.id.txtDeviceId);
+        userValueView = findViewById(R.id.txtUser);
+        daysValueView = findViewById(R.id.txtDays);
         internalId = BtProxy.getOrCreateInternalId(this);
         if (deviceIdView != null) deviceIdView.setText("ID: " + internalId);
 
@@ -173,6 +177,7 @@ public class SimpleModeActivity extends ComponentActivity {
             logView.setText(lastLines(logs, 3));
         }
         updateServerAuthStatus(logs);
+        updateUserMetadata(logs);
     }
 
     private String lastLines(String logs, int maxLines) {
@@ -201,6 +206,30 @@ public class SimpleModeActivity extends ComponentActivity {
             setUiState(UiState.DISCONNECTED);
             statusDetailsView.setText("✖ Usuario expirado\nRenueva tu acceso con soporte\nID: " + internalId);
             statusDetailsView.setTextColor(Color.parseColor("#FFB020"));
+        }
+    }
+
+
+    private void updateUserMetadata(String logs) {
+        if (logs == null) return;
+        String[] lines = logs.split("\n");
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i].trim();
+            int idxUser = line.indexOf("user_name=");
+            if (idxUser >= 0 && userValueView != null) {
+                String value = line.substring(idxUser + "user_name=".length()).trim();
+                if (!value.isEmpty()) userValueView.setText(value);
+                break;
+            }
+        }
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i].trim();
+            int idxDays = line.indexOf("user_days=");
+            if (idxDays >= 0 && daysValueView != null) {
+                String value = line.substring(idxDays + "user_days=".length()).trim();
+                if (!value.isEmpty()) daysValueView.setText(value + " días");
+                break;
+            }
         }
     }
 
