@@ -85,7 +85,7 @@ public class BtVpnService extends VpnService {
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : null;
         if (ACTION_STOP.equals(action)) {
-            executor.execute(() -> { stopAll(); stopSelf(); });
+            executor.execute(() -> stopAll(false));
             return START_NOT_STICKY;
         }
         executor.execute(this::startAll);
@@ -99,21 +99,22 @@ public class BtVpnService extends VpnService {
         createChannel();
         startForeground(NF_ID, buildNotif());
 
-        // Limpieza preventiva: evita que una instancia previa del proxy bloquee el puerto.
-        stopProxyFully();
-
-        if (BtProxy.start(this) < 0) {
-            log("BtProxy no pudo iniciar (primer intento), limpiando y reintentando");
-            stopProxyFully();
-            SystemClock.sleep(250);
+        if (!proxyStarted.get()) {
             if (BtProxy.start(this) < 0) {
-                log("BtProxy no pudo iniciar");
-                stopForeground(STOP_FOREGROUND_REMOVE);
-                return;
+                log("BtProxy no pudo iniciar (primer intento), limpiando y reintentando");
+                stopProxyFully();
+                SystemClock.sleep(250);
+                if (BtProxy.start(this) < 0) {
+                    log("BtProxy no pudo iniciar");
+                    stopForeground(STOP_FOREGROUND_REMOVE);
+                    return;
+                }
+                log("BtProxy inició tras reintento");
             }
-            log("BtProxy inició tras reintento");
+            proxyStarted.set(true);
+        } else {
+            log("Reutilizando BtProxy activo");
         }
-        proxyStarted.set(true);
 
         Builder builder = new Builder()
                 .setSession("bt-hev")
@@ -236,10 +237,10 @@ public class BtVpnService extends VpnService {
         try { BtProxy.stop(); } catch (Throwable ignored) {}
     }
 
-    private void stopAll() {
+    private void stopAll(boolean stopProxy) {
         if (!stopping.compareAndSet(false, true)) return;
         try {
-            if (!running.get() && tunPfd == null && hevTunFd < 0 && hevThread == null && !proxyStarted.get()) return;
+            if (!running.get() && tunPfd == null && hevTunFd < 0 && hevThread == null && (!stopProxy || !proxyStarted.get())) return;
             running.set(false);
             runningState.set(false);
             log("Deteniendo servicio VPN");
@@ -249,7 +250,7 @@ public class BtVpnService extends VpnService {
             Thread ht = hevThread; hevThread = null;
             if (ht != null) try { ht.join(2000); } catch (InterruptedException ignored) {}
 
-            if (proxyStarted.compareAndSet(true, false)) {
+            if (stopProxy && proxyStarted.compareAndSet(true, false)) {
                 stopProxyFully();
             }
 
@@ -303,7 +304,7 @@ public class BtVpnService extends VpnService {
 
     @Override
     public void onDestroy() {
-        stopAll();
+        stopAll(true);
         executor.shutdown();
         super.onDestroy();
     }
@@ -314,4 +315,28 @@ public class BtVpnService extends VpnService {
         static native int start(String path, int fd);
         static native void stop();
     }
+}
+
+final class BtProxy {
+    static final int SOCKS5_PORT = 10809;
+
+    static { System.loadLibrary("btproxy"); }
+
+    private BtProxy() {}
+
+    static int start(VpnService svc) {
+        return nativeStart(SOCKS5_PORT, svc);
+    }
+
+    static void stop() {
+        nativeStop();
+    }
+
+    static String drainLogs() {
+        return nativeDrainLogs();
+    }
+
+    private static native int nativeStart(int socks5Port, VpnService svc);
+    private static native void nativeStop();
+    private static native String nativeDrainLogs();
 }
