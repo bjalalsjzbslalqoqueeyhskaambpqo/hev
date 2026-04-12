@@ -96,6 +96,9 @@ static pthread_mutex_t g_start_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_start_cv = PTHREAD_COND_INITIALIZER;
 static int             g_start_st = 0;
 
+JNIEXPORT void JNICALL
+Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz);
+
 /* ── logging ──────────────────────────────────────────────────────────── */
 
 static void push_log(const char *level, const char *fmt, ...) {
