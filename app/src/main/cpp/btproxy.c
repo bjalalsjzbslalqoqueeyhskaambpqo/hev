@@ -509,7 +509,7 @@ static int socks5_server_handshake(int cfd, uint8_t *dest_out, int *dest_len_out
     uint8_t cmd = buf[1];
     uint8_t rsv = buf[2];
     if (rsv != 0x00) return -1;
-    if (cmd != 0x01) {
+    if (cmd != 0x01 && cmd != 0x03) {
         uint8_t rep_fail[10] = {0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
         send(cfd, rep_fail, sizeof(rep_fail), MSG_NOSIGNAL);
         push_logf("I", "socks5 unsupported cmd=0x%02x", cmd);
@@ -536,9 +536,13 @@ static int socks5_server_handshake(int cfd, uint8_t *dest_out, int *dest_len_out
     if (read_full(cfd, dest + dlen, 2) < 0) return -1;
     dlen += 2;
 
-    
     uint8_t ok[10] = {0x05,0x00,0x00,0x01,0,0,0,0,0,0};
     if (send(cfd, ok, sizeof(ok), MSG_NOSIGNAL) != sizeof(ok)) return -1;
+
+    if (cmd == 0x03) {
+        push_logf("I", "socks5 UDP ASSOCIATE atyp=0x%02x (local-only, no mux stream)", at);
+        return 1;
+    }
 
     memcpy(dest_out, dest, dlen);
     *dest_len_out = dlen;
@@ -569,8 +573,16 @@ static void *conn_thread(void *arg) {
 
     
     uint8_t dest[260]; int dest_len = 0;
-    if (socks5_server_handshake(cfd, dest, &dest_len) < 0) {
+    int hs = socks5_server_handshake(cfd, dest, &dest_len);
+    if (hs < 0) {
         push_logf("I", "stream sid=%u socks5 handshake failed", sid);
+        pthread_mutex_lock(&g_streams_mu);
+        stream_free(s);
+        pthread_mutex_unlock(&g_streams_mu);
+        return NULL;
+    }
+    if (hs == 1) {
+        push_logf("I", "stream sid=%u udp-associate completed without tunnel open", sid);
         pthread_mutex_lock(&g_streams_mu);
         stream_free(s);
         pthread_mutex_unlock(&g_streams_mu);
