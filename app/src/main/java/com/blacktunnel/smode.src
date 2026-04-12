@@ -46,6 +46,7 @@ public class SimpleModeActivity extends ComponentActivity {
         );
 
         connectBtn = findViewById(R.id.btnConnect);
+        connectBtn.setActivated(connected);
         copyLogsBtn = findViewById(R.id.btnCopyLogs);
         logView = findViewById(R.id.txtLogs);
         syncStateFromService();
@@ -98,6 +99,7 @@ public class SimpleModeActivity extends ComponentActivity {
         else startService(i);
         connected = true;
         connectBtn.setText(R.string.disconnect);
+        connectBtn.setActivated(true);
         BtVpnService.log("Solicitando conexión...");
     }
 
@@ -107,6 +109,7 @@ public class SimpleModeActivity extends ComponentActivity {
         startService(i);
         connected = false;
         connectBtn.setText(R.string.connect);
+        connectBtn.setActivated(false);
         BtVpnService.log("Solicitando desconexión...");
     }
 
@@ -114,6 +117,9 @@ public class SimpleModeActivity extends ComponentActivity {
         boolean running = BtVpnService.isRunningState();
         if (connected == running) return;
         connected = running;
-        if (connectBtn != null) connectBtn.setText(connected ? R.string.disconnect : R.string.connect);
+        if (connectBtn != null) {
+            connectBtn.setText(connected ? R.string.disconnect : R.string.connect);
+            connectBtn.setActivated(connected);
+        }
     }
 }
