@@ -1,14 +1,16 @@
 package com.blacktunnel;
 
-import android.content.Intent;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.Intent;
+import android.graphics.Color;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -18,17 +20,29 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 
 public class SimpleModeActivity extends ComponentActivity {
+    private enum UiState {
+        DISCONNECTED,
+        CONNECTING,
+        CONNECTED
+    }
+
     private Button connectBtn;
     private Button copyLogsBtn;
     private TextView logView;
-    private boolean connected = false;
+    private TextView statusBadgeView;
+    private TextView statusDetailsView;
+    private UiState uiState = UiState.DISCONNECTED;
+    private long connectingSinceMs = 0L;
+    private boolean lastRunning = false;
+
     private final Handler handler = new Handler(Looper.getMainLooper());
     private ActivityResultLauncher<Intent> vpnPermissionLauncher;
 
     private final Runnable logTicker = new Runnable() {
-        @Override public void run() {
-            if (logView != null) logView.setText(BtVpnService.dumpLogs());
+        @Override
+        public void run() {
             syncStateFromService();
+            refreshLogViews();
             handler.postDelayed(this, 800);
         }
     };
@@ -37,22 +51,33 @@ public class SimpleModeActivity extends ComponentActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_simple_mode);
+
         vpnPermissionLauncher = registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(),
                 result -> {
-                    if (result.getResultCode() == RESULT_OK) startVpn();
-                    else BtVpnService.log("Permiso VPN denegado");
+                    if (result.getResultCode() == RESULT_OK) {
+                        startVpn();
+                    } else {
+                        BtVpnService.log("Permiso VPN denegado");
+                        setUiState(UiState.DISCONNECTED);
+                    }
                 }
         );
 
         connectBtn = findViewById(R.id.btnConnect);
-        connectBtn.setActivated(connected);
         copyLogsBtn = findViewById(R.id.btnCopyLogs);
         logView = findViewById(R.id.txtLogs);
-        syncStateFromService();
+        statusBadgeView = findViewById(R.id.txtStatusBadge);
+        statusDetailsView = findViewById(R.id.txtStatusDetails);
+
+        boolean running = BtVpnService.isRunningState();
+        setUiState(running ? UiState.CONNECTED : UiState.DISCONNECTED);
+        lastRunning = running;
+        refreshLogViews();
 
         connectBtn.setOnClickListener(v -> {
-            if (connected) {
+            if (uiState == UiState.CONNECTING) return;
+            if (uiState == UiState.CONNECTED) {
                 stopVpn();
             } else {
                 startVpnWithPermission();
@@ -61,7 +86,7 @@ public class SimpleModeActivity extends ComponentActivity {
         copyLogsBtn.setOnClickListener(v -> copyLogsToClipboard());
 
         handler.post(logTicker);
-        BtVpnService.log("Simple mode listo");
+        BtVpnService.log("Sistema listo");
     }
 
     private void copyLogsToClipboard() {
@@ -84,6 +109,9 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void startVpnWithPermission() {
+        setUiState(UiState.CONNECTING);
+        BtVpnService.log("Conectando...");
+
         Intent prepare = VpnService.prepare(this);
         if (prepare != null) {
             vpnPermissionLauncher.launch(prepare);
@@ -95,31 +123,113 @@ public class SimpleModeActivity extends ComponentActivity {
     private void startVpn() {
         Intent i = new Intent(this, BtVpnService.class);
         i.setAction(BtVpnService.ACTION_START);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
-        else startService(i);
-        connected = true;
-        connectBtn.setText(R.string.disconnect);
-        connectBtn.setActivated(true);
-        BtVpnService.log("Solicitando conexión...");
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(i);
+        } else {
+            startService(i);
+        }
+
+        connectingSinceMs = SystemClock.elapsedRealtime();
+        setUiState(UiState.CONNECTING);
+        BtVpnService.log("Iniciando servicio VPN...");
     }
 
     private void stopVpn() {
         Intent i = new Intent(this, BtVpnService.class);
         i.setAction(BtVpnService.ACTION_STOP);
         startService(i);
-        connected = false;
-        connectBtn.setText(R.string.connect);
-        connectBtn.setActivated(false);
-        BtVpnService.log("Solicitando desconexión...");
+
+        setUiState(UiState.DISCONNECTED);
+        BtVpnService.log("Desconectando...");
     }
 
     private void syncStateFromService() {
         boolean running = BtVpnService.isRunningState();
-        if (connected == running) return;
-        connected = running;
+
+        if (running && !lastRunning) {
+            BtVpnService.log("Conexión establecida ✔");
+            setUiState(UiState.CONNECTED);
+        } else if (!running && lastRunning) {
+            BtVpnService.log("Servicio VPN detenido");
+            setUiState(UiState.DISCONNECTED);
+        } else if (!running && uiState == UiState.CONNECTING) {
+            long elapsed = SystemClock.elapsedRealtime() - connectingSinceMs;
+            if (elapsed > 9000) {
+                BtVpnService.log("No se pudo establecer conexión");
+                setUiState(UiState.DISCONNECTED);
+            }
+        }
+
+        lastRunning = running;
+    }
+
+    private void refreshLogViews() {
+        String logs = BtVpnService.dumpLogs();
+        if (logView != null) {
+            logView.setText(lastLines(logs, 3));
+        }
+    }
+
+    private String lastLines(String logs, int maxLines) {
+        if (logs == null || logs.isEmpty()) return "[--:--:--] Sistema listo";
+        String[] lines = logs.split("\\n");
+        StringBuilder out = new StringBuilder();
+        int start = Math.max(0, lines.length - maxLines);
+        for (int i = start; i < lines.length; i++) {
+            String line = lines[i].trim();
+            if (line.isEmpty()) continue;
+            if (out.length() > 0) out.append('\n');
+            out.append(line);
+        }
+        return out.length() == 0 ? "[--:--:--] Sistema listo" : out.toString();
+    }
+
+    private void setUiState(UiState newState) {
+        uiState = newState;
+
         if (connectBtn != null) {
-            connectBtn.setText(connected ? R.string.disconnect : R.string.connect);
-            connectBtn.setActivated(connected);
+            if (newState == UiState.CONNECTING) {
+                connectBtn.setEnabled(false);
+                connectBtn.setActivated(false);
+                connectBtn.setText("Conectando...");
+                connectBtn.setTextColor(Color.parseColor("#101820"));
+            } else if (newState == UiState.CONNECTED) {
+                connectBtn.setEnabled(true);
+                connectBtn.setActivated(true);
+                connectBtn.setText(R.string.disconnect);
+                connectBtn.setTextColor(Color.WHITE);
+            } else {
+                connectBtn.setEnabled(true);
+                connectBtn.setActivated(false);
+                connectBtn.setText(R.string.connect);
+                connectBtn.setTextColor(Color.parseColor("#101820"));
+            }
+        }
+
+        if (statusBadgeView != null) {
+            if (newState == UiState.CONNECTING) {
+                statusBadgeView.setText("● CONECTANDO");
+                statusBadgeView.setTextColor(Color.parseColor("#FFB020"));
+            } else if (newState == UiState.CONNECTED) {
+                statusBadgeView.setText("● CONECTADO");
+                statusBadgeView.setTextColor(Color.parseColor("#00FFA3"));
+            } else {
+                statusBadgeView.setText("● DESCONECTADO");
+                statusBadgeView.setTextColor(Color.parseColor("#FF4D4D"));
+            }
+        }
+
+        if (statusDetailsView != null) {
+            if (newState == UiState.CONNECTING) {
+                statusDetailsView.setText("… Estableciendo conexión\nServidor: Detectando\nProtocolo: Preparando");
+                statusDetailsView.setTextColor(Color.parseColor("#E6EDF3"));
+            } else if (newState == UiState.CONNECTED) {
+                statusDetailsView.setText("✔ Conectado correctamente\nServidor: Argentina\nProtocolo: UDP");
+                statusDetailsView.setTextColor(Color.parseColor("#E6EDF3"));
+            } else {
+                statusDetailsView.setText("✖ VPN desconectada\nServidor: --\nProtocolo: --");
+                statusDetailsView.setTextColor(Color.parseColor("#8B9BB0"));
+            }
         }
     }
 }

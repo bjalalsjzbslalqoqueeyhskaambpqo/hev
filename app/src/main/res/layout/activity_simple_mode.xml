@@ -2,205 +2,270 @@
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@android:color/transparent">
+    android:background="#0B0F14">
 
     <ImageView
         android:id="@+id/imgBackground"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        android:alpha="0.32"
         android:scaleType="centerCrop"
         android:src="@drawable/strike_bg" />
 
-    <LinearLayout
+    <ScrollView
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:orientation="vertical"
-        android:padding="16dp">
+        android:fillViewport="true">
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="56dp"
-            android:background="@drawable/strike_panel_surface"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp">
-
-            <ImageView
-                android:id="@+id/imgLogo"
-                android:layout_width="24dp"
-                android:layout_height="24dp"
-                android:src="@drawable/ic_xtunnel_logo" />
-
-            <TextView
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:layout_weight="1"
-                android:text="@string/app_brand"
-                android:textColor="#E6EDF3"
-                android:textSize="20sp"
-                android:textStyle="bold" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_marginTop="12dp"
-            android:layout_weight="1"
-            android:background="@drawable/strike_panel_body"
+            android:layout_height="wrap_content"
             android:orientation="vertical"
             android:padding="16dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
+                android:background="@drawable/strike_panel_surface"
+                android:orientation="vertical"
+                android:padding="16dp">
 
-                <TextView
-                    android:layout_width="0dp"
+                <LinearLayout
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Ping"
-                    android:textColor="#9FB3C8"
-                    android:textSize="14sp" />
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <ImageView
+                        android:id="@+id/imgLogo"
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:src="@drawable/ic_xtunnel_logo" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
+                        android:fontFamily="monospace"
+                        android:text="STRIKE VPN"
+                        android:textColor="#E6EDF3"
+                        android:textSize="22sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
 
                 <TextView
-                    android:id="@+id/txtPing"
+                    android:id="@+id/txtStatusBadge"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="— ms"
-                    android:textColor="#E6EDF3"
-                    android:textSize="16sp"
+                    android:layout_marginTop="12dp"
+                    android:fontFamily="monospace"
+                    android:text="● DESCONECTADO"
+                    android:textColor="#FF4D4D"
+                    android:textSize="18sp"
                     android:textStyle="bold" />
             </LinearLayout>
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
+                android:layout_marginTop="12dp"
+                android:background="@drawable/strike_panel_body"
+                android:orientation="horizontal"
+                android:padding="16dp">
 
-                <TextView
+                <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="Usuario"
-                    android:textColor="#9FB3C8"
-                    android:textSize="14sp" />
+                    android:orientation="vertical">
 
-                <TextView
-                    android:id="@+id/txtUser"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Gamer123"
-                    android:textColor="#E6EDF3"
-                    android:textSize="16sp"
-                    android:textStyle="bold" />
-            </LinearLayout>
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="PING"
+                        android:textColor="#8B9BB0"
+                        android:textSize="12sp" />
 
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
+                    <TextView
+                        android:id="@+id/txtPing"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:fontFamily="monospace"
+                        android:text="24 ms"
+                        android:textColor="#00E0FF"
+                        android:textSize="24sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
 
-                <TextView
+                <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="Días"
-                    android:textColor="#9FB3C8"
-                    android:textSize="14sp" />
+                    android:orientation="vertical">
 
-                <TextView
-                    android:id="@+id/txtDays"
-                    android:layout_width="wrap_content"
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="USUARIO"
+                        android:textColor="#8B9BB0"
+                        android:textSize="12sp" />
+
+                    <TextView
+                        android:id="@+id/txtUser"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:fontFamily="monospace"
+                        android:text="Gamer123"
+                        android:textColor="#E6EDF3"
+                        android:textSize="20sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:text="15"
-                    android:textColor="#E6EDF3"
-                    android:textSize="16sp"
-                    android:textStyle="bold" />
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="TIEMPO"
+                        android:textColor="#8B9BB0"
+                        android:textSize="12sp" />
+
+                    <TextView
+                        android:id="@+id/txtDays"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:fontFamily="monospace"
+                        android:text="15 días"
+                        android:textColor="#00FFA3"
+                        android:textSize="24sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
             </LinearLayout>
 
             <Button
                 android:id="@+id/btnConnect"
                 android:layout_width="match_parent"
-                android:layout_height="48dp"
+                android:layout_height="56dp"
                 android:layout_marginTop="16dp"
                 android:background="@drawable/strike_btn_primary"
                 android:elevation="6dp"
-                android:letterSpacing="0.05"
-                android:text="@string/connect"
-                android:textAllCaps="false"
-                android:textColor="#E6EDF3"
+                android:fontFamily="monospace"
+                android:letterSpacing="0.04"
+                android:text="Conectar"
+                android:textAllCaps="true"
+                android:textColor="#101820"
                 android:textSize="16sp"
                 android:textStyle="bold" />
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:text="@string/log_label"
-                android:textColor="#9FB3C8"
-                android:textSize="14sp" />
-
-            <ScrollView
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:background="@drawable/strike_panel_surface"
-                android:padding="10dp">
+                android:layout_marginTop="16dp"
+                android:background="@drawable/strike_panel_body"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:text="Estado"
+                    android:textColor="#8B9BB0"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/txtStatusDetails"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:background="@drawable/strike_chip_left"
+                    android:fontFamily="monospace"
+                    android:padding="12dp"
+                    android:text="✔ Conectado correctamente&#10;Servidor: Argentina&#10;Protocolo: UDP"
+                    android:textColor="#E6EDF3"
+                    android:textSize="14sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/strike_panel_body"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:text="Log"
+                    android:textColor="#8B9BB0"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
 
                 <TextView
                     android:id="@+id/txtLogs"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:background="@drawable/strike_chip_left"
                     android:ellipsize="end"
                     android:fontFamily="monospace"
-                    android:maxLines="3"
-                    android:text="Conectando...&#10;Autenticando usuario&#10;Conectado ✔"
+                    android:maxLines="4"
+                    android:padding="12dp"
+                    android:text="[16:36:33] Sistema listo&#10;[16:36:37] Conectando...&#10;[16:36:38] Conexión establecida ✔"
                     android:textColor="#E6EDF3"
-                    android:textSize="12sp" />
-            </ScrollView>
-        </LinearLayout>
+                    android:textSize="13sp" />
+            </LinearLayout>
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="44dp"
-            android:layout_marginTop="16dp"
-            android:background="@drawable/strike_panel_surface"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:padding="4dp">
-
-            <TextView
-                android:id="@+id/txtDeviceId"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="7"
-                android:background="@drawable/strike_chip_left"
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:layout_marginTop="16dp"
+                android:layout_marginBottom="12dp"
+                android:background="@drawable/strike_panel_surface"
                 android:gravity="center_vertical"
-                android:paddingHorizontal="10dp"
-                android:text="@string/device_id_default"
-                android:textColor="#E6EDF3"
-                android:textSize="14sp" />
+                android:orientation="horizontal"
+                android:padding="4dp">
 
-            <Button
-                android:id="@+id/btnCopyLogs"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_marginStart="8dp"
-                android:layout_weight="3"
-                android:background="@drawable/strike_btn_secondary"
-                android:text="@string/copy"
-                android:textAllCaps="false"
-                android:textColor="#FFFFFF"
-                android:textSize="14sp"
-                android:textStyle="bold" />
+                <TextView
+                    android:id="@+id/txtDeviceId"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="7"
+                    android:background="@drawable/strike_chip_left"
+                    android:fontFamily="monospace"
+                    android:gravity="center_vertical"
+                    android:paddingHorizontal="10dp"
+                    android:text="@string/device_id_default"
+                    android:textColor="#E6EDF3"
+                    android:textSize="14sp" />
+
+                <Button
+                    android:id="@+id/btnCopyLogs"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="3"
+                    android:background="@drawable/strike_btn_secondary"
+                    android:fontFamily="monospace"
+                    android:text="@string/copy"
+                    android:textAllCaps="false"
+                    android:textColor="#051017"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
         </LinearLayout>
-    </LinearLayout>
+    </ScrollView>
 </FrameLayout>
