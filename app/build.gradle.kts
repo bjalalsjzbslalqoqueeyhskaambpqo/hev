@@ -36,6 +36,15 @@ android {
         }
     }
 
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a")
+            isUniversalApk = false
+        }
+    }
+
     signingConfigs {
         create("release") {
             val storeFilePath = System.getenv("ANDROID_KEYSTORE_PATH")
@@ -72,6 +81,11 @@ android {
         buildConfig = false
     }
 
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
+
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
@@ -82,6 +96,13 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
+            excludes += setOf(
+                "**/armeabi-v7a/**",
+                "**/x86/**",
+                "**/x86_64/**",
+                "**/mips/**",
+                "**/mips64/**"
+            )
         }
         resources {
             excludes += setOf(
