@@ -133,6 +133,7 @@ static char            g_logs_buf[32768];
 static size_t          g_logs_len   = 0;
 static uint8_t         g_tun_prefetch[4096];
 static size_t          g_tun_prefetch_len = 0;
+static pthread_mutex_t g_tun_write_mu = PTHREAD_MUTEX_INITIALIZER;
 
 static void push_logf(const char *level, const char *fmt, ...) {
     va_list args;
@@ -266,6 +267,7 @@ static int tun_send_frame(int tfd, uint8_t type, uint32_t sid, const uint8_t *da
     if (dlen > 0 && (type == T_OPEN || type == T_DATA)) {
         log_bytes_preview("mux TX payload", data, dlen);
     }
+    pthread_mutex_lock(&g_tun_write_mu);
     while (sent < total) {
         ssize_t n = writev(tfd, iov, niov);
         if (n > 0) {
@@ -286,9 +288,11 @@ static int tun_send_frame(int tfd, uint8_t type, uint32_t sid, const uint8_t *da
         } else if (n < 0 && (errno == EAGAIN || errno == EINTR)) {
             continue;
         } else {
+            pthread_mutex_unlock(&g_tun_write_mu);
             return -1;
         }
     }
+    pthread_mutex_unlock(&g_tun_write_mu);
     return 0;
 }
 
@@ -670,10 +674,7 @@ static void *keepalive_thread(void *arg) {
     while (g_running) {
         sleep(KEEPALIVE_SEC);
         if (!g_running) break;
-        uint8_t hdr[FRAME_HDR];
-        frame_hdr(hdr, T_PING, 0, 0);
-        ssize_t n = send(tfd, hdr, FRAME_HDR, MSG_NOSIGNAL);
-        if (n < 0) break;
+        if (tun_send_frame(tfd, T_PING, 0, NULL, 0) < 0) break;
     }
     return NULL;
 }
