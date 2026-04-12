@@ -453,6 +453,8 @@ static int open_tunnel_socket(void) {
         return -1;
     }
 
+    usleep(5000);
+
     char req2[256];
     int  rlen2 = snprintf(req2, sizeof(req2),
                           "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\naction: tunnel\r\n\r\n",
