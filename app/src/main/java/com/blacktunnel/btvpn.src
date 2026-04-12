@@ -11,209 +11,131 @@ import androidx.core.app.NotificationCompat;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
-import java.text.SimpleDateFormat;
-import java.util.ArrayDeque;
-import java.util.Date;
-import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class BtVpnService extends VpnService {
     public static final String ACTION_START = "com.blacktunnel.START";
     public static final String ACTION_STOP  = "com.blacktunnel.STOP";
-    private static final String CH_ID  = "bt_vpn";
-    private static final int    NF_ID  = 33;
-    private static final int    LOG_MAX = 4000;
+    private static final String CH_ID = "bt_vpn";
+    private static final int    NF_ID = 33;
 
-    private static final ArrayDeque<String> LOGS = new ArrayDeque<>();
-    private static final SimpleDateFormat   TS   = new SimpleDateFormat("HH:mm:ss", Locale.US);
-    private static volatile boolean SERVICE_RUNNING;
+    private final AtomicBoolean running  = new AtomicBoolean(false);
+    private final AtomicBoolean stopping = new AtomicBoolean(false);
+    private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
-    private final Object         stateLock        = new Object();
-    private volatile boolean     stopping;
-    private volatile boolean     starting;
-    private volatile boolean     proxyLogPumpRunning;
+    private volatile ParcelFileDescriptor tunPfd;
+    private volatile Thread   hevThread;
+    private volatile int      hevTunFd  = -1;
+    private volatile File     hevCfgFile;
 
-    private ParcelFileDescriptor tunPfd;
-    private Thread               hevThread;
-    private int                  hevTunFd         = -1;
-    private File                 hevCfgFile;
-    private final ExecutorService lifecycleExecutor = Executors.newSingleThreadExecutor();
-    private final ExecutorService hevRestartExecutor = Executors.newSingleThreadExecutor();
-
-    public static synchronized void log(String m) {
-        String l = TS.format(new Date()) + "  " + m;
-        LOGS.addLast(l);
-        while (LOGS.size() > LOG_MAX) LOGS.removeFirst();
-    }
-
-    public static synchronized String dumpLogs() {
-        StringBuilder sb = new StringBuilder();
-        for (String l : LOGS) sb.append(l).append('\n');
-        return sb.toString();
-    }
-
-    public static boolean isRunningState() { return SERVICE_RUNNING; }
+    public static boolean isRunningState() { return false; }
 
     public void onTunnelReconnected() {
-        if (!SERVICE_RUNNING || stopping) return;
-        hevRestartExecutor.execute(this::restartHev);
+        if (!running.get() || stopping.get()) return;
+        executor.execute(this::restartHev);
     }
 
     private void restartHev() {
-        if (!SERVICE_RUNNING || stopping) return;
-        log("tunnel reconnected, restarting hev...");
+        if (!running.get() || stopping.get()) return;
         try { HevBridge.stop(); } catch (Throwable ignored) {}
-        if (hevThread != null) {
-            try { hevThread.join(2000); } catch (InterruptedException ignored) {}
-            hevThread = null;
-        }
-        if (!SERVICE_RUNNING || stopping) return;
-        final File cfg = hevCfgFile;
-        final int  fd  = hevTunFd;
+        Thread old = hevThread; hevThread = null;
+        if (old != null) try { old.join(1500); } catch (InterruptedException ignored) {}
+        if (!running.get() || stopping.get()) return;
+        File cfg = hevCfgFile; int fd = hevTunFd;
         if (cfg == null || fd < 0) return;
         hevThread = new Thread(() -> {
-            int code = HevBridge.start(cfg.getAbsolutePath(), fd);
-            log("hev exit=" + code);
+            HevBridge.start(cfg.getAbsolutePath(), fd);
         }, "hev");
         hevThread.start();
-        log("hev restarted");
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : null;
         if (ACTION_STOP.equals(action)) {
-            lifecycleExecutor.execute(() -> { stopAll(); stopSelf(); });
+            executor.execute(() -> { stopAll(); stopSelf(); });
             return START_NOT_STICKY;
         }
-        lifecycleExecutor.execute(this::startAll);
+        executor.execute(this::startAll);
         return START_STICKY;
     }
 
     private void startAll() {
-        for (int i = 0; i < 30; i++) {
-            synchronized (stateLock) { if (!stopping) break; }
-            try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+        if (running.get() || stopping.get()) return;
+
+        createChannel();
+        startForeground(NF_ID, buildNotif());
+
+        if (BtProxy.start(this) < 0) {
+            stopForeground(STOP_FOREGROUND_REMOVE);
+            return;
         }
-        synchronized (stateLock) {
-            if (starting || SERVICE_RUNNING) { log("start omitido"); return; }
-            if (stopping) { log("start cancelado"); return; }
-            starting = true;
+
+        Builder builder = new Builder()
+                .setSession("bt-hev")
+                .setMtu(1400)
+                .addAddress("10.10.10.1", 30)
+                .addAddress("fc00::1", 126)
+                .addRoute("0.0.0.0", 1)
+                .addRoute("128.0.0.0", 1)
+                .addRoute("::", 0)
+                .addDnsServer("10.10.10.2")
+                .addDnsServer("8.8.8.8");
+        try { builder.addDisallowedApplication(getPackageName()); } catch (Exception ignored) {}
+
+        tunPfd = builder.establish();
+        if (tunPfd == null) {
+            BtProxy.stop();
+            stopForeground(STOP_FOREGROUND_REMOVE);
+            return;
         }
+
         try {
-            createChannel();
-            startForeground(NF_ID, buildNotif("BlackTunnel activo"));
-            log("iniciando servicio");
-
-            log("estableciendo túnel con servidor...");
-            int relayFd = BtProxy.start(this);
-            if (relayFd < 0) { log("proxy start failed"); return; }
-            log("túnel con servidor OK, iniciando VPN local...");
-
-            Builder builder = new Builder()
-                    .setSession("bt-hev")
-                    .setMtu(1400)
-                    .addAddress("10.10.10.1", 30)
-                    .addAddress("fc00::1", 126)
-                    .addRoute("0.0.0.0", 1)
-                    .addRoute("128.0.0.0", 1)
-                    .addRoute("::", 0)
-                    .addDnsServer("10.10.10.2")
-                    .addDnsServer("8.8.8.8");
-            try { builder.addDisallowedApplication(getPackageName()); } catch (Exception ignored) {}
-
-            tunPfd = builder.establish();
-            if (tunPfd == null) { log("TUN null"); return; }
-
-            try {
-                hevTunFd = ParcelFileDescriptor.dup(tunPfd.getFileDescriptor()).detachFd();
-            } catch (Exception e) { log("dup fd error: " + e.getMessage()); return; }
-
-            final int localHevTunFd = hevTunFd;
-            hevCfgFile = writeHevCfg();
-            log("vpn lista, iniciando hev");
-
-            hevThread = new Thread(() -> {
-                int code = HevBridge.start(hevCfgFile.getAbsolutePath(), localHevTunFd);
-                log("hev exit=" + code);
-                try { ParcelFileDescriptor.adoptFd(localHevTunFd).close(); } catch (Exception ignored) {}
-                if (hevTunFd == localHevTunFd) hevTunFd = -1;
-            }, "hev");
-            hevThread.start();
-            log("hev iniciado");
-
-            startProxyLogPump();
-            SERVICE_RUNNING = true;
-            log("started");
-        } finally {
-            synchronized (stateLock) {
-                starting = false;
-                if (!SERVICE_RUNNING) {
-                    cleanupFailedStart();
-                    stopForeground(STOP_FOREGROUND_REMOVE);
-                }
-            }
+            hevTunFd = ParcelFileDescriptor.dup(tunPfd.getFileDescriptor()).detachFd();
+        } catch (Exception e) {
+            BtProxy.stop();
+            try { tunPfd.close(); } catch (Exception ignored) {}
+            tunPfd = null;
+            stopForeground(STOP_FOREGROUND_REMOVE);
+            return;
         }
-    }
 
-    private void cleanupFailedStart() {
-        proxyLogPumpRunning = false;
-        try { BtProxy.stop(); } catch (Throwable ignored) {}
-        try { HevBridge.stop(); } catch (Throwable ignored) {}
-        if (tunPfd != null) { try { tunPfd.close(); } catch (Exception ignored) {} tunPfd = null; }
-        if (hevTunFd >= 0) {
-            try { ParcelFileDescriptor.adoptFd(hevTunFd).close(); } catch (Exception ignored) {}
-            hevTunFd = -1;
-        }
-    }
+        hevCfgFile = writeHevCfg();
+        final int fd = hevTunFd;
+        final File cfg = hevCfgFile;
 
-    private void startProxyLogPump() {
-        if (proxyLogPumpRunning) return;
-        proxyLogPumpRunning = true;
-        new Thread(() -> {
-            while (proxyLogPumpRunning) {
-                try {
-                    String drained = BtProxy.drainLogs();
-                    if (drained != null && !drained.isEmpty()) {
-                        String[] lines = drained.split("\\n");
-                        int maxLines = 50;
-                        for (String line : lines) {
-                            if (maxLines-- <= 0) break;
-                            if (!line.isEmpty()) log("[btproxy] " + line);
-                        }
-                    }
-                    Thread.sleep(400);
-                } catch (Exception ignored) {}
-            }
-        }, "btproxy-log").start();
+        hevThread = new Thread(() -> {
+            HevBridge.start(cfg.getAbsolutePath(), fd);
+            try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
+            if (hevTunFd == fd) hevTunFd = -1;
+        }, "hev");
+        hevThread.start();
+
+        running.set(true);
     }
 
     private void stopAll() {
-        synchronized (stateLock) {
-            if (stopping) { log("stop omitido"); return; }
-            stopping = true;
-        }
+        if (!stopping.compareAndSet(false, true)) return;
         try {
-            proxyLogPumpRunning = false;
-            log("deteniendo proxy");
-            try { BtProxy.stop(); log("proxy detenido"); } catch (Throwable e) { log("proxy stop error: " + e.getMessage()); }
-            log("deteniendo hev");
-            try { HevBridge.stop(); } catch (Exception e) { log("hev stop error: " + e.getMessage()); }
-            if (hevThread != null) {
-                try { hevThread.join(1500); } catch (InterruptedException ignored) {}
-                hevThread = null;
-            }
-            if (tunPfd != null) { try { tunPfd.close(); } catch (Exception ignored) {} tunPfd = null; }
-            if (hevTunFd >= 0) {
-                try { ParcelFileDescriptor.adoptFd(hevTunFd).close(); } catch (Exception ignored) {}
-                hevTunFd = -1;
-            }
+            running.set(false);
+
+            try { BtProxy.stop(); } catch (Throwable ignored) {}
+            try { HevBridge.stop(); } catch (Throwable ignored) {}
+
+            Thread ht = hevThread; hevThread = null;
+            if (ht != null) try { ht.join(2000); } catch (InterruptedException ignored) {}
+
+            ParcelFileDescriptor pfd = tunPfd; tunPfd = null;
+            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+
+            int fd = hevTunFd; hevTunFd = -1;
+            if (fd >= 0) try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
+
             stopForeground(STOP_FOREGROUND_REMOVE);
-            SERVICE_RUNNING = false;
-            log("stopped");
         } finally {
-            synchronized (stateLock) { stopping = false; starting = false; }
+            stopping.set(false);
         }
     }
 
@@ -233,7 +155,7 @@ public class BtVpnService extends VpnService {
             FileOutputStream o = new FileOutputStream(f, false);
             o.write(yml.getBytes(StandardCharsets.UTF_8));
             o.flush(); o.close();
-        } catch (Exception e) { log("hev.yml error: " + e.getMessage()); }
+        } catch (Exception ignored) {}
         return f;
     }
 
@@ -244,14 +166,20 @@ public class BtVpnService extends VpnService {
                 new NotificationChannel(CH_ID, "BlackTunnel", NotificationManager.IMPORTANCE_LOW));
     }
 
-    private Notification buildNotif(String t) {
+    private Notification buildNotif() {
         return new NotificationCompat.Builder(this, CH_ID)
                 .setSmallIcon(android.R.drawable.stat_sys_warning)
-                .setContentTitle("BlackTunnel").setContentText(t).setOngoing(true).build();
+                .setContentTitle("BlackTunnel")
+                .setOngoing(true)
+                .build();
     }
 
     @Override
-    public void onDestroy() { stopAll(); lifecycleExecutor.shutdownNow(); hevRestartExecutor.shutdownNow(); super.onDestroy(); }
+    public void onDestroy() {
+        executor.execute(this::stopAll);
+        executor.shutdown();
+        super.onDestroy();
+    }
 
     static final class HevBridge {
         static { System.loadLibrary("hev-jni"); }
@@ -259,4 +187,4 @@ public class BtVpnService extends VpnService {
         static native int start(String path, int fd);
         static native void stop();
     }
-} 
+}
