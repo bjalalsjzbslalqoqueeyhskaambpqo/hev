@@ -163,13 +163,14 @@ public class BtVpnService extends VpnService {
             runningState.set(false);
             log("Deteniendo servicio VPN");
 
-            if (proxyStarted.compareAndSet(true, false)) {
-                try { BtProxy.stop(); } catch (Throwable ignored) {}
-            }
             try { HevBridge.stop(); } catch (Throwable ignored) {}
 
             Thread ht = hevThread; hevThread = null;
             if (ht != null) try { ht.join(2000); } catch (InterruptedException ignored) {}
+
+            if (proxyStarted.compareAndSet(true, false)) {
+                try { BtProxy.stop(); } catch (Throwable ignored) {}
+            }
 
             ParcelFileDescriptor pfd = tunPfd; tunPfd = null;
             if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
