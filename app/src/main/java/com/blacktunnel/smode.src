@@ -230,7 +230,7 @@ public class SimpleModeActivity extends ComponentActivity {
                 statusDetailsView.setText("✔ Conectado correctamente\nServidor: Argentina\nProtocolo: UDP");
                 statusDetailsView.setTextColor(Color.parseColor("#E6EDF3"));
             } else {
-                statusDetailsView.setText("✖ VPN desconectada\nServidor: --\nProtocolo: --");
+                statusDetailsView.setText("✖ Servicio desconectado\nServidor: --\nProtocolo: --");
                 statusDetailsView.setTextColor(Color.parseColor("#8B9BB0"));
             }
         }

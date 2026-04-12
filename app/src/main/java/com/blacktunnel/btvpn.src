@@ -94,7 +94,7 @@ public class BtVpnService extends VpnService {
 
     private void startAll() {
         if (running.get() || stopping.get()) return;
-        log("Iniciando servicio VPN");
+        log("Iniciando servicio privado");
 
         createChannel();
         startForeground(NF_ID, buildNotif());
@@ -159,7 +159,7 @@ public class BtVpnService extends VpnService {
 
         running.set(true);
         runningState.set(true);
-        log("Servicio VPN en ejecución");
+        log("Servicio privado en ejecución");
     }
 
     private void addPublicRoutes(Builder builder) {
@@ -243,7 +243,7 @@ public class BtVpnService extends VpnService {
             if (!running.get() && tunPfd == null && hevTunFd < 0 && hevThread == null && (!stopProxy || !proxyStarted.get())) return;
             running.set(false);
             runningState.set(false);
-            log("Deteniendo servicio VPN");
+            log("Deteniendo servicio privado");
 
             try { HevBridge.stop(); } catch (Throwable ignored) {}
 
@@ -261,7 +261,7 @@ public class BtVpnService extends VpnService {
             if (fd >= 0) try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
 
             stopForeground(STOP_FOREGROUND_REMOVE);
-            log("Servicio VPN detenido");
+            log("Servicio privado detenido");
         } finally {
             stopping.set(false);
         }

@@ -45,7 +45,7 @@
                         android:id="@+id/imgLogo"
                         android:layout_width="24dp"
                         android:layout_height="24dp"
-                        android:src="@drawable/ic_xtunnel_logo" />
+                        android:src="@drawable/strike_logo" />
 
                     <TextView
                         android:layout_width="wrap_content"
@@ -56,7 +56,7 @@
                         android:shadowDx="0"
                         android:shadowDy="0"
                         android:shadowRadius="6"
-                        android:text="STRIKE VPN"
+                        android:text="@string/app_brand"
                         android:textColor="#E6EDF3"
                         android:textSize="22sp"
                         android:textStyle="bold" />
