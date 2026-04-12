@@ -32,10 +32,10 @@
 #define RELAY_BACKLOG 512
 #define IDLE_SECS     120
 #define WD_INTERVAL   30
-#define KEEPALIVE_SEC 90
+#define KEEPALIVE_SEC 25
 
-#define HT_SIZE       4096
-#define HT_MASK       (HT_SIZE - 1)
+#define HT_SIZE  4096
+#define HT_MASK  (HT_SIZE - 1)
 
 #define PROXY_HOST_IPV6 "2606:4700::6812:16b7"
 #define PROXY_HOST      "emailmarketing.personal.com.ar"
@@ -153,6 +153,23 @@ static void push_log(const char *level, const char *fmt, ...) {
     pthread_mutex_unlock(&g_log_mu);
 }
 
+static void notify_tunnel_reconnected(void) {
+    JavaVM *jvm = NULL; jobject svc = NULL;
+    pthread_mutex_lock(&g_state_mu);
+    jvm = g_jvm; svc = g_vpn_svc;
+    pthread_mutex_unlock(&g_state_mu);
+    if (!jvm || !svc) return;
+    JNIEnv *env = NULL; int att = 0;
+    if ((*jvm)->GetEnv(jvm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+        (*jvm)->AttachCurrentThread(jvm, &env, NULL); att = 1;
+    }
+    jclass cls = (*env)->GetObjectClass(env, svc);
+    jmethodID m = (*env)->GetMethodID(env, cls, "onTunnelReconnected", "()V");
+    if (m) (*env)->CallVoidMethod(env, svc, m);
+    (*env)->DeleteLocalRef(env, cls);
+    if (att) (*jvm)->DetachCurrentThread(jvm);
+}
+
 static void request_tunnel_reset(const char *reason) {
     int rfd = -1, tfd = -1;
     pthread_mutex_lock(&g_state_mu);
@@ -169,9 +186,10 @@ static void request_tunnel_reset(const char *reason) {
 
 static void sock_tune(int fd) {
     int v;
-    v = 1;     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &v, sizeof(v));
-    v = 65536; setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,   &v, sizeof(v));
-    v = 65536; setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,   &v, sizeof(v));
+    v = 1;     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
+    v = 1;     setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &v, sizeof(v));
+    v = 65536; setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,    &v, sizeof(v));
+    v = 65536; setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,    &v, sizeof(v));
 }
 
 static void sock_keepalive(int fd) {
@@ -227,10 +245,17 @@ static int tun_recv(int fd, uint8_t *buf, int len) {
     int off = 0;
     while (off < len) {
         ssize_t n = recv(fd, buf + off, len - off, 0);
-        if (n > 0)               { off += (int)n; }
-        else if (n == 0)         { return -1; }
-        else if (errno == EINTR) { continue; }
-        else                     { return -1; }
+        if (n > 0) {
+            off += (int)n;
+            int qa = 1;
+            setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &qa, sizeof(qa));
+        } else if (n == 0) {
+            return -1;
+        } else if (errno == EINTR) {
+            continue;
+        } else {
+            return -1;
+        }
     }
     return 0;
 }
@@ -385,7 +410,7 @@ static void *tunnel_reader(void *arg) {
                                  MSG_NOSIGNAL | MSG_DONTWAIT);
                 if (n > 0) { off += n; continue; }
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    struct timespec ts = {0, 500000};
+                    struct timespec ts = {0, 200000};
                     nanosleep(&ts, NULL);
                     continue;
                 }
@@ -454,6 +479,7 @@ static void *watchdog_thread(void *arg) {
 
 static void *main_thread(void *arg) {
     int port = (int)(intptr_t)arg;
+    static int first_start = 1;
 
     while (g_running) {
         int tfd = open_tunnel();
@@ -486,9 +512,16 @@ static void *main_thread(void *arg) {
 
         g_relay_fd = rfd; g_started = 1;
         push_log("I", "relay listening on 127.0.0.1:%d", port);
+
         pthread_mutex_lock(&g_start_mu);
         if (g_start_st == 0) { g_start_st = 1; pthread_cond_broadcast(&g_start_cv); }
         pthread_mutex_unlock(&g_start_mu);
+
+        if (first_start) {
+            first_start = 0;
+        } else {
+            notify_tunnel_reconnected();
+        }
 
         pthread_t trd, tka, twd;
         pthread_create(&trd, NULL, tunnel_reader,    &g_tun_fd);
@@ -507,8 +540,9 @@ static void *main_thread(void *arg) {
             sock_tune(cfd);
 
             uint32_t sid;
-            do { sid = (uint32_t)atomic_fetch_add(&g_next_sid, 1) & 0x7FFFFFFF; }
-            while (sid == 0);
+            do {
+                sid = (uint32_t)atomic_fetch_add(&g_next_sid, 1) & 0x7FFFFFFF;
+            } while (sid == 0 || ht_get(sid) != NULL);
 
             conn_args_t *ca2 = malloc(sizeof(conn_args_t));
             if (!ca2) { close(cfd); continue; }
