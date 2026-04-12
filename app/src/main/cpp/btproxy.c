@@ -131,6 +131,8 @@ static int             g_start_state = 0;
 static pthread_mutex_t g_logs_mu   = PTHREAD_MUTEX_INITIALIZER;
 static char            g_logs_buf[32768];
 static size_t          g_logs_len   = 0;
+static uint8_t         g_tun_prefetch[4096];
+static size_t          g_tun_prefetch_len = 0;
 
 static void push_logf(const char *level, const char *fmt, ...) {
     va_list args;
@@ -242,6 +244,17 @@ static int tun_send_frame(int tfd, uint8_t type, uint32_t sid, const uint8_t *da
 
 static int read_full(int fd, uint8_t *buf, int len) {
     int off = 0;
+
+    if (fd == g_tun_fd && g_tun_prefetch_len > 0) {
+        size_t take = (size_t)len < g_tun_prefetch_len ? (size_t)len : g_tun_prefetch_len;
+        memcpy(buf, g_tun_prefetch, take);
+        off = (int)take;
+        g_tun_prefetch_len -= take;
+        if (g_tun_prefetch_len > 0) {
+            memmove(g_tun_prefetch, g_tun_prefetch + take, g_tun_prefetch_len);
+        }
+    }
+
     while (off < len) {
         ssize_t n = recv(fd, buf + off, len - off, MSG_WAITALL);
         if (n > 0)       { off += (int)n; }
@@ -250,6 +263,27 @@ static int read_full(int fd, uint8_t *buf, int len) {
         else { return -1; }
     }
     return 0;
+}
+
+static int recv_http_headers(int fd, char *out, size_t out_cap, int timeout_sec) {
+    size_t used = 0;
+    struct timeval tv = {timeout_sec, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    while (used + 1 < out_cap) {
+        ssize_t n = recv(fd, out + used, out_cap - 1 - used, 0);
+        if (n <= 0) break;
+        used += (size_t)n;
+        out[used] = '\0';
+        if (strstr(out, "\r\n\r\n")) break;
+    }
+
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    if (used == 0) return -1;
+    return (int)used;
 }
 
 
@@ -333,7 +367,9 @@ static int open_tunnel_socket(void) {
     usleep(5000);
 
     char req2[256];
-    int  rlen2 = snprintf(req2, sizeof(req2), "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nAction: tunnel\r\n\r\n", TUNNEL_HOST);
+    int  rlen2 = snprintf(req2, sizeof(req2),
+                          "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\naction: tunnel\r\n\r\n",
+                          TUNNEL_HOST);
     ssize_t ws2 = 0;
     while (ws2 < rlen2) {
         ssize_t n = send(fd, req2 + ws2, rlen2 - ws2, MSG_NOSIGNAL);
@@ -341,30 +377,52 @@ static int open_tunnel_socket(void) {
         else if (errno != EINTR) { close(fd); return -1; }
     }
 
-    char resp[4096];
-    int roff = 0;
-    int blocks = 0;
-    int saw_101 = 0;
-    struct timeval tv = {8, 0};
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    while (blocks < 2 && roff < (int)sizeof(resp) - 1) {
-        ssize_t n = recv(fd, resp + roff, sizeof(resp) - 1 - roff, 0);
-        if (n <= 0) break;
-        roff += (int)n;
-        resp[roff] = '\0';
-        char *p = resp;
-        while ((p = strstr(p, "\r\n\r\n")) != NULL) {
-            blocks++;
-            char saved = *p;
-            *p = '\0';
-            if (strstr(resp, "101")) saw_101 = 1;
-            *p = saved;
-            p += 4;
+    char h1[2048], h2[4096];
+    int h1_len = recv_http_headers(fd, h1, sizeof(h1), 8);
+    if (h1_len < 0) {
+        push_logf("E", "handshake failed reading request-1 response");
+        close(fd);
+        return -1;
+    }
+    int h2_len = recv_http_headers(fd, h2, sizeof(h2), 8);
+    (void)h1_len;
+    if (h2_len < 0) {
+        push_logf("E", "handshake failed reading tunnel response");
+        close(fd);
+        return -1;
+    }
+    if (strstr(h2, "101") == NULL) {
+        push_logf("E", "handshake without 101");
+        close(fd);
+        return -1;
+    }
+
+    char *eoh = strstr(h2, "\r\n\r\n");
+    g_tun_prefetch_len = 0;
+    if (eoh) {
+        eoh += 4;
+        size_t extra = (size_t)(h2 + h2_len - eoh);
+        if (extra > 0) {
+            if (extra > sizeof(g_tun_prefetch)) extra = sizeof(g_tun_prefetch);
+            memcpy(g_tun_prefetch, eoh, extra);
+            g_tun_prefetch_len = extra;
         }
     }
-    tv.tv_sec = 0; setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    if (!saw_101 && !strstr(resp, "101")) { push_logf("E", "handshake without 101"); close(fd); return -1; }
+    while (g_tun_prefetch_len > 0) {
+        if (g_tun_prefetch_len >= 4 && memcmp(g_tun_prefetch, "HTTP", 4) == 0) {
+            char junk[2048];
+            if (recv_http_headers(fd, junk, sizeof(junk), 1) <= 0) break;
+            continue;
+        }
+        if (g_tun_prefetch_len >= 3 && memcmp(g_tun_prefetch, "200", 3) == 0) {
+            char junk[2048];
+            if (recv_http_headers(fd, junk, sizeof(junk), 1) <= 0) break;
+            g_tun_prefetch_len = 0;
+            continue;
+        }
+        break;
+    }
 
     push_logf("I", "tunnel handshake OK");
     return fd;
