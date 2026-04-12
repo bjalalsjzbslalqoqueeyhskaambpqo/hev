@@ -33,7 +33,7 @@
 #define T_PONG  0x05
 
 #define FRAME_HDR   7
-#define MAX_PAYLOAD 16384
+#define MAX_PAYLOAD 32768
 #define FRAME_MAX   (FRAME_HDR + MAX_PAYLOAD)
 
 
@@ -633,7 +633,10 @@ static void *tunnel_reader(void *arg) {
                      | ((uint32_t)hdr[3] <<  8) |  (uint32_t)hdr[4];
         uint16_t len = ((uint16_t)hdr[5] << 8) | hdr[6];
         push_logf("I", "mux RX %s sid=%u len=%u", frame_name(ft), sid, len);
-        if (len > MAX_PAYLOAD) break;
+        if (len > MAX_PAYLOAD) {
+            push_logf("E", "mux RX oversize sid=%u len=%u max=%u", sid, len, (unsigned)MAX_PAYLOAD);
+            break;
+        }
         if (len > 0 && read_full(tfd, payload, len) < 0) break;
         if (len > 0 && (ft == T_OPEN || ft == T_DATA)) {
             log_bytes_preview("mux RX payload", payload, len);
