@@ -645,18 +645,20 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     g_running = 0;
     if (g_relay_fd >= 0) { close(g_relay_fd); g_relay_fd = -1; }
     if (g_tun_fd   >= 0) { close(g_tun_fd);   g_tun_fd   = -1; }
-    for (int i = 0; i < 20 && g_started; i++) usleep(20000);
+    for (int i = 0; i < 10 && g_started; i++) usleep(10000);
 
     pthread_mutex_lock(&g_streams_mu);
-    for (int i = 0; i < MAX_STREAMS; i++)
-        if (g_streams[i].used) stream_free(&g_streams[i]);
+    for (int i = 0; i < MAX_STREAMS; i++) {
+        if (g_streams[i].used) {
+            stream_free(&g_streams[i]);
+            g_streams[i].used = 0;
+        }
+    }
     pthread_mutex_unlock(&g_streams_mu);
 
     if (g_vpn_svc) { (*env)->DeleteGlobalRef(env, g_vpn_svc); g_vpn_svc = NULL; }
     g_jvm = NULL;
-
-    buf_node_t *n = g_pool; g_pool = NULL;
-    while (n) { buf_node_t *nx = n->next; free(n); n = nx; }
+    g_started = 0;
     push_logf("I", "nativeStop done");
 }
 

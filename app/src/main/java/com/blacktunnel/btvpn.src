@@ -120,16 +120,17 @@ public class BtVpnService extends VpnService {
                 log("dup fd error: " + e.getMessage());
                 return;
             }
+            final int localHevTunFd = hevTunFd;
 
             File hevCfg = writeHevCfg();
             hevThread = new Thread(() -> {
-                int code = HevBridge.start(hevCfg.getAbsolutePath(), hevTunFd);
+                int code = HevBridge.start(hevCfg.getAbsolutePath(), localHevTunFd);
                 log("hev exit=" + code);
                 try {
-                    ParcelFileDescriptor.adoptFd(hevTunFd).close();
+                    ParcelFileDescriptor.adoptFd(localHevTunFd).close();
                 } catch (Exception ignored) {
                 }
-                hevTunFd = -1;
+                if (hevTunFd == localHevTunFd) hevTunFd = -1;
             }, "hev");
             hevThread.start();
             log("hev iniciado");
