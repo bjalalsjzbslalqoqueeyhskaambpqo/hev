@@ -122,6 +122,22 @@ static void push_log(const char *level, const char *fmt, ...) {
     pthread_mutex_unlock(&g_log_mu);
 }
 
+static void request_shutdown(const char *reason) {
+    int rfd = -1, tfd = -1;
+    pthread_mutex_lock(&g_state_mu);
+    if (!g_running) { pthread_mutex_unlock(&g_state_mu); return; }
+    g_running = 0;
+    rfd = g_relay_fd; g_relay_fd = -1;
+    tfd = g_tun_fd;   g_tun_fd   = -1;
+    pthread_mutex_unlock(&g_state_mu);
+    if (reason) push_log("E", "shutdown: %s", reason);
+    if (rfd >= 0) close(rfd);
+    if (tfd >= 0) close(tfd);
+    pthread_mutex_lock(&g_start_mu);
+    if (g_start_st == 0) { g_start_st = -1; pthread_cond_broadcast(&g_start_cv); }
+    pthread_mutex_unlock(&g_start_mu);
+}
+
 /* ── socket helpers ───────────────────────────────────────────────────── */
 
 static void sock_tune(int fd) {
@@ -318,6 +334,7 @@ static void *conn_thread(void *arg) {
     /* T_OPEN lleva el primer bloque de datos — el servidor abre la conexión
      * a hev-socks5-server y le pasa estos bytes directamente */
     if (tun_send(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0) {
+        request_shutdown("tun_send T_OPEN failed");
         pthread_mutex_lock(&g_streams_mu); stream_free(s);
         pthread_mutex_unlock(&g_streams_mu);
         return NULL;
@@ -330,7 +347,10 @@ static void *conn_thread(void *arg) {
         pthread_mutex_lock(&g_streams_mu);
         if (s->used) s->last_active = (int64_t)time(NULL);
         pthread_mutex_unlock(&g_streams_mu);
-        if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) break;
+        if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
+            request_shutdown("tun_send T_DATA failed");
+            break;
+        }
     }
 
     tun_send(tfd, T_CLOSE, sid, NULL, 0);
@@ -351,15 +371,15 @@ static void *tunnel_reader(void *arg) {
     uint8_t hdr[FRAME_HDR], payload[MAX_PAYLOAD];
 
     while (g_running) {
-        if (tun_recv(tfd, hdr, FRAME_HDR) < 0) break;
+        if (tun_recv(tfd, hdr, FRAME_HDR) < 0) { request_shutdown("tunnel header read failed"); break; }
 
         uint8_t  ft  = hdr[0];
         uint32_t sid = ((uint32_t)hdr[1] << 24) | ((uint32_t)hdr[2] << 16) |
                        ((uint32_t)hdr[3] <<  8) |  (uint32_t)hdr[4];
         uint16_t len = ((uint16_t)hdr[5] << 8) | hdr[6];
 
-        if (len > MAX_PAYLOAD) break;
-        if (len > 0 && tun_recv(tfd, payload, len) < 0) break;
+        if (len > MAX_PAYLOAD) { request_shutdown("tunnel payload too large"); break; }
+        if (len > 0 && tun_recv(tfd, payload, len) < 0) { request_shutdown("tunnel payload read failed"); break; }
 
         switch (ft) {
         case T_DATA: {
@@ -412,7 +432,10 @@ static void *keepalive_thread(void *arg) {
     while (g_running) {
         sleep(KEEPALIVE_SEC);
         if (!g_running) break;
-        if (tun_send(tfd, T_PING, 0, NULL, 0) < 0) break;
+        if (tun_send(tfd, T_PING, 0, NULL, 0) < 0) {
+            request_shutdown("keepalive ping failed");
+            break;
+        }
     }
     return NULL;
 }
@@ -480,7 +503,12 @@ static void *main_thread(void *arg) {
     while (g_running) {
         struct sockaddr_in ca; socklen_t cl = sizeof(ca);
         int cfd = accept(rfd, (struct sockaddr*)&ca, &cl);
-        if (cfd < 0) { if (errno == EINTR || errno == EAGAIN) continue; break; }
+        if (cfd < 0) {
+            if (!g_running) break;
+            if (errno == EINTR || errno == EAGAIN) continue;
+            request_shutdown("accept failed");
+            break;
+        }
         sock_tune(cfd);
 
         uint32_t sid;
