@@ -286,6 +286,29 @@ static int recv_http_headers(int fd, char *out, size_t out_cap, int timeout_sec)
     return (int)used;
 }
 
+static void strip_prefetch_http_junk(void) {
+    while (g_tun_prefetch_len > 0) {
+        int is_http = (g_tun_prefetch_len >= 5 && memcmp(g_tun_prefetch, "HTTP/", 5) == 0);
+        int is_200  = (g_tun_prefetch_len >= 4 && memcmp(g_tun_prefetch, "200 ", 4) == 0);
+        if (!is_http && !is_200) break;
+
+        size_t i;
+        size_t end = 0;
+        for (i = 0; i + 3 < g_tun_prefetch_len; i++) {
+            if (g_tun_prefetch[i] == '\r' && g_tun_prefetch[i + 1] == '\n' &&
+                g_tun_prefetch[i + 2] == '\r' && g_tun_prefetch[i + 3] == '\n') {
+                end = i + 4;
+                break;
+            }
+        }
+        if (end == 0) break;
+        g_tun_prefetch_len -= end;
+        if (g_tun_prefetch_len > 0) {
+            memmove(g_tun_prefetch, g_tun_prefetch + end, g_tun_prefetch_len);
+        }
+    }
+}
+
 
 static void jni_protect(int fd) {
     JavaVM *jvm = NULL;
@@ -364,6 +387,14 @@ static int open_tunnel_socket(void) {
         else if (errno != EINTR) { close(fd); return -1; }
     }
 
+    char h1[2048], h2[4096];
+    int h1_len = recv_http_headers(fd, h1, sizeof(h1), 8);
+    if (h1_len < 0) {
+        push_logf("E", "handshake failed reading request-1 response");
+        close(fd);
+        return -1;
+    }
+
     usleep(5000);
 
     char req2[256];
@@ -377,13 +408,6 @@ static int open_tunnel_socket(void) {
         else if (errno != EINTR) { close(fd); return -1; }
     }
 
-    char h1[2048], h2[4096];
-    int h1_len = recv_http_headers(fd, h1, sizeof(h1), 8);
-    if (h1_len < 0) {
-        push_logf("E", "handshake failed reading request-1 response");
-        close(fd);
-        return -1;
-    }
     int h2_len = recv_http_headers(fd, h2, sizeof(h2), 8);
     (void)h1_len;
     if (h2_len < 0) {
@@ -409,20 +433,7 @@ static int open_tunnel_socket(void) {
         }
     }
 
-    while (g_tun_prefetch_len > 0) {
-        if (g_tun_prefetch_len >= 4 && memcmp(g_tun_prefetch, "HTTP", 4) == 0) {
-            char junk[2048];
-            if (recv_http_headers(fd, junk, sizeof(junk), 1) <= 0) break;
-            continue;
-        }
-        if (g_tun_prefetch_len >= 3 && memcmp(g_tun_prefetch, "200", 3) == 0) {
-            char junk[2048];
-            if (recv_http_headers(fd, junk, sizeof(junk), 1) <= 0) break;
-            g_tun_prefetch_len = 0;
-            continue;
-        }
-        break;
-    }
+    strip_prefetch_http_junk();
 
     push_logf("I", "tunnel handshake OK");
     return fd;
