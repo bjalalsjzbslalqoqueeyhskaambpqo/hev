@@ -33,8 +33,9 @@
 #define T_PONG  0x05
 
 #define FRAME_HDR   7
-#define MAX_PAYLOAD 16384
+#define MAX_PAYLOAD 32768
 #define FRAME_MAX   (FRAME_HDR + MAX_PAYLOAD)
+#define VERBOSE_LOGS 0
 
 
 #define PROXY_HOST_IPV6 "2606:4700::6812:16b7"
@@ -131,6 +132,9 @@ static int             g_start_state = 0;
 static pthread_mutex_t g_logs_mu   = PTHREAD_MUTEX_INITIALIZER;
 static char            g_logs_buf[32768];
 static size_t          g_logs_len   = 0;
+static uint8_t         g_tun_prefetch[4096];
+static size_t          g_tun_prefetch_len = 0;
+static pthread_mutex_t g_tun_write_mu = PTHREAD_MUTEX_INITIALIZER;
 
 static void push_logf(const char *level, const char *fmt, ...) {
     va_list args;
@@ -163,6 +167,53 @@ static void push_logf(const char *level, const char *fmt, ...) {
         }
     }
     pthread_mutex_unlock(&g_logs_mu);
+}
+
+static const char *frame_name(uint8_t t) {
+    switch (t) {
+        case T_OPEN:  return "OPEN";
+        case T_DATA:  return "DATA";
+        case T_CLOSE: return "CLOSE";
+        case T_PING:  return "PING";
+        case T_PONG:  return "PONG";
+        default:      return "UNK";
+    }
+}
+
+static void log_bytes_preview(const char *tag, const uint8_t *data, size_t len) {
+    if (!data || len == 0) {
+        push_logf("I", "%s len=0", tag);
+        return;
+    }
+    size_t n = len < 24 ? len : 24;
+    char hex[3 * 24 + 1];
+    size_t p = 0;
+    for (size_t i = 0; i < n && p + 3 < sizeof(hex); i++) {
+        p += (size_t)snprintf(hex + p, sizeof(hex) - p, "%02X ", data[i]);
+    }
+    if (p > 0 && hex[p - 1] == ' ') hex[p - 1] = '\0';
+    else hex[p] = '\0';
+    push_logf("I", "%s len=%zu preview[%zu]=%s%s", tag, len, n, hex, (len > n ? " ..." : ""));
+}
+
+static void log_http_block(const char *tag, const char *data, size_t len) {
+    size_t n = len < 512 ? len : 512;
+    char out[1200];
+    size_t p = 0;
+    for (size_t i = 0; i < n && p + 3 < sizeof(out); i++) {
+        char c = data[i];
+        if (c == '\r') {
+            out[p++] = '\\'; out[p++] = 'r';
+        } else if (c == '\n') {
+            out[p++] = '\\'; out[p++] = 'n';
+        } else if ((unsigned char)c < 32 || (unsigned char)c > 126) {
+            out[p++] = '.';
+        } else {
+            out[p++] = c;
+        }
+    }
+    out[p] = '\0';
+    push_logf("I", "%s raw[%zu]=%s%s", tag, len, out, (len > n ? " ..." : ""));
 }
 
 
@@ -213,6 +264,11 @@ static int tun_send_frame(int tfd, uint8_t type, uint32_t sid, const uint8_t *da
     int niov = (dlen > 0) ? 2 : 1;
     ssize_t total = FRAME_HDR + dlen;
     ssize_t sent  = 0;
+    if (VERBOSE_LOGS || type != T_DATA) push_logf("I", "mux TX %s sid=%u len=%u", frame_name(type), sid, dlen);
+    if (dlen > 0 && (type == T_OPEN || (VERBOSE_LOGS && type == T_DATA))) {
+        log_bytes_preview("mux TX payload", data, dlen);
+    }
+    pthread_mutex_lock(&g_tun_write_mu);
     while (sent < total) {
         ssize_t n = writev(tfd, iov, niov);
         if (n > 0) {
@@ -233,15 +289,28 @@ static int tun_send_frame(int tfd, uint8_t type, uint32_t sid, const uint8_t *da
         } else if (n < 0 && (errno == EAGAIN || errno == EINTR)) {
             continue;
         } else {
+            pthread_mutex_unlock(&g_tun_write_mu);
             return -1;
         }
     }
+    pthread_mutex_unlock(&g_tun_write_mu);
     return 0;
 }
 
 
 static int read_full(int fd, uint8_t *buf, int len) {
     int off = 0;
+
+    if (fd == g_tun_fd && g_tun_prefetch_len > 0) {
+        size_t take = (size_t)len < g_tun_prefetch_len ? (size_t)len : g_tun_prefetch_len;
+        memcpy(buf, g_tun_prefetch, take);
+        off = (int)take;
+        g_tun_prefetch_len -= take;
+        if (g_tun_prefetch_len > 0) {
+            memmove(g_tun_prefetch, g_tun_prefetch + take, g_tun_prefetch_len);
+        }
+    }
+
     while (off < len) {
         ssize_t n = recv(fd, buf + off, len - off, MSG_WAITALL);
         if (n > 0)       { off += (int)n; }
@@ -250,6 +319,60 @@ static int read_full(int fd, uint8_t *buf, int len) {
         else { return -1; }
     }
     return 0;
+}
+
+static int recv_http_headers(int fd, char *out, size_t out_cap, int timeout_sec, const char *stage) {
+    size_t used = 0;
+    int saw_eoh = 0;
+    struct timeval tv = {timeout_sec, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    while (used + 1 < out_cap) {
+        ssize_t n = recv(fd, out + used, out_cap - 1 - used, 0);
+        if (n <= 0) {
+            if (n < 0) push_logf("E", "http %s recv error: %s", stage, strerror(errno));
+            else push_logf("E", "http %s recv EOF", stage);
+            break;
+        }
+        used += (size_t)n;
+        out[used] = '\0';
+        if (strstr(out, "\r\n\r\n")) { saw_eoh = 1; break; }
+    }
+
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    if (used == 0) return -1;
+    if (!saw_eoh) {
+        push_logf("E", "http %s incomplete headers bytes=%zu cap=%zu", stage, used, out_cap);
+        return -1;
+    }
+    log_http_block("http recv", out, used);
+    return (int)used;
+}
+
+static void strip_prefetch_http_junk(void) {
+    while (g_tun_prefetch_len > 0) {
+        int is_http = (g_tun_prefetch_len >= 5 && memcmp(g_tun_prefetch, "HTTP/", 5) == 0);
+        int is_200  = (g_tun_prefetch_len >= 4 && memcmp(g_tun_prefetch, "200 ", 4) == 0);
+        if (!is_http && !is_200) break;
+
+        size_t i;
+        size_t end = 0;
+        for (i = 0; i + 3 < g_tun_prefetch_len; i++) {
+            if (g_tun_prefetch[i] == '\r' && g_tun_prefetch[i + 1] == '\n' &&
+                g_tun_prefetch[i + 2] == '\r' && g_tun_prefetch[i + 3] == '\n') {
+                end = i + 4;
+                break;
+            }
+        }
+        if (end == 0) break;
+        g_tun_prefetch_len -= end;
+        if (g_tun_prefetch_len > 0) {
+            memmove(g_tun_prefetch, g_tun_prefetch + end, g_tun_prefetch_len);
+        }
+    }
 }
 
 
@@ -323,6 +446,7 @@ static int open_tunnel_socket(void) {
     
     char req1[256];
     int  rlen1 = snprintf(req1, sizeof(req1), "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", PROXY_HOST);
+    log_http_block("http send req1", req1, (size_t)rlen1);
     ssize_t ws1 = 0;
     while (ws1 < rlen1) {
         ssize_t n = send(fd, req1 + ws1, rlen1 - ws1, MSG_NOSIGNAL);
@@ -330,10 +454,23 @@ static int open_tunnel_socket(void) {
         else if (errno != EINTR) { close(fd); return -1; }
     }
 
+    char h1[2048], h2[4096];
+    push_logf("I", "handshake step1: send req1");
+    int h1_len = recv_http_headers(fd, h1, sizeof(h1), 8, "resp1");
+    if (h1_len < 0) {
+        push_logf("E", "handshake failed reading request-1 response");
+        close(fd);
+        return -1;
+    }
+
+    push_logf("I", "handshake step2: pause then send req2");
     usleep(5000);
 
     char req2[256];
-    int  rlen2 = snprintf(req2, sizeof(req2), "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nAction: tunnel\r\n\r\n", TUNNEL_HOST);
+    int  rlen2 = snprintf(req2, sizeof(req2),
+                          "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\naction: tunnel\r\n\r\n",
+                          TUNNEL_HOST);
+    log_http_block("http send req2", req2, (size_t)rlen2);
     ssize_t ws2 = 0;
     while (ws2 < rlen2) {
         ssize_t n = send(fd, req2 + ws2, rlen2 - ws2, MSG_NOSIGNAL);
@@ -341,30 +478,32 @@ static int open_tunnel_socket(void) {
         else if (errno != EINTR) { close(fd); return -1; }
     }
 
-    char resp[4096];
-    int roff = 0;
-    int blocks = 0;
-    int saw_101 = 0;
-    struct timeval tv = {8, 0};
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    while (blocks < 2 && roff < (int)sizeof(resp) - 1) {
-        ssize_t n = recv(fd, resp + roff, sizeof(resp) - 1 - roff, 0);
-        if (n <= 0) break;
-        roff += (int)n;
-        resp[roff] = '\0';
-        char *p = resp;
-        while ((p = strstr(p, "\r\n\r\n")) != NULL) {
-            blocks++;
-            char saved = *p;
-            *p = '\0';
-            if (strstr(resp, "101")) saw_101 = 1;
-            *p = saved;
-            p += 4;
+    int h2_len = recv_http_headers(fd, h2, sizeof(h2), 8, "resp2");
+    (void)h1_len;
+    if (h2_len < 0) {
+        push_logf("E", "handshake failed reading tunnel response");
+        close(fd);
+        return -1;
+    }
+    if (strstr(h2, "101") == NULL) {
+        push_logf("E", "handshake without 101");
+        close(fd);
+        return -1;
+    }
+
+    char *eoh = strstr(h2, "\r\n\r\n");
+    g_tun_prefetch_len = 0;
+    if (eoh) {
+        eoh += 4;
+        size_t extra = (size_t)(h2 + h2_len - eoh);
+        if (extra > 0) {
+            if (extra > sizeof(g_tun_prefetch)) extra = sizeof(g_tun_prefetch);
+            memcpy(g_tun_prefetch, eoh, extra);
+            g_tun_prefetch_len = extra;
         }
     }
-    tv.tv_sec = 0; setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    if (!saw_101 && !strstr(resp, "101")) { push_logf("E", "handshake without 101"); close(fd); return -1; }
+    strip_prefetch_http_junk();
 
     push_logf("I", "tunnel handshake OK");
     return fd;
@@ -383,7 +522,13 @@ static int socks5_server_handshake(int cfd, uint8_t *dest_out, int *dest_len_out
 
     
     if (read_full(cfd, buf, 4) < 0) return -1;
-    
+    uint8_t cmd = buf[1];
+    uint8_t rsv = buf[2];
+    if (rsv != 0x00) return -1;
+    if (cmd != 0x01 && cmd != 0x03 && cmd != 0x05) {
+        if (VERBOSE_LOGS) push_logf("I", "socks5 unusual cmd=0x%02x (passing through)", cmd);
+    }
+
     int at = buf[3];
     uint8_t dest[256]; int dlen = 0;
     dest[dlen++] = (uint8_t)at;
@@ -404,12 +549,25 @@ static int socks5_server_handshake(int cfd, uint8_t *dest_out, int *dest_len_out
     if (read_full(cfd, dest + dlen, 2) < 0) return -1;
     dlen += 2;
 
-    
     uint8_t ok[10] = {0x05,0x00,0x00,0x01,0,0,0,0,0,0};
     if (send(cfd, ok, sizeof(ok), MSG_NOSIGNAL) != sizeof(ok)) return -1;
 
+    int unspecified = 0;
+    if (at == 0x01 && dlen >= 7) {
+        unspecified = (dest[1] == 0 && dest[2] == 0 && dest[3] == 0 && dest[4] == 0 &&
+                       dest[5] == 0 && dest[6] == 0);
+    }
+    if ((cmd == 0x05 && unspecified) || (cmd == 0x03 && unspecified)) {
+        if (VERBOSE_LOGS || cmd == 0x05) {
+            push_logf("I", "socks5 cmd=0x%02x control flow (no mux open)", cmd);
+        }
+        return 1;
+    }
+
     memcpy(dest_out, dest, dlen);
     *dest_len_out = dlen;
+    push_logf("I", "socks5 cmd=0x%02x atyp=0x%02x dlen=%d", cmd, at, dlen);
+    log_bytes_preview("socks5 dest", dest_out, (size_t)dlen);
     return 0;
 }
 
@@ -435,7 +593,15 @@ static void *conn_thread(void *arg) {
 
     
     uint8_t dest[260]; int dest_len = 0;
-    if (socks5_server_handshake(cfd, dest, &dest_len) < 0) {
+    int hs = socks5_server_handshake(cfd, dest, &dest_len);
+    if (hs < 0) {
+        push_logf("I", "stream sid=%u socks5 handshake failed", sid);
+        pthread_mutex_lock(&g_streams_mu);
+        stream_free(s);
+        pthread_mutex_unlock(&g_streams_mu);
+        return NULL;
+    }
+    if (hs == 1) {
         pthread_mutex_lock(&g_streams_mu);
         stream_free(s);
         pthread_mutex_unlock(&g_streams_mu);
@@ -455,6 +621,7 @@ static void *conn_thread(void *arg) {
     while (g_running) {
         ssize_t n = recv(cfd, buf, sizeof(buf), 0);
         if (n <= 0) break;
+        if (VERBOSE_LOGS) push_logf("I", "stream sid=%u client->mux bytes=%zd", sid, n);
         pthread_mutex_lock(&g_streams_mu);
         if (s->used) s->last_active = (int64_t)time(NULL);
         pthread_mutex_unlock(&g_streams_mu);
@@ -480,8 +647,15 @@ static void *tunnel_reader(void *arg) {
         uint32_t sid = ((uint32_t)hdr[1] << 24) | ((uint32_t)hdr[2] << 16)
                      | ((uint32_t)hdr[3] <<  8) |  (uint32_t)hdr[4];
         uint16_t len = ((uint16_t)hdr[5] << 8) | hdr[6];
-        if (len > MAX_PAYLOAD) break;
+        if (VERBOSE_LOGS || ft != T_DATA) push_logf("I", "mux RX %s sid=%u len=%u", frame_name(ft), sid, len);
+        if (len > MAX_PAYLOAD) {
+            push_logf("E", "mux RX oversize sid=%u len=%u max=%u", sid, len, (unsigned)MAX_PAYLOAD);
+            break;
+        }
         if (len > 0 && read_full(tfd, payload, len) < 0) break;
+        if (len > 0 && (ft == T_OPEN || (VERBOSE_LOGS && ft == T_DATA))) {
+            log_bytes_preview("mux RX payload", payload, len);
+        }
 
         if (ft == T_DATA) {
             pthread_mutex_lock(&g_streams_mu);
@@ -498,6 +672,7 @@ static void *tunnel_reader(void *arg) {
                     else if (errno == EINTR) continue;
                     else break;
                 }
+                if (VERBOSE_LOGS) push_logf("I", "stream sid=%u mux->client bytes=%u", sid, len);
             }
         } else if (ft == T_CLOSE) {
             pthread_mutex_lock(&g_streams_mu);
@@ -517,10 +692,7 @@ static void *keepalive_thread(void *arg) {
     while (g_running) {
         sleep(KEEPALIVE_SEC);
         if (!g_running) break;
-        uint8_t hdr[FRAME_HDR];
-        frame_hdr(hdr, T_PING, 0, 0);
-        ssize_t n = send(tfd, hdr, FRAME_HDR, MSG_NOSIGNAL);
-        if (n < 0) break;
+        if (tun_send_frame(tfd, T_PING, 0, NULL, 0) < 0) break;
     }
     return NULL;
 }
