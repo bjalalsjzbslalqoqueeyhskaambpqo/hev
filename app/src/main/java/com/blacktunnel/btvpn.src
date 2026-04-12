@@ -96,6 +96,14 @@ public class BtVpnService extends VpnService {
             startForeground(NF_ID, buildNotif("BlackTunnel activo"));
             log("iniciando servicio");
 
+            log("estableciendo túnel con servidor...");
+            int relayFd = BtProxy.start(this);
+            if (relayFd < 0) {
+                log("proxy start failed");
+                return;
+            }
+            log("túnel con servidor OK, iniciando VPN local...");
+
             Builder builder = new Builder()
                     .setSession("bt-hev")
                     .setMtu(1400)
@@ -126,12 +134,7 @@ public class BtVpnService extends VpnService {
             final int localHevTunFd = hevTunFd;
 
             File hevCfg = writeHevCfg();
-            int relayFd = BtProxy.start(this);
-            if (relayFd < 0) {
-                log("proxy start failed");
-                return;
-            }
-            log("proxy listo, iniciando hev");
+            log("vpn lista, iniciando hev");
 
             hevThread = new Thread(() -> {
                 int code = HevBridge.start(hevCfg.getAbsolutePath(), localHevTunFd);
