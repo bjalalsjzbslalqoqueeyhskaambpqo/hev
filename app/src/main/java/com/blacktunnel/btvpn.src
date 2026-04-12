@@ -24,6 +24,7 @@ public class BtVpnService extends VpnService {
     private static final String CH_ID = "bt_vpn";
     private static final int    NF_ID = 33;
     private static final AtomicBoolean runningState = new AtomicBoolean(false);
+    private static final AtomicBoolean proxyStarted = new AtomicBoolean(false);
     private static final Object LOG_LOCK = new Object();
     private static final StringBuilder LOGS = new StringBuilder(8192);
     private static final int MAX_LOG_CHARS = 24000;
@@ -98,6 +99,7 @@ public class BtVpnService extends VpnService {
             stopForeground(STOP_FOREGROUND_REMOVE);
             return;
         }
+        proxyStarted.set(true);
 
         Builder builder = new Builder()
                 .setSession("bt-hev")
@@ -114,7 +116,7 @@ public class BtVpnService extends VpnService {
         tunPfd = builder.establish();
         if (tunPfd == null) {
             log("No se pudo establecer TUN");
-            BtProxy.stop();
+            if (proxyStarted.compareAndSet(true, false)) BtProxy.stop();
             stopForeground(STOP_FOREGROUND_REMOVE);
             return;
         }
@@ -123,7 +125,7 @@ public class BtVpnService extends VpnService {
             hevTunFd = ParcelFileDescriptor.dup(tunPfd.getFileDescriptor()).detachFd();
         } catch (Exception e) {
             log("Error duplicando descriptor TUN: " + e.getClass().getSimpleName());
-            BtProxy.stop();
+            if (proxyStarted.compareAndSet(true, false)) BtProxy.stop();
             try { tunPfd.close(); } catch (Exception ignored) {}
             tunPfd = null;
             stopForeground(STOP_FOREGROUND_REMOVE);
@@ -149,11 +151,14 @@ public class BtVpnService extends VpnService {
     private void stopAll() {
         if (!stopping.compareAndSet(false, true)) return;
         try {
+            if (!running.get() && tunPfd == null && hevTunFd < 0 && hevThread == null && !proxyStarted.get()) return;
             running.set(false);
             runningState.set(false);
             log("Deteniendo servicio VPN");
 
-            try { BtProxy.stop(); } catch (Throwable ignored) {}
+            if (proxyStarted.compareAndSet(true, false)) {
+                try { BtProxy.stop(); } catch (Throwable ignored) {}
+            }
             try { HevBridge.stop(); } catch (Throwable ignored) {}
 
             Thread ht = hevThread; hevThread = null;
@@ -209,7 +214,7 @@ public class BtVpnService extends VpnService {
 
     @Override
     public void onDestroy() {
-        executor.execute(this::stopAll);
+        stopAll();
         executor.shutdown();
         super.onDestroy();
     }
