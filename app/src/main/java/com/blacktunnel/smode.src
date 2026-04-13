@@ -31,8 +31,7 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private Button connectBtn;
-    private Button copyLogsBtn;
-    private TextView logView;
+    private Button copyIdBtn;
     private TextView statusBadgeView;
     private TextView statusDetailsView;
     private TextView deviceIdView;
@@ -53,15 +52,13 @@ public class SimpleModeActivity extends ComponentActivity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private ActivityResultLauncher<Intent> vpnPermissionLauncher;
 
-    private final Runnable logTicker = new Runnable() {
+    private final Runnable stateTicker = new Runnable() {
         @Override
         public void run() {
             try {
                 syncStateFromService();
-                refreshLogViews();
-            } catch (Throwable t) {
-                BtVpnService.log("Error UI loop: " + t.getClass().getSimpleName());
-            }
+                refreshServiceState();
+            } catch (Throwable ignored) {}
             handler.postDelayed(this, 800);
         }
     };
@@ -77,15 +74,13 @@ public class SimpleModeActivity extends ComponentActivity {
                     if (result.getResultCode() == RESULT_OK) {
                         startVpn();
                     } else {
-                        BtVpnService.log("Permiso VPN denegado");
                         setUiState(UiState.DISCONNECTED);
                     }
                 }
         );
 
         connectBtn = findViewById(R.id.btnConnect);
-        copyLogsBtn = findViewById(R.id.btnCopyLogs);
-        logView = findViewById(R.id.txtLogs);
+        copyIdBtn = findViewById(R.id.btnCopyLogs);
         statusBadgeView = findViewById(R.id.txtStatusBadge);
         statusDetailsView = findViewById(R.id.txtStatusDetails);
         deviceIdView = findViewById(R.id.txtDeviceId);
@@ -98,7 +93,7 @@ public class SimpleModeActivity extends ComponentActivity {
         boolean running = BtVpnService.isRunningState();
         setUiState(running ? UiState.CONNECTED : UiState.DISCONNECTED);
         lastRunning = running;
-        refreshLogViews();
+        refreshServiceState();
 
         connectBtn.setOnClickListener(v -> {
             if (uiState == UiState.CONNECTING) return;
@@ -108,11 +103,10 @@ public class SimpleModeActivity extends ComponentActivity {
                 startVpnWithPermission();
             }
         });
-        copyLogsBtn.setOnClickListener(v -> copyInternalIdToClipboard());
+        copyIdBtn.setOnClickListener(v -> copyInternalIdToClipboard());
 
         setupConnectivityMonitor();
-        handler.post(logTicker);
-        BtVpnService.log("Sistema listo");
+        handler.post(stateTicker);
     }
 
     private void setupConnectivityMonitor() {
@@ -121,7 +115,6 @@ public class SimpleModeActivity extends ComponentActivity {
         networkCallback = new ConnectivityManager.NetworkCallback() {
             @Override
             public void onLost(Network network) {
-                BtVpnService.log("Red perdida");
                 if (BtVpnService.isRunningState()) stopVpn();
                 setUiState(UiState.DISCONNECTED);
             }
@@ -131,7 +124,6 @@ public class SimpleModeActivity extends ComponentActivity {
                 if (caps == null) return;
                 boolean hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
                 if (!hasInternet && uiState == UiState.CONNECTING) {
-                    BtVpnService.log("Sin internet disponible");
                     setUiState(UiState.DISCONNECTED);
                 }
             }
@@ -141,26 +133,22 @@ public class SimpleModeActivity extends ComponentActivity {
                     .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                     .build();
             connectivityManager.registerNetworkCallback(req, networkCallback);
-        } catch (Throwable t) {
-            BtVpnService.log("No se pudo registrar monitor de red");
-        }
+        } catch (Throwable ignored) {}
     }
 
     private void copyInternalIdToClipboard() {
         ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         if (cm != null) {
             cm.setPrimaryClip(ClipData.newPlainText("internal_id", internalId));
-            BtVpnService.log("ID interno copiado");
             Toast.makeText(this, "ID copiado", Toast.LENGTH_SHORT).show();
         } else {
-            BtVpnService.log("No se pudo acceder al portapapeles");
             Toast.makeText(this, "Error copiando ID", Toast.LENGTH_SHORT).show();
         }
     }
 
     @Override
     protected void onDestroy() {
-        handler.removeCallbacks(logTicker);
+        handler.removeCallbacks(stateTicker);
         handler.removeCallbacks(autoDisconnectRunnable);
         if (connectivityManager != null && networkCallback != null) {
             try { connectivityManager.unregisterNetworkCallback(networkCallback); } catch (Throwable ignored) {}
@@ -171,7 +159,6 @@ public class SimpleModeActivity extends ComponentActivity {
     private void startVpnWithPermission() {
         setUiState(UiState.CONNECTING);
         authState = "";
-        BtVpnService.log("Conectando...");
 
         Intent prepare = VpnService.prepare(this);
         if (prepare != null) {
@@ -192,7 +179,6 @@ public class SimpleModeActivity extends ComponentActivity {
 
         connectingSinceMs = SystemClock.elapsedRealtime();
         setUiState(UiState.CONNECTING);
-        BtVpnService.log("Iniciando servicio...");
     }
 
     private void stopVpn() {
@@ -203,23 +189,19 @@ public class SimpleModeActivity extends ComponentActivity {
         setUiState(UiState.DISCONNECTED);
         handler.removeCallbacks(autoDisconnectRunnable);
         autoDisconnectAtMs = -1L;
-        BtVpnService.log("Desconectando...");
     }
 
     private void syncStateFromService() {
         boolean running = BtVpnService.isRunningState();
 
         if (running && !lastRunning) {
-            BtVpnService.log("Conexión establecida ✔");
             authState = "";
             setUiState(UiState.CONNECTED);
         } else if (!running && lastRunning) {
-            BtVpnService.log("Servicio detenido");
             setUiState(UiState.DISCONNECTED);
         } else if (!running && uiState == UiState.CONNECTING) {
             long elapsed = SystemClock.elapsedRealtime() - connectingSinceMs;
             if (elapsed > 9000) {
-                BtVpnService.log("No se pudo establecer conexión");
                 setUiState(UiState.DISCONNECTED);
             }
         }
@@ -227,27 +209,10 @@ public class SimpleModeActivity extends ComponentActivity {
         lastRunning = running;
     }
 
-    private void refreshLogViews() {
+    private void refreshServiceState() {
         String logs = BtVpnService.dumpLogs();
-        if (logView != null) {
-            logView.setText(lastLines(logs, 3));
-        }
         updateServerAuthStatus(logs);
         updateUserMetadata(logs);
-    }
-
-    private String lastLines(String logs, int maxLines) {
-        if (logs == null || logs.isEmpty()) return "[--:--:--] Sistema listo";
-        String[] lines = logs.split("\\n");
-        StringBuilder out = new StringBuilder();
-        int start = Math.max(0, lines.length - maxLines);
-        for (int i = start; i < lines.length; i++) {
-            String line = lines[i].trim();
-            if (line.isEmpty()) continue;
-            if (out.length() > 0) out.append('\n');
-            out.append(line);
-        }
-        return out.length() == 0 ? "[--:--:--] Sistema listo" : out.toString();
     }
 
 
@@ -324,7 +289,6 @@ public class SimpleModeActivity extends ComponentActivity {
 
     private void runAutoDisconnect() {
         if (!BtVpnService.isRunningState()) return;
-        BtVpnService.log("Sesión expirada localmente");
         stopVpn();
         if (statusDetailsView != null) {
             statusDetailsView.setText("✖ Usuario expirado\nDesconexión automática local\nID: " + internalId);
@@ -372,14 +336,14 @@ public class SimpleModeActivity extends ComponentActivity {
 
         if (statusDetailsView != null) {
             if (newState == UiState.CONNECTING) {
-                statusDetailsView.setText("… Estableciendo conexión\nServidor: Detectando\nProtocolo: Preparando");
+                statusDetailsView.setText("… Estableciendo conexión");
                 statusDetailsView.setTextColor(Color.parseColor("#E6EDF3"));
             } else if (newState == UiState.CONNECTED) {
-                String eta = autoDisconnectAtMs > 0 ? "Autodesconexión local activa" : "Esperando metadata del servidor";
-                statusDetailsView.setText("✔ Conectado correctamente\n" + eta + "\nProtocolo: UDP");
+                String eta = autoDisconnectAtMs > 0 ? "Autodesconexión local activa" : "Conexión activa";
+                statusDetailsView.setText("✔ Conectado correctamente\n" + eta);
                 statusDetailsView.setTextColor(Color.parseColor("#E6EDF3"));
             } else {
-                statusDetailsView.setText("✖ Servicio desconectado\nServidor: --\nProtocolo: --");
+                statusDetailsView.setText("✖ Servicio desconectado");
                 statusDetailsView.setTextColor(Color.parseColor("#8B9BB0"));
             }
         }

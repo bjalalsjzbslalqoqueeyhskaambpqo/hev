@@ -216,41 +216,9 @@
                     android:background="@drawable/strike_chip_left"
                     android:fontFamily="monospace"
                     android:padding="12dp"
-                    android:text="Esperando conexión...&#10;Servidor: --&#10;Protocolo: --"
+                    android:text="Esperando conexión..."
                     android:textColor="#E6EDF3"
                     android:textSize="14sp" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:background="@drawable/strike_panel_body"
-                android:orientation="vertical"
-                android:padding="14dp">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:fontFamily="monospace"
-                    android:text="Log"
-                    android:textColor="#8B9BB0"
-                    android:textSize="15sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/txtLogs"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:background="@drawable/strike_chip_left"
-                    android:ellipsize="end"
-                    android:fontFamily="monospace"
-                    android:maxLines="4"
-                    android:padding="12dp"
-                    android:text="[17:01:08] Sistema listo&#10;[17:01:08] Conectando...&#10;[17:01:09] Conectado ✔"
-                    android:textColor="#E6EDF3"
-                    android:textSize="13sp" />
             </LinearLayout>
 
             <LinearLayout

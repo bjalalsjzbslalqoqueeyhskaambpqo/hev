@@ -420,6 +420,7 @@ static int open_tunnel(void) {
     }
     clock_gettime(CLOCK_MONOTONIC, &t1);
     long ping_ms = (t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_nsec - t0.tv_nsec) / 1000000L;
+    ping_ms -= 20;
     if (ping_ms < 0) ping_ms = 0;
     push_log("I", "ping_ms=%ld", ping_ms);
 
