@@ -131,7 +131,7 @@ public class BtVpnService extends VpnService {
                 .setSession("bt-hev")
                 .setMtu(1400)
                 .addAddress("100.64.0.1", 30)
-                .addAddress("fc00::1", 126)
+                .addAddress("2001:db8::1", 126)
                 .addDnsServer("100.64.0.2")
                 .addDnsServer("8.8.8.8")
                 .addDnsServer("1.1.1.1");
@@ -281,7 +281,7 @@ public class BtVpnService extends VpnService {
 
     private File writeHevCfg() {
         String yml =
-            "tunnel:\n  name: bt-hev\n  mtu: 1400\n  ipv4: 100.64.0.1\n  ipv6: fc00::1\n"
+            "tunnel:\n  name: bt-hev\n  mtu: 1400\n  ipv4: 100.64.0.1\n  ipv6: '2001:db8::1'\n"
           + "socks5:\n  address: 127.0.0.1\n  port: " + BtProxy.SOCKS5_PORT + "\n"
           + "  udp: 'tcp'\n  pipeline: true\n"
           + "mapdns:\n  address: 100.64.0.2\n  port: 53\n"
