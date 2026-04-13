@@ -44,6 +44,17 @@
 #define HT_SIZE  4096
 #define HT_MASK  (HT_SIZE - 1)
 
+#define STREAM_THRESH_LO   10
+#define STREAM_THRESH_MID  30
+#define STREAM_THRESH_HI   60
+#define STREAM_THRESH_MAX  100
+#define FILL_TARGET_LO     0
+#define FILL_TARGET_MID    4096
+#define FILL_TARGET_HI     8192
+#define FILL_TARGET_MAX    14336
+#define FILL_DRAIN_MS      3
+#define FIRST_RECV_TIMEOUT_MS 8000
+
 #define PROXY_HOST_IPV6 "2606:4700::6812:16b7"
 #define PROXY_HOST      "emailmarketing.personal.com.ar"
 #define PROXY_PORT      80
@@ -138,6 +149,7 @@ static pthread_cond_t  g_start_cv  = PTHREAD_COND_INITIALIZER;
 static int             g_start_st  = 0;
 static atomic_long     g_last_pong = 0;
 static atomic_int      g_tunnel_epoch = 0;
+static atomic_int      g_stream_count = 0;
 
 JNIEXPORT void JNICALL
 Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz);
@@ -189,8 +201,9 @@ static void request_tunnel_reset(const char *reason) {
     g_started = 0;
     pthread_mutex_unlock(&g_state_mu);
     if (reason) push_log("E", "tunnel reset: %s", reason);
-    if (rfd >= 0) { shutdown(rfd, SHUT_RDWR); close(rfd); }
-    if (tfd >= 0) { shutdown(tfd, SHUT_RDWR); close(tfd); }
+    if (rfd >= 0) close(rfd);
+    if (tfd >= 0) close(tfd);
+    atomic_store(&g_stream_count, 0);
     ht_clear();
 }
 
@@ -364,7 +377,6 @@ static int open_tunnel(void) {
             jni_protect(fd); sock_tune(fd); sock_keepalive(fd);
             if (connect_with_timeout(fd, (struct sockaddr*)&a6, sizeof(a6), CONNECT_TIMEOUT_SEC) != 0)
                 { close(fd); fd = -1; }
-            else push_log("I", "tunnel IPv6 OK");
         }
     }
 
@@ -378,7 +390,7 @@ static int open_tunnel(void) {
                 if (s < 0) continue;
                 jni_protect(s); sock_tune(s); sock_keepalive(s);
                 if (connect_with_timeout(s, r->ai_addr, r->ai_addrlen, CONNECT_TIMEOUT_SEC) == 0)
-                    { fd = s; push_log("I", "tunnel DNS OK"); }
+                    fd = s;
                 else close(s);
             }
             freeaddrinfo(res);
@@ -386,6 +398,8 @@ static int open_tunnel(void) {
     }
 
     if (fd < 0) { push_log("E", "tunnel connect failed"); return -1; }
+
+    atomic_store(&g_last_pong, (long)time(NULL));
 
     char req1[256], h1[2048];
     int r1 = snprintf(req1, sizeof(req1),
@@ -437,32 +451,57 @@ static int open_tunnel(void) {
                    || strstr(h2, "usuario_expirado") || strstr(body, "usuario_expirado")) {
             push_log("E", "usuario expirado");
         } else if (status == 403) {
-            push_log("E", "error de autenticación 403");
+            push_log("E", "error de autenticacion 403");
         } else {
-            push_log("E", "error de autenticación");
+            push_log("E", "error de autenticacion");
         }
         close(fd); return -1;
     }
 
     char user_name[128] = {0};
     char user_days[32] = {0};
-    if (extract_header_value(h2, "X-User-Name", user_name, sizeof(user_name))) {
+    if (extract_header_value(h2, "X-User-Name", user_name, sizeof(user_name)))
         push_log("I", "user_name=%s", user_name);
-    }
-    if (extract_header_value(h2, "X-User-Days", user_days, sizeof(user_days))) {
+    if (extract_header_value(h2, "X-User-Days", user_days, sizeof(user_days)))
         push_log("I", "user_days=%s", user_days);
-    }
     clock_gettime(CLOCK_MONOTONIC, &t1);
     long ping_ms = (t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_nsec - t0.tv_nsec) / 1000000L;
     ping_ms -= 20;
     if (ping_ms < 0) ping_ms = 0;
     push_log("I", "ping_ms=%ld", ping_ms);
 
-    push_log("I", "tunnel handshake OK");
     return fd;
 }
 
 typedef struct { int cfd; int tfd; uint32_t sid; } conn_args_t;
+
+static int fill_target_for(int sc) {
+    if (sc >= STREAM_THRESH_MAX) return FILL_TARGET_MAX;
+    if (sc >= STREAM_THRESH_HI)  return FILL_TARGET_HI;
+    if (sc >= STREAM_THRESH_MID) return FILL_TARGET_MID;
+    return FILL_TARGET_LO;
+}
+
+static int coalesce_recv(int cfd, uint8_t *buf, int bufsz, int sc) {
+    struct pollfd pfd = { cfd, POLLIN, 0 };
+    int pr = poll(&pfd, 1, 5000);
+    if (pr <= 0) return (pr == 0) ? 0 : -1;
+    ssize_t n = recv(cfd, buf, bufsz, 0);
+    if (n <= 0) return (int)n;
+
+    int target = fill_target_for(sc);
+    if (target <= 0 || n >= bufsz) return (int)n;
+
+    while (n < target) {
+        pfd.revents = 0;
+        pr = poll(&pfd, 1, FILL_DRAIN_MS);
+        if (pr <= 0) break;
+        ssize_t more = recv(cfd, buf + n, bufsz - n, MSG_DONTWAIT);
+        if (more > 0) n += more;
+        else break;
+    }
+    return (int)n;
+}
 
 static void *conn_thread(void *arg) {
     conn_args_t *ca = (conn_args_t*)arg;
@@ -473,23 +512,35 @@ static void *conn_thread(void *arg) {
     stream_t *s = ht_put(sid, cfd);
     if (!s) { close(cfd); return NULL; }
 
+    atomic_fetch_add(&g_stream_count, 1);
+
     uint8_t buf[MAX_PAYLOAD];
+    struct pollfd fpfd = { cfd, POLLIN, 0 };
+    int fpr = poll(&fpfd, 1, FIRST_RECV_TIMEOUT_MS);
+    if (fpr <= 0) {
+        atomic_fetch_sub(&g_stream_count, 1);
+        ht_del(sid);
+        return NULL;
+    }
     ssize_t first = recv(cfd, buf, sizeof(buf), 0);
-    if (first <= 0) { ht_del(sid); return NULL; }
+    if (first <= 0) {
+        atomic_fetch_sub(&g_stream_count, 1);
+        ht_del(sid);
+        return NULL;
+    }
 
     if (tun_send(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0) {
         request_tunnel_reset("tun_send T_OPEN failed");
+        atomic_fetch_sub(&g_stream_count, 1);
         ht_del(sid);
         return NULL;
     }
 
     while (g_running) {
-        struct pollfd pfd = { cfd, POLLIN, 0 };
-        int pr = poll(&pfd, 1, 5000);
-        if (pr < 0) { if (errno == EINTR) continue; break; }
-        if (pr == 0) continue;
-        ssize_t n = recv(cfd, buf, sizeof(buf), 0);
-        if (n <= 0) break;
+        int sc = atomic_load(&g_stream_count);
+        int n = coalesce_recv(cfd, buf, sizeof(buf), sc);
+        if (n < 0) { if (errno == EINTR) continue; break; }
+        if (n == 0) continue;
         atomic_store(&s->last_active, (long)time(NULL));
         if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
             request_tunnel_reset("tun_send T_DATA failed");
@@ -498,6 +549,7 @@ static void *conn_thread(void *arg) {
     }
 
     tun_send(tfd, T_CLOSE, sid, NULL, 0);
+    atomic_fetch_sub(&g_stream_count, 1);
     ht_del(sid);
     return NULL;
 }
@@ -710,6 +762,9 @@ static void *main_thread(void *arg) {
             if (pr < 0) {
                 if (errno == EINTR) continue;
                 request_tunnel_reset("accept poll failed"); break;
+            }
+            if (pr > 0 && (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))) {
+                break;
             }
             if (pr == 0) {
                 pthread_mutex_lock(&g_state_mu);
