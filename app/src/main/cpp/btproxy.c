@@ -143,7 +143,6 @@ static void ht_clear(void) {
 }
 
 typedef struct {
-    pthread_mutex_t wmu;
     atomic_int      stream_count;
     atomic_int      sid_counter;
     uint32_t        sid_min;
@@ -153,6 +152,7 @@ typedef struct {
 static label_t         g_label[NUM_LABELS];
 static int             g_tunnel_fd      = -1;
 static pthread_mutex_t g_tunnel_fd_mu   = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_tunnel_wmu     = PTHREAD_MUTEX_INITIALIZER;
 
 static volatile int    g_running        = 0;
 static volatile int    g_started        = 0;
@@ -263,8 +263,6 @@ static int connect_with_timeout(int fd, const struct sockaddr *addr, socklen_t a
 
 static int label_send(int label_idx, uint8_t type, uint32_t sid,
                       const uint8_t *data, uint16_t dlen) {
-    label_t *lb = &g_label[label_idx];
-
     uint8_t hdr[FRAME_HDR];
     hdr[0] = type;
     hdr[1] = (sid >> 24) & 0xFF; hdr[2] = (sid >> 16) & 0xFF;
@@ -277,9 +275,9 @@ static int label_send(int label_idx, uint8_t type, uint32_t sid,
     int niov = dlen > 0 ? 2 : 1;
 
     ssize_t total = FRAME_HDR + dlen, sent = 0;
-    pthread_mutex_lock(&lb->wmu);
+    pthread_mutex_lock(&g_tunnel_wmu);
     int tfd = g_tunnel_fd;
-    if (tfd < 0) { pthread_mutex_unlock(&lb->wmu); return -1; }
+    if (tfd < 0) { pthread_mutex_unlock(&g_tunnel_wmu); return -1; }
     while (sent < total) {
         ssize_t n = writev(tfd, iov, niov);
         if (n > 0) {
@@ -301,15 +299,15 @@ static int label_send(int label_idx, uint8_t type, uint32_t sid,
             struct pollfd wpfd = { tfd, POLLOUT, 0 };
             int wp = poll(&wpfd, 1, 30);
             if (wp <= 0 || !(wpfd.revents & POLLOUT)) {
-                pthread_mutex_unlock(&lb->wmu);
+                pthread_mutex_unlock(&g_tunnel_wmu);
                 return -1;
             }
         } else {
-            pthread_mutex_unlock(&lb->wmu);
+            pthread_mutex_unlock(&g_tunnel_wmu);
             return -1;
         }
     }
-    pthread_mutex_unlock(&lb->wmu);
+    pthread_mutex_unlock(&g_tunnel_wmu);
     return 0;
 }
 
@@ -521,11 +519,8 @@ static uint32_t alloc_sid(int label_idx) {
 }
 
 static int pick_data_label(void) {
-    if (pthread_mutex_trylock(&g_label[LABEL_DATA0].wmu) == 0) {
-        pthread_mutex_unlock(&g_label[LABEL_DATA0].wmu);
-        return LABEL_DATA0;
-    }
-    return LABEL_DATA1;
+    static atomic_int rr = 0;
+    return atomic_fetch_add(&rr, 1) & 1 ? LABEL_DATA1 : LABEL_DATA0;
 }
 
 typedef struct { int cfd; int label_idx; uint32_t sid; } conn_args_t;
@@ -916,19 +911,16 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
         }
     }
 
-    pthread_mutex_init(&g_label[LABEL_DATA0].wmu, NULL);
     g_label[LABEL_DATA0].sid_min = SID_LABEL0_MIN;
     g_label[LABEL_DATA0].sid_max = SID_LABEL0_MAX;
     atomic_store(&g_label[LABEL_DATA0].sid_counter, 1);
     atomic_store(&g_label[LABEL_DATA0].stream_count, 0);
 
-    pthread_mutex_init(&g_label[LABEL_DATA1].wmu, NULL);
     g_label[LABEL_DATA1].sid_min = SID_LABEL1_MIN;
     g_label[LABEL_DATA1].sid_max = SID_LABEL1_MAX;
     atomic_store(&g_label[LABEL_DATA1].sid_counter, 0);
     atomic_store(&g_label[LABEL_DATA1].stream_count, 0);
 
-    pthread_mutex_init(&g_label[LABEL_CTRL].wmu, NULL);
     g_label[LABEL_CTRL].sid_min = SID_CTRL_MIN;
     g_label[LABEL_CTRL].sid_max = SID_CTRL_MAX;
     atomic_store(&g_label[LABEL_CTRL].sid_counter, 0);
