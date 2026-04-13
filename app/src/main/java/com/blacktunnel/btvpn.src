@@ -61,6 +61,13 @@ public class BtVpnService extends VpnService {
 
     public static String dumpLogs() {
         synchronized (LOG_LOCK) {
+            String nativeLogs = BtProxy.drainLogs();
+            if (nativeLogs != null && !nativeLogs.isBlank()) {
+                LOGS.append(nativeLogs);
+                if (LOGS.length() > MAX_LOG_CHARS) {
+                    LOGS.delete(0, LOGS.length() - MAX_LOG_CHARS);
+                }
+            }
             return LOGS.toString();
         }
     }
@@ -338,6 +345,10 @@ final class BtProxy {
         nativeStop();
     }
 
+    static String drainLogs() {
+        return nativeDrainLogs();
+    }
+
     static String getOrCreateInternalId(Context ctx) {
         android.content.SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String existing = sp.getString(KEY_INTERNAL_ID, null);
@@ -364,4 +375,5 @@ final class BtProxy {
 
     private static native int nativeStart(int socks5Port, VpnService svc, String internalId);
     private static native void nativeStop();
+    private static native String nativeDrainLogs();
 }
