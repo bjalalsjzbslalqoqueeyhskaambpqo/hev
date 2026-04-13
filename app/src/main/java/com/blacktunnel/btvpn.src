@@ -74,51 +74,28 @@ public class BtVpnService extends VpnService {
 
     public void onTunnelReconnected() {
         if (!running.get() || stopping.get()) return;
-        executor.execute(this::restartHev);
+        executor.execute(this::rebuildTunnel);
     }
 
-    private void restartHev() {
-        if (!running.get() || stopping.get()) return;
+    private void rebuildTunnel() {
         try { HevBridge.stop(); } catch (Throwable ignored) {}
-        Thread old = hevThread; hevThread = null;
-        if (old != null) try { old.join(1500); } catch (InterruptedException ignored) {}
-        if (!running.get() || stopping.get()) return;
-        File cfg = hevCfgFile; int fd = hevTunFd;
-        if (cfg == null || fd < 0) return;
-        hevThread = new Thread(() -> {
-            HevBridge.start(cfg.getAbsolutePath(), fd);
-        }, "hev");
-        hevThread.start();
-    }
 
-    @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
-        String action = intent != null ? intent.getAction() : null;
-        if (ACTION_STOP.equals(action)) {
-            executor.execute(() -> stopAll(false));
-            return START_NOT_STICKY;
+        Thread old = hevThread;
+        hevThread = null;
+        if (old != null) {
+            try { old.join(1500); } catch (InterruptedException ignored) {}
         }
-        executor.execute(this::startAll);
-        return START_STICKY;
-    }
 
-    private void startAll() {
-        if (running.get() || stopping.get()) return;
+        ParcelFileDescriptor oldTun = tunPfd;
+        tunPfd = null;
+        if (oldTun != null) {
+            try { oldTun.close(); } catch (Exception ignored) {}
+        }
 
-        createChannel();
-        startForeground(NF_ID, buildNotif());
-
-        if (!proxyStarted.get()) {
-            String internalId = BtProxy.getOrCreateInternalId(this);
-            if (BtProxy.start(this, internalId) < 0) {
-                stopProxyFully();
-                SystemClock.sleep(250);
-                if (BtProxy.start(this, internalId) < 0) {
-                    stopForeground(STOP_FOREGROUND_REMOVE);
-                    return;
-                }
-            }
-            proxyStarted.set(true);
+        int oldFd = hevTunFd;
+        hevTunFd = -1;
+        if (oldFd >= 0) {
+            try { ParcelFileDescriptor.adoptFd(oldFd).close(); } catch (Exception ignored) {}
         }
 
         Builder builder = new Builder()
@@ -134,8 +111,73 @@ public class BtVpnService extends VpnService {
         try { builder.addDisallowedApplication(getPackageName()); } catch (Exception ignored) {}
 
         tunPfd = builder.establish();
+        if (tunPfd == null) return;
+
+        try {
+            hevTunFd = ParcelFileDescriptor.dup(tunPfd.getFileDescriptor()).detachFd();
+        } catch (Exception e) {
+            try { tunPfd.close(); } catch (Exception ignored) {}
+            tunPfd = null;
+            return;
+        }
+
+        final int fd = hevTunFd;
+        final File cfg = hevCfgFile;
+
+        hevThread = new Thread(() -> {
+            HevBridge.start(cfg.getAbsolutePath(), fd);
+            try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
+            if (hevTunFd == fd) hevTunFd = -1;
+        }, "hev");
+
+        hevThread.start();
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        String action = intent != null ? intent.getAction() : null;
+        if (ACTION_STOP.equals(action)) {
+            executor.execute(() -> stopAll(true));
+            return START_NOT_STICKY;
+        }
+        executor.execute(this::startAll);
+        return START_STICKY;
+    }
+
+    private void startAll() {
+        if (running.get() || stopping.get()) return;
+
+        createChannel();
+        startForeground(NF_ID, buildNotif());
+
+        stopProxyFully();
+        proxyStarted.set(false);
+
+        String internalId = BtProxy.getOrCreateInternalId(this);
+        if (BtProxy.start(this, internalId) < 0) {
+            SystemClock.sleep(250);
+            if (BtProxy.start(this, internalId) < 0) {
+                stopForeground(STOP_FOREGROUND_REMOVE);
+                return;
+            }
+        }
+        proxyStarted.set(true);
+
+        Builder builder = new Builder()
+                .setSession("bt-hev")
+                .setMtu(1380)
+                .addAddress("100.64.0.1", 30)
+                .addAddress("2001:db8::1", 126)
+                .addDnsServer("100.64.0.2");
+
+        addPublicRoutes(builder);
+        builder.addRoute("::", 0);
+
+        try { builder.addDisallowedApplication(getPackageName()); } catch (Exception ignored) {}
+
+        tunPfd = builder.establish();
         if (tunPfd == null) {
-            if (proxyStarted.compareAndSet(true, false)) stopProxyFully();
+            stopProxyFully();
             stopForeground(STOP_FOREGROUND_REMOVE);
             return;
         }
@@ -143,9 +185,9 @@ public class BtVpnService extends VpnService {
         try {
             hevTunFd = ParcelFileDescriptor.dup(tunPfd.getFileDescriptor()).detachFd();
         } catch (Exception e) {
-            if (proxyStarted.compareAndSet(true, false)) stopProxyFully();
             try { tunPfd.close(); } catch (Exception ignored) {}
             tunPfd = null;
+            stopProxyFully();
             stopForeground(STOP_FOREGROUND_REMOVE);
             return;
         }
@@ -159,6 +201,7 @@ public class BtVpnService extends VpnService {
             try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
             if (hevTunFd == fd) hevTunFd = -1;
         }, "hev");
+
         hevThread.start();
 
         running.set(true);
@@ -251,18 +294,27 @@ public class BtVpnService extends VpnService {
 
             try { HevBridge.stop(); } catch (Throwable ignored) {}
 
-            Thread ht = hevThread; hevThread = null;
-            if (ht != null) try { ht.join(2000); } catch (InterruptedException ignored) {}
+            Thread ht = hevThread;
+            hevThread = null;
+            if (ht != null) {
+                try { ht.join(2000); } catch (InterruptedException ignored) {}
+            }
 
-            if (stopProxy && proxyStarted.compareAndSet(true, false)) {
+            if (proxyStarted.compareAndSet(true, false)) {
                 stopProxyFully();
             }
 
-            ParcelFileDescriptor pfd = tunPfd; tunPfd = null;
-            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+            ParcelFileDescriptor pfd = tunPfd;
+            tunPfd = null;
+            if (pfd != null) {
+                try { pfd.close(); } catch (Exception ignored) {}
+            }
 
-            int fd = hevTunFd; hevTunFd = -1;
-            if (fd >= 0) try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
+            int fd = hevTunFd;
+            hevTunFd = -1;
+            if (fd >= 0) {
+                try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
+            }
 
             stopForeground(STOP_FOREGROUND_REMOVE);
         } finally {
