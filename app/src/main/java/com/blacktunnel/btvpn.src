@@ -133,7 +133,8 @@ public class BtVpnService extends VpnService {
                 .addAddress("100.64.0.1", 30)
                 .addAddress("fc00::1", 126)
                 .addDnsServer("100.64.0.2")
-                .addDnsServer("8.8.8.8");
+                .addDnsServer("8.8.8.8")
+                .addDnsServer("1.1.1.1");
         addPublicRoutes(builder);
         builder.addRoute("::", 0);
         try { builder.addDisallowedApplication(getPackageName()); } catch (Exception ignored) {}
@@ -284,11 +285,13 @@ public class BtVpnService extends VpnService {
           + "socks5:\n  address: 127.0.0.1\n  port: " + BtProxy.SOCKS5_PORT + "\n"
           + "  udp: 'tcp'\n  pipeline: true\n"
           + "mapdns:\n  address: 100.64.0.2\n  port: 53\n"
-          + "  network: 100.64.0.0\n  netmask: 255.192.0.0\n  cache-size: 512\n"
-          + "misc:\n  task-stack-size: 40960\n  tcp-buffer-size: 4096\n"
-          + "  udp-copy-buffer-nums: 4\n  connect-timeout: 3000\n"
-          + "  read-write-timeout: 60000\n  udp-read-write-timeout: 30000\n"
-          + "  log-level: warn\n";
+          + "  network: 100.64.0.0\n  netmask: 255.192.0.0\n  cache-size: 8192\n"
+          + "misc:\n  task-stack-size: 81920\n  tcp-buffer-size: 65536\n"
+          + "  udp-copy-buffer-nums: 10\n  connect-timeout: 10000\n"
+          + "  tcp-read-write-timeout: 300000\n  udp-read-write-timeout: 60000\n"
+          + "  log-level: warn\n"
+          + "  max-session-count: 0\n"
+          + "  limit-nofile: 65535\n";
         File f = new File(getFilesDir(), "hev.yml");
         try {
             FileOutputStream o = new FileOutputStream(f, false);
