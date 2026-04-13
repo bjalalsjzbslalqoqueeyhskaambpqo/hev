@@ -34,12 +34,11 @@ public class BtVpnService extends VpnService {
     private static final int    NF_ID = 33;
 
     private static final AtomicBoolean runningState = new AtomicBoolean(false);
-
     private static volatile String lastFatalError = null;
 
-    private static final Object LOG_LOCK = new Object();
-    private static final StringBuilder LOGS = new StringBuilder(8192);
-    private static final int MAX_LOG_CHARS = 24000;
+    private static final Object        LOG_LOCK     = new Object();
+    private static final StringBuilder LOGS         = new StringBuilder(8192);
+    private static final int           MAX_LOG_CHARS = 24000;
 
     private final AtomicBoolean running      = new AtomicBoolean(false);
     private final AtomicBoolean stopping     = new AtomicBoolean(false);
@@ -57,7 +56,7 @@ public class BtVpnService extends VpnService {
     public static void    clearLastFatalError() { lastFatalError = null; }
 
     public static void log(String message) {
-        String ts = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date());
+        String ts   = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date());
         String line = "[" + ts + "] " + message + "\n";
         synchronized (LOG_LOCK) {
             LOGS.append(line);
@@ -68,9 +67,9 @@ public class BtVpnService extends VpnService {
 
     public static String dumpLogs() {
         synchronized (LOG_LOCK) {
-            String nativeLogs = BtProxy.drainLogs();
-            if (nativeLogs != null && !nativeLogs.isBlank()) {
-                LOGS.append(nativeLogs);
+            String native_ = BtProxy.drainLogs();
+            if (native_ != null && !native_.isEmpty()) {
+                LOGS.append(native_);
                 if (LOGS.length() > MAX_LOG_CHARS)
                     LOGS.delete(0, LOGS.length() - MAX_LOG_CHARS);
             }
@@ -91,13 +90,23 @@ public class BtVpnService extends VpnService {
 
     private void restartHev() {
         if (!running.get() || stopping.get()) return;
+
         try { HevBridge.stop(); } catch (Throwable ignored) {}
-        Thread old = hevThread; hevThread = null;
-        if (old != null) try { old.join(1500); } catch (InterruptedException ignored) {}
+
+        Thread old = hevThread;
+        hevThread = null;
+        if (old != null) {
+            try { old.join(3000); } catch (InterruptedException ignored) {}
+        }
+
         if (!running.get() || stopping.get()) return;
-        File cfg = hevCfgFile; int fd = hevTunFd;
+
+        File cfg = hevCfgFile;
+        int  fd  = hevTunFd;
         if (cfg == null || fd < 0) return;
+
         hevThread = new Thread(() -> HevBridge.start(cfg.getAbsolutePath(), fd), "hev");
+        hevThread.setDaemon(true);
         hevThread.start();
     }
 
@@ -127,7 +136,9 @@ public class BtVpnService extends VpnService {
     }
 
     private void startAll() {
-        if (running.get() || stopping.get()) return;
+        if (!running.compareAndSet(false, true)) return;
+        if (stopping.get()) { running.set(false); return; }
+
         log("Iniciando servicio privado");
         lastFatalError = null;
 
@@ -149,6 +160,7 @@ public class BtVpnService extends VpnService {
                 SystemClock.sleep(250);
                 if (BtProxy.start(this, internalId) < 0) {
                     log("BtProxy no pudo iniciar");
+                    running.set(false);
                     releaseWakeLock();
                     stopForeground(STOP_FOREGROUND_REMOVE);
                     return;
@@ -176,6 +188,7 @@ public class BtVpnService extends VpnService {
         if (tunPfd == null) {
             log("No se pudo establecer TUN");
             if (proxyStarted.compareAndSet(true, false)) stopProxyFully();
+            running.set(false);
             releaseWakeLock();
             stopForeground(STOP_FOREGROUND_REMOVE);
             return;
@@ -189,6 +202,7 @@ public class BtVpnService extends VpnService {
             if (proxyStarted.compareAndSet(true, false)) stopProxyFully();
             try { tunPfd.close(); } catch (Exception ignored) {}
             tunPfd = null;
+            running.set(false);
             releaseWakeLock();
             stopForeground(STOP_FOREGROUND_REMOVE);
             return;
@@ -203,21 +217,22 @@ public class BtVpnService extends VpnService {
             if (proxyStarted.compareAndSet(true, false)) stopProxyFully();
             try { tunPfd.close(); } catch (Exception ignored) {}
             tunPfd = null;
+            running.set(false);
             releaseWakeLock();
             stopForeground(STOP_FOREGROUND_REMOVE);
             return;
         }
 
-        final int fd   = hevTunFd;
+        final int  fd  = hevTunFd;
         final File cfg = hevCfgFile;
         hevThread = new Thread(() -> {
             HevBridge.start(cfg.getAbsolutePath(), fd);
             try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
             if (hevTunFd == fd) hevTunFd = -1;
         }, "hev");
+        hevThread.setDaemon(true);
         hevThread.start();
 
-        running.set(true);
         runningState.set(true);
         log("Servicio privado en ejecución");
     }
@@ -225,12 +240,6 @@ public class BtVpnService extends VpnService {
     private void stopAll(boolean stopProxy) {
         if (!stopping.compareAndSet(false, true)) return;
         try {
-            if (!running.get() && tunPfd == null && hevTunFd < 0
-                    && hevThread == null && (!stopProxy || !proxyStarted.get())) {
-                runningState.set(false);
-                return;
-            }
-
             running.set(false);
             log("Deteniendo servicio privado");
 
@@ -267,8 +276,6 @@ public class BtVpnService extends VpnService {
 
     private void stopProxyFully() {
         try { BtProxy.stop(); } catch (Throwable ignored) {}
-        SystemClock.sleep(120);
-        try { BtProxy.stop(); } catch (Throwable ignored) {}
     }
 
     private void addPublicRoutes(Builder builder) {
@@ -280,11 +287,11 @@ public class BtVpnService extends VpnService {
         for (String cidr : excludes) {
             try {
                 String[] parts = cidr.split("/");
-                long base = inet2long(InetAddress.getByName(parts[0]));
-                int prefix = Integer.parseInt(parts[1]);
-                long mask = prefix == 0 ? 0L : (~0L << (32 - prefix)) & 0xFFFFFFFFL;
-                long start = base & mask;
-                long end = start + (~mask & 0xFFFFFFFFL);
+                long base   = inet2long(InetAddress.getByName(parts[0]));
+                int  prefix = Integer.parseInt(parts[1]);
+                long mask   = prefix == 0 ? 0L : (~0L << (32 - prefix)) & 0xFFFFFFFFL;
+                long start  = base & mask;
+                long end    = start + (~mask & 0xFFFFFFFFL);
                 excluded.add(new long[]{start, end});
             } catch (UnknownHostException ignored) {}
         }
@@ -306,9 +313,9 @@ public class BtVpnService extends VpnService {
     }
 
     private int maxBlockPrefix(long start, long end) {
-        int alignmentPrefix = 32 - Math.min(32, Long.numberOfTrailingZeros(start));
-        int prefix = Math.max(0, alignmentPrefix);
-        long remaining = end - start + 1;
+        int  alignmentPrefix = 32 - Math.min(32, Long.numberOfTrailingZeros(start));
+        int  prefix          = Math.max(0, alignmentPrefix);
+        long remaining       = end - start + 1;
         while (prefix < 32) {
             long blockSize = 1L << (32 - prefix);
             if (blockSize <= remaining) break;
@@ -320,12 +327,12 @@ public class BtVpnService extends VpnService {
     private long inet2long(InetAddress addr) {
         byte[] b = addr.getAddress();
         return ((long)(b[0] & 0xFF) << 24) | ((long)(b[1] & 0xFF) << 16)
-             | ((long)(b[2] & 0xFF) << 8)  |  (long)(b[3] & 0xFF);
+             | ((long)(b[2] & 0xFF) <<  8) |  (long)(b[3] & 0xFF);
     }
 
     private String long2inet(long value) {
         return ((value >> 24) & 0xFF) + "." + ((value >> 16) & 0xFF) + "."
-             + ((value >> 8)  & 0xFF) + "." + (value & 0xFF);
+             + ((value >>  8) & 0xFF) + "." + (value & 0xFF);
     }
 
     private File writeHevCfg() {
@@ -342,10 +349,9 @@ public class BtVpnService extends VpnService {
           + "  max-session-count: 0\n"
           + "  limit-nofile: 65535\n";
         File f = new File(getFilesDir(), "hev.yml");
-        try {
-            FileOutputStream o = new FileOutputStream(f, false);
+        try (FileOutputStream o = new FileOutputStream(f, false)) {
             o.write(yml.getBytes(StandardCharsets.UTF_8));
-            o.flush(); o.close();
+            o.flush();
             return f;
         } catch (Exception e) {
             log("writeHevCfg falló: " + e.getMessage());
@@ -385,13 +391,13 @@ final class BtProxy {
     private BtProxy() {}
 
     static int    start(VpnService svc, String internalId) { return nativeStart(SOCKS5_PORT, svc, internalId); }
-    static void   stop()       { nativeStop(); }
-    static String drainLogs()  { return nativeDrainLogs(); }
+    static void   stop()      { nativeStop(); }
+    static String drainLogs() { return nativeDrainLogs(); }
 
     static String getOrCreateInternalId(Context ctx) {
         android.content.SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String existing = sp.getString(KEY_INTERNAL_ID, null);
-        if (existing != null && !existing.isBlank()) return existing;
+        if (existing != null && !existing.isEmpty()) return existing;
         String rawAndroidId = Settings.Secure.getString(ctx.getContentResolver(), Settings.Secure.ANDROID_ID);
         if (rawAndroidId == null) rawAndroidId = "unknown";
         String seed = rawAndroidId + "|" + Build.BRAND + "|" + Build.MODEL + "|"
