@@ -49,10 +49,10 @@
 #define STREAM_THRESH_HI   60
 #define STREAM_THRESH_MAX  100
 #define FILL_TARGET_LO     0
-#define FILL_TARGET_MID    4096
-#define FILL_TARGET_HI     8192
-#define FILL_TARGET_MAX    14336
-#define FILL_DRAIN_MS      3
+#define FILL_TARGET_MID    1024
+#define FILL_TARGET_HI     2048
+#define FILL_TARGET_MAX    4096
+#define FILL_DRAIN_MS      2
 #define FIRST_RECV_TIMEOUT_MS 8000
 
 #define PROXY_HOST_IPV6 "2606:4700::6812:16b7"
@@ -277,8 +277,15 @@ static int tun_send(int tfd, uint8_t type, uint32_t sid,
                     }
                 }
             }
-        } else if (errno == EINTR || errno == EAGAIN) {
+        } else if (errno == EINTR) {
             continue;
+        } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            struct pollfd wpfd = { tfd, POLLOUT, 0 };
+            int wp = poll(&wpfd, 1, 30);
+            if (wp <= 0 || !(wpfd.revents & POLLOUT)) {
+                pthread_mutex_unlock(&g_tun_wmu);
+                return -1;
+            }
         } else {
             pthread_mutex_unlock(&g_tun_wmu);
             return -1;
