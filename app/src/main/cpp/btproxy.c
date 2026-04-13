@@ -42,11 +42,6 @@
 #define PROXY_PORT      80
 #define TUNNEL_HOST     "2.brawlpass.com.ar"
 
-/* ── Códigos de error para open_tunnel ──────────────────────────────────────
- *  0  : éxito (devuelve fd ≥ 0)
- * -1  : error de red — se puede reintentar
- * -2  : error fatal de autenticación — NO reintentar (usuario bloqueado)
- * ────────────────────────────────────────────────────────────────────────── */
 #define ERR_NET   -1
 #define ERR_FATAL -2
 
@@ -64,6 +59,21 @@ static void ht_init(void) {
     for (int i = 0; i < HT_SIZE; i++) {
         g_ht[i] = NULL;
         pthread_mutex_init(&g_ht_mu[i], NULL);
+    }
+}
+
+static void ht_destroy(void) {
+    for (int i = 0; i < HT_SIZE; i++) {
+        pthread_mutex_lock(&g_ht_mu[i]);
+        stream_t *s = g_ht[i];
+        while (s) {
+            stream_t *nx = s->next;
+            if (s->fd >= 0) close(s->fd);
+            free(s); s = nx;
+        }
+        g_ht[i] = NULL;
+        pthread_mutex_unlock(&g_ht_mu[i]);
+        pthread_mutex_destroy(&g_ht_mu[i]);
     }
 }
 
@@ -120,10 +130,10 @@ static void ht_clear(void) {
     }
 }
 
-static volatile int    g_running  = 0;
-static volatile int    g_started  = 0;
-static int             g_relay_fd = -1;
-static int             g_tun_fd   = -1;
+static atomic_int      g_running  = 0;
+static atomic_int      g_started  = 0;
+static atomic_int      g_relay_fd = -1;
+static atomic_int      g_tun_fd   = -1;
 static atomic_int      g_next_sid = 1;
 static char            g_internal_id[160] = {0};
 static pthread_t       g_main_thr;
@@ -136,12 +146,11 @@ static char            g_log_buf[32768];
 static size_t          g_log_len  = 0;
 static pthread_mutex_t g_start_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_start_cv = PTHREAD_COND_INITIALIZER;
-static int             g_start_st = 0;      
+static int             g_start_st = 0;
 
-/* ── g_main_done: el main_thread señaliza cuando realmente terminó ──────── */
 static pthread_mutex_t g_done_mu  = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_done_cv  = PTHREAD_COND_INITIALIZER;
-static int             g_main_done = 1;          /* 1 = no está corriendo   */
+static int             g_main_done = 1;
 
 JNIEXPORT void JNICALL
 Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz);
@@ -167,7 +176,6 @@ static void push_log(const char *level, const char *fmt, ...) {
     pthread_mutex_unlock(&g_log_mu);
 }
 
-/* Notifica a Java que el tunnel reconectó (para reiniciar hev). */
 static void notify_tunnel_reconnected(void) {
     JavaVM *jvm = NULL; jobject svc = NULL;
     pthread_mutex_lock(&g_state_mu);
@@ -185,7 +193,6 @@ static void notify_tunnel_reconnected(void) {
     if (att) (*jvm)->DetachCurrentThread(jvm);
 }
 
-/* Notifica a Java un error fatal para que detenga el servicio limpiamente. */
 static void notify_fatal_error(const char *reason) {
     JavaVM *jvm = NULL; jobject svc = NULL;
     pthread_mutex_lock(&g_state_mu);
@@ -207,17 +214,15 @@ static void notify_fatal_error(const char *reason) {
     if (att) (*jvm)->DetachCurrentThread(jvm);
 }
 
-static void request_tunnel_reset(const char *reason) {
-    int rfd = -1, tfd = -1;
-    pthread_mutex_lock(&g_state_mu);
-    if (!g_running) { pthread_mutex_unlock(&g_state_mu); return; }
-    rfd = g_relay_fd; g_relay_fd = -1;
-    tfd = g_tun_fd;   g_tun_fd   = -1;
-    g_started = 0;
-    pthread_mutex_unlock(&g_state_mu);
+static void request_tunnel_reset(int relay_fd, int tun_fd, const char *reason) {
+    int expected_rfd = relay_fd;
+    int expected_tfd = tun_fd;
+    atomic_compare_exchange_strong(&g_relay_fd, &expected_rfd, -1);
+    atomic_compare_exchange_strong(&g_tun_fd,   &expected_tfd, -1);
+    atomic_store(&g_started, 0);
     if (reason) push_log("E", "tunnel reset: %s", reason);
-    if (rfd >= 0) close(rfd);
-    if (tfd >= 0) close(tfd);
+    if (relay_fd >= 0) close(relay_fd);
+    if (tun_fd   >= 0) close(tun_fd);
     ht_clear();
 }
 
@@ -406,8 +411,8 @@ static int open_tunnel(void) {
     send(fd, req2, r2, MSG_NOSIGNAL);
     int h2_len = recv_until_eoh(fd, h2, sizeof(h2), 8);
     int status = parse_http_status(h2);
+
     if (h2_len < 0 || status != 101) {
-        /* ── Leer body para detectar la causa ──────────────────────────── */
         char body[1024] = {0};
         int body_len = 0;
         if (h2_len > 0) {
@@ -434,11 +439,10 @@ static int open_tunnel(void) {
 
         close(fd);
 
-        /* ── Clasificar: fatal vs reintentable ──────────────────────────── */
         int is_not_registered =
-            strstr(h2, "not_registered")      || strstr(body, "not_registered")      ||
-            strstr(h2, "no_registrado")        || strstr(body, "no_registrado")        ||
-            strstr(h2, "usuario_no_registrado")|| strstr(body, "usuario_no_registrado");
+            strstr(h2, "not_registered")       || strstr(body, "not_registered")       ||
+            strstr(h2, "no_registrado")         || strstr(body, "no_registrado")         ||
+            strstr(h2, "usuario_no_registrado") || strstr(body, "usuario_no_registrado");
 
         int is_expired =
             strstr(h2, "expired")             || strstr(body, "expired")             ||
@@ -455,7 +459,6 @@ static int open_tunnel(void) {
             push_log("E", "error de autenticación 403");
             return ERR_FATAL;
         } else {
-            /* Error de red / servidor caído / respuesta incompleta */
             push_log("E", "error de conexión (status=%d)", status);
             return ERR_NET;
         }
@@ -476,11 +479,11 @@ static int open_tunnel(void) {
     return fd;
 }
 
-typedef struct { int cfd; int tfd; uint32_t sid; } conn_args_t;
+typedef struct { int cfd; int tfd; int rfd; uint32_t sid; } conn_args_t;
 
 static void *conn_thread(void *arg) {
     conn_args_t *ca = (conn_args_t*)arg;
-    int cfd = ca->cfd, tfd = ca->tfd;
+    int cfd = ca->cfd, tfd = ca->tfd, rfd = ca->rfd;
     uint32_t sid = ca->sid;
     free(ca);
 
@@ -492,17 +495,17 @@ static void *conn_thread(void *arg) {
     if (first <= 0) { ht_del(sid); return NULL; }
 
     if (tun_send(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0) {
-        request_tunnel_reset("tun_send T_OPEN failed");
+        request_tunnel_reset(rfd, tfd, "tun_send T_OPEN failed");
         ht_del(sid);
         return NULL;
     }
 
-    while (g_running) {
+    while (atomic_load(&g_running)) {
         ssize_t n = recv(cfd, buf, sizeof(buf), 0);
         if (n <= 0) break;
         atomic_store(&s->last_active, (long)time(NULL));
         if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
-            request_tunnel_reset("tun_send T_DATA failed");
+            request_tunnel_reset(rfd, tfd, "tun_send T_DATA failed");
             break;
         }
     }
@@ -512,13 +515,18 @@ static void *conn_thread(void *arg) {
     return NULL;
 }
 
+typedef struct { int tfd; int rfd; } reader_args_t;
+
 static void *tunnel_reader(void *arg) {
-    int tfd = *(int*)arg;
+    reader_args_t *ra = (reader_args_t*)arg;
+    int tfd = ra->tfd, rfd = ra->rfd;
+    free(ra);
+
     uint8_t hdr[FRAME_HDR], payload[MAX_PAYLOAD];
 
-    while (g_running) {
+    while (atomic_load(&g_running)) {
         if (tun_recv(tfd, hdr, FRAME_HDR) < 0) {
-            request_tunnel_reset("tunnel header read failed"); break;
+            request_tunnel_reset(rfd, tfd, "tunnel header read failed"); break;
         }
 
         uint8_t  ft  = hdr[0];
@@ -526,9 +534,9 @@ static void *tunnel_reader(void *arg) {
                        ((uint32_t)hdr[3] <<  8) |  (uint32_t)hdr[4];
         uint16_t len = ((uint16_t)hdr[5] << 8) | hdr[6];
 
-        if (len > MAX_PAYLOAD) { request_tunnel_reset("payload too large"); break; }
+        if (len > MAX_PAYLOAD) { request_tunnel_reset(rfd, tfd, "payload too large"); break; }
         if (len > 0 && tun_recv(tfd, payload, len) < 0) {
-            request_tunnel_reset("tunnel payload read failed"); break;
+            request_tunnel_reset(rfd, tfd, "tunnel payload read failed"); break;
         }
 
         switch (ft) {
@@ -567,13 +575,18 @@ static void *tunnel_reader(void *arg) {
     return NULL;
 }
 
+typedef struct { int tfd; int rfd; } ka_args_t;
+
 static void *keepalive_thread(void *arg) {
-    int tfd = *(int*)arg;
-    while (g_running) {
+    ka_args_t *ka = (ka_args_t*)arg;
+    int tfd = ka->tfd, rfd = ka->rfd;
+    free(ka);
+
+    while (atomic_load(&g_running)) {
         sleep(KEEPALIVE_SEC);
-        if (!g_running) break;
+        if (!atomic_load(&g_running)) break;
         if (tun_send(tfd, T_PING, 0, NULL, 0) < 0) {
-            request_tunnel_reset("keepalive ping failed"); break;
+            request_tunnel_reset(rfd, tfd, "keepalive ping failed"); break;
         }
     }
     return NULL;
@@ -581,11 +594,11 @@ static void *keepalive_thread(void *arg) {
 
 static void *watchdog_thread(void *arg) {
     (void)arg;
-    while (g_running) {
+    while (atomic_load(&g_running)) {
         sleep(WD_INTERVAL);
-        if (!g_running) break;
+        if (!atomic_load(&g_running)) break;
         long now = (long)time(NULL);
-        int tfd = g_tun_fd;
+        int  tfd = atomic_load(&g_tun_fd);
         for (int i = 0; i < HT_SIZE; i++) {
             pthread_mutex_lock(&g_ht_mu[i]);
             stream_t **pp = &g_ht[i];
@@ -611,12 +624,11 @@ static void *watchdog_thread(void *arg) {
 
 static void *main_thread(void *arg) {
     int port = (int)(intptr_t)arg;
-    static int first_start = 1;
+    int first_start = 1;
 
-    while (g_running) {
+    while (atomic_load(&g_running)) {
         int tfd = open_tunnel();
 
-        /* ── Error fatal: notificar a Java y salir sin reintentar ──────── */
         if (tfd == ERR_FATAL) {
             push_log("E", "error fatal, deteniendo servicio");
             pthread_mutex_lock(&g_start_mu);
@@ -626,29 +638,30 @@ static void *main_thread(void *arg) {
             break;
         }
 
-        /* ── Error de red: reintentar después de pausa ──────────────────── */
         if (tfd == ERR_NET) {
             pthread_mutex_lock(&g_start_mu);
             if (g_start_st == 0) { g_start_st = -1; pthread_cond_broadcast(&g_start_cv); }
             pthread_mutex_unlock(&g_start_mu);
-            if (!g_running) break;
+            if (!atomic_load(&g_running)) break;
             push_log("E", "reconnect in 1s");
             sleep(1); continue;
         }
 
-        /* ── Conexión exitosa ───────────────────────────────────────────── */
-        g_tun_fd = tfd;
+        atomic_store(&g_tun_fd, tfd);
 
         int rfd = socket(AF_INET, SOCK_STREAM, 0);
-        if (rfd < 0) { close(tfd); g_tun_fd = -1; sleep(1); continue; }
+        if (rfd < 0) {
+            close(tfd); atomic_store(&g_tun_fd, -1); sleep(1); continue;
+        }
         int one = 1; setsockopt(rfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-        int v = 1;   setsockopt(rfd, IPPROTO_TCP, TCP_NODELAY, &v,   sizeof(v));
+        int v   = 1; setsockopt(rfd, IPPROTO_TCP, TCP_NODELAY,  &v,   sizeof(v));
         struct sockaddr_in la = {0};
         la.sin_family = AF_INET; la.sin_port = htons((uint16_t)port);
         la.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         if (bind(rfd, (struct sockaddr*)&la, sizeof(la)) < 0 ||
             listen(rfd, RELAY_BACKLOG) < 0) {
-            close(rfd); close(tfd); g_relay_fd = -1; g_tun_fd = -1;
+            close(rfd); close(tfd);
+            atomic_store(&g_relay_fd, -1); atomic_store(&g_tun_fd, -1);
             pthread_mutex_lock(&g_start_mu);
             if (g_start_st == 0) { g_start_st = -1; pthread_cond_broadcast(&g_start_cv); }
             pthread_mutex_unlock(&g_start_mu);
@@ -656,32 +669,43 @@ static void *main_thread(void *arg) {
             sleep(2); continue;
         }
 
-        g_relay_fd = rfd; g_started = 1;
+        atomic_store(&g_relay_fd, rfd);
+        atomic_store(&g_started, 1);
         push_log("I", "relay listening on 127.0.0.1:%d", port);
 
         pthread_mutex_lock(&g_start_mu);
         if (g_start_st == 0) { g_start_st = 1; pthread_cond_broadcast(&g_start_cv); }
         pthread_mutex_unlock(&g_start_mu);
 
-        if (first_start) {
-            first_start = 0;
-        } else {
+        if (!first_start) {
             notify_tunnel_reconnected();
         }
+        first_start = 0;
+
+        reader_args_t *ra = malloc(sizeof(reader_args_t));
+        ka_args_t     *ka = malloc(sizeof(ka_args_t));
+        if (!ra || !ka) {
+            free(ra); free(ka);
+            close(rfd); close(tfd);
+            atomic_store(&g_relay_fd, -1); atomic_store(&g_tun_fd, -1);
+            sleep(1); continue;
+        }
+        ra->tfd = tfd; ra->rfd = rfd;
+        ka->tfd = tfd; ka->rfd = rfd;
 
         pthread_t trd, tka, twd;
-        pthread_create(&trd, NULL, tunnel_reader,    &g_tun_fd);
-        pthread_create(&tka, NULL, keepalive_thread, &g_tun_fd);
+        pthread_create(&trd, NULL, tunnel_reader,    ra);
+        pthread_create(&tka, NULL, keepalive_thread, ka);
         pthread_create(&twd, NULL, watchdog_thread,  NULL);
         pthread_detach(trd); pthread_detach(tka); pthread_detach(twd);
 
-        while (g_running) {
+        while (atomic_load(&g_running)) {
             struct sockaddr_in ca; socklen_t cl = sizeof(ca);
             int cfd = accept(rfd, (struct sockaddr*)&ca, &cl);
             if (cfd < 0) {
-                if (!g_running) break;
+                if (!atomic_load(&g_running)) break;
                 if (errno == EINTR || errno == EAGAIN) continue;
-                request_tunnel_reset("accept failed"); break;
+                request_tunnel_reset(rfd, tfd, "accept failed"); break;
             }
             sock_tune(cfd);
 
@@ -692,7 +716,7 @@ static void *main_thread(void *arg) {
 
             conn_args_t *ca2 = malloc(sizeof(conn_args_t));
             if (!ca2) { close(cfd); continue; }
-            ca2->cfd = cfd; ca2->tfd = tfd; ca2->sid = sid;
+            ca2->cfd = cfd; ca2->tfd = tfd; ca2->rfd = rfd; ca2->sid = sid;
 
             pthread_t ct;
             if (pthread_create(&ct, NULL, conn_thread, ca2) != 0)
@@ -700,11 +724,11 @@ static void *main_thread(void *arg) {
             else pthread_detach(ct);
         }
 
-        request_tunnel_reset(NULL);
-        if (g_running) { push_log("E", "tunnel dropped, reconnecting in 1s"); sleep(1); }
+        request_tunnel_reset(atomic_load(&g_relay_fd), atomic_load(&g_tun_fd), NULL);
+        if (atomic_load(&g_running)) { push_log("E", "tunnel dropped, reconnecting in 1s"); sleep(1); }
     }
 
-    g_started = 0;
+    atomic_store(&g_started, 0);
 
     pthread_mutex_lock(&g_done_mu);
     g_main_done = 1;
@@ -718,7 +742,7 @@ JNIEXPORT jint JNICALL
 Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
                                           jint port, jobject svc, jstring internal_id) {
     pthread_mutex_lock(&g_state_mu);
-    if (g_running) { pthread_mutex_unlock(&g_state_mu); return 0; }
+    if (atomic_load(&g_running)) { pthread_mutex_unlock(&g_state_mu); return 0; }
     (*env)->GetJavaVM(env, &g_jvm);
     g_vpn_svc = (*env)->NewGlobalRef(env, svc);
     g_internal_id[0] = '\0';
@@ -729,9 +753,13 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
             (*env)->ReleaseStringUTFChars(env, internal_id, iid);
         }
     }
+    ht_destroy();
     ht_init();
-    g_running = 1; g_started = 0;
+    atomic_store(&g_running, 1);
+    atomic_store(&g_started, 0);
     atomic_store(&g_next_sid, 1);
+    atomic_store(&g_relay_fd, -1);
+    atomic_store(&g_tun_fd, -1);
     pthread_mutex_unlock(&g_state_mu);
 
     pthread_mutex_lock(&g_start_mu); g_start_st = 0;
@@ -743,9 +771,11 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
 
     if (pthread_create(&g_main_thr, NULL, main_thread,
                        (void*)(intptr_t)port) != 0) {
-        pthread_mutex_lock(&g_state_mu); g_running = 0;
+        pthread_mutex_lock(&g_state_mu);
+        atomic_store(&g_running, 0);
         if (g_vpn_svc) { (*env)->DeleteGlobalRef(env, g_vpn_svc); g_vpn_svc = NULL; }
-        g_jvm = NULL; pthread_mutex_unlock(&g_state_mu);
+        g_jvm = NULL;
+        pthread_mutex_unlock(&g_state_mu);
         pthread_mutex_lock(&g_done_mu); g_main_done = 1; pthread_mutex_unlock(&g_done_mu);
         return -1;
     }
@@ -769,16 +799,17 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
 JNIEXPORT void JNICALL
 Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     pthread_mutex_lock(&g_state_mu);
-    if (!g_running) { pthread_mutex_unlock(&g_state_mu); return; }
-    g_running = 0;
+    if (!atomic_load(&g_running)) { pthread_mutex_unlock(&g_state_mu); return; }
+    atomic_store(&g_running, 0);
     g_internal_id[0] = '\0';
     jobject svc = g_vpn_svc; g_vpn_svc = NULL; g_jvm = NULL;
     pthread_mutex_unlock(&g_state_mu);
 
-    if (g_relay_fd >= 0) { close(g_relay_fd); g_relay_fd = -1; }
-    if (g_tun_fd   >= 0) { close(g_tun_fd);   g_tun_fd   = -1; }
+    int rfd = atomic_exchange(&g_relay_fd, -1);
+    int tfd = atomic_exchange(&g_tun_fd,   -1);
+    if (rfd >= 0) close(rfd);
+    if (tfd >= 0) close(tfd);
 
-    /* Desbloquear nativeStart si aún está esperando */
     pthread_mutex_lock(&g_start_mu);
     if (g_start_st == 0) { g_start_st = -1; pthread_cond_broadcast(&g_start_cv); }
     pthread_mutex_unlock(&g_start_mu);
@@ -793,7 +824,7 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
 
     ht_clear();
     if (svc) (*env)->DeleteGlobalRef(env, svc);
-    g_started = 0;
+    atomic_store(&g_started, 0);
 }
 
 JNIEXPORT jstring JNICALL
