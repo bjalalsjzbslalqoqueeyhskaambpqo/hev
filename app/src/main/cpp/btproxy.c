@@ -30,18 +30,19 @@
 #define T_PONG  0x05
 #define T_OPEN  0x01
 
-#define FRAME_HDR            7
-#define MAX_PAYLOAD          65536
-#define RELAY_BACKLOG        512
-#define IDLE_SECS            90
-#define WD_INTERVAL          15
-#define KEEPALIVE_SEC        20
-#define PONG_TIMEOUT_SEC     45
-#define RECONNECT_DELAY_MIN  2
-#define RECONNECT_DELAY_MAX  30
-#define CONNECT_TIMEOUT_SEC  10
+#define FRAME_HDR             7
+#define MAX_PAYLOAD           65536
+#define RELAY_BACKLOG         512
+#define IDLE_SECS             90
+#define WD_INTERVAL           15
+#define KEEPALIVE_SEC         20
+#define PONG_TIMEOUT_SEC      45
+#define RECONNECT_DELAY_MIN   2
+#define RECONNECT_DELAY_MAX   30
+#define CONNECT_TIMEOUT_SEC   10
 #define HANDSHAKE_TIMEOUT_SEC 12
-#define MAX_EPOLL_EVENTS     64
+#define MAX_EPOLL_EVENTS      64
+#define TUN_SEND_FATAL_RETRIES 3
 
 #define HT_SIZE  4096
 #define HT_MASK  (HT_SIZE - 1)
@@ -121,23 +122,23 @@ static void ht_clear(void) {
     }
 }
 
-static atomic_int      g_running   = 0;
-static atomic_int      g_started   = 0;
-static int             g_relay_fd  = -1;
-static int             g_tun_fd    = -1;
-static atomic_int      g_next_sid  = 1;
+static atomic_int      g_running      = 0;
+static atomic_int      g_started      = 0;
+static int             g_relay_fd     = -1;
+static int             g_tun_fd       = -1;
+static atomic_int      g_next_sid     = 1;
 static char            g_internal_id[160] = {0};
-static JavaVM         *g_jvm       = NULL;
-static jobject         g_vpn_svc   = NULL;
-static pthread_mutex_t g_state_mu  = PTHREAD_MUTEX_INITIALIZER;
-static pthread_mutex_t g_tun_wmu   = PTHREAD_MUTEX_INITIALIZER;
-static pthread_mutex_t g_log_mu    = PTHREAD_MUTEX_INITIALIZER;
+static JavaVM         *g_jvm          = NULL;
+static jobject         g_vpn_svc      = NULL;
+static pthread_mutex_t g_state_mu     = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_tun_wmu      = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_log_mu       = PTHREAD_MUTEX_INITIALIZER;
 static char            g_log_buf[32768];
-static size_t          g_log_len   = 0;
-static pthread_mutex_t g_start_mu  = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t  g_start_cv  = PTHREAD_COND_INITIALIZER;
-static int             g_start_st  = 0;
-static atomic_long     g_last_pong = 0;
+static size_t          g_log_len      = 0;
+static pthread_mutex_t g_start_mu     = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_start_cv     = PTHREAD_COND_INITIALIZER;
+static int             g_start_st     = 0;
+static atomic_long     g_last_pong    = 0;
 static atomic_int      g_tunnel_epoch = 0;
 
 JNIEXPORT void JNICALL
@@ -216,10 +217,10 @@ static void request_tunnel_reset(const char *reason) {
 
 static void sock_tune(int fd) {
     int v;
-    v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,   &v, sizeof(v));
-    v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK,  &v, sizeof(v));
-    v = 262144; setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,    &v, sizeof(v));
-    v = 262144; setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,    &v, sizeof(v));
+    v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
+    v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &v, sizeof(v));
+    v = 262144; setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,   &v, sizeof(v));
+    v = 262144; setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,   &v, sizeof(v));
     int flags = fcntl(fd, F_GETFD, 0);
     if (flags >= 0) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
@@ -245,7 +246,6 @@ static int connect_with_timeout(int fd, const struct sockaddr *addr, socklen_t a
     int r = connect(fd, addr, addrlen);
     if (r == 0) { set_nonblocking(fd, 0); return 0; }
     if (errno != EINPROGRESS) { set_nonblocking(fd, 0); return -1; }
-
     int epfd = epoll_create1(EPOLL_CLOEXEC);
     if (epfd < 0) { set_nonblocking(fd, 0); return -1; }
     struct epoll_event ev = { .events = EPOLLOUT | EPOLLERR, .data.fd = fd };
@@ -260,8 +260,8 @@ static int connect_with_timeout(int fd, const struct sockaddr *addr, socklen_t a
     return 0;
 }
 
-static int tun_send(int tfd, uint8_t type, uint32_t sid,
-                    const uint8_t *data, uint16_t dlen) {
+static int tun_send_raw(int tfd, uint8_t type, uint32_t sid,
+                        const uint8_t *data, uint16_t dlen) {
     uint8_t hdr[FRAME_HDR];
     hdr[0] = type;
     hdr[1] = (sid >> 24) & 0xFF; hdr[2] = (sid >> 16) & 0xFF;
@@ -274,6 +274,7 @@ static int tun_send(int tfd, uint8_t type, uint32_t sid,
     int niov = dlen > 0 ? 2 : 1;
 
     ssize_t total = FRAME_HDR + dlen, sent = 0;
+    int retries = 0;
     pthread_mutex_lock(&g_tun_wmu);
     while (sent < total) {
         ssize_t n = writev(tfd, iov, niov);
@@ -290,8 +291,14 @@ static int tun_send(int tfd, uint8_t type, uint32_t sid,
                     }
                 }
             }
-        } else if (errno == EINTR || errno == EAGAIN) {
+        } else if (errno == EINTR) {
             continue;
+        } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (++retries > TUN_SEND_FATAL_RETRIES) {
+                pthread_mutex_unlock(&g_tun_wmu);
+                return -1;
+            }
+            usleep(500);
         } else {
             pthread_mutex_unlock(&g_tun_wmu);
             return -1;
@@ -301,31 +308,38 @@ static int tun_send(int tfd, uint8_t type, uint32_t sid,
     return 0;
 }
 
-static int tun_recv_full(int fd, uint8_t *buf, int len, int timeout_ms) {
+static int tun_send(int tfd, uint8_t type, uint32_t sid,
+                    const uint8_t *data, uint16_t dlen) {
+    return tun_send_raw(tfd, type, sid, data, dlen);
+}
+
+static int tun_send_critical(int tfd, uint8_t type, uint32_t sid) {
+    int r = tun_send_raw(tfd, type, sid, NULL, 0);
+    if (r < 0) request_tunnel_reset("critical send failed");
+    return r;
+}
+
+static int tun_recv_full(int epfd, int fd, uint8_t *buf, int len, int timeout_ms) {
     int off = 0;
-    int epfd = epoll_create1(EPOLL_CLOEXEC);
-    if (epfd < 0) return -1;
-    struct epoll_event ev = { .events = EPOLLIN, .data.fd = fd };
-    epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
     while (off < len) {
         struct epoll_event out;
         int pr = epoll_wait(epfd, &out, 1, timeout_ms);
-        if (pr < 0) { if (errno == EINTR) continue; close(epfd); return -1; }
-        if (pr == 0) { close(epfd); return -2; }
+        if (pr < 0) { if (errno == EINTR) continue; return -1; }
+        if (pr == 0) return -2;
+        if (out.events & (EPOLLERR | EPOLLHUP)) return -1;
         ssize_t n = recv(fd, buf + off, len - off, 0);
         if (n > 0) {
             off += (int)n;
             int qa = 1;
             setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &qa, sizeof(qa));
         } else if (n == 0) {
-            close(epfd); return -1;
+            return -1;
         } else if (errno == EINTR || errno == EAGAIN) {
             continue;
         } else {
-            close(epfd); return -1;
+            return -1;
         }
     }
-    close(epfd);
     return 0;
 }
 
@@ -488,7 +502,6 @@ static int open_tunnel(void) {
         push_log("I", "user_days=%s", user_days);
     clock_gettime(CLOCK_MONOTONIC, &t1);
     long ping_ms = (t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_nsec - t0.tv_nsec) / 1000000L;
-    ping_ms -= 20;
     if (ping_ms < 0) ping_ms = 0;
     push_log("I", "ping_ms=%ld", ping_ms);
 
@@ -513,9 +526,7 @@ static void *conn_thread(void *arg) {
     if (first <= 0) { free(buf); ht_del(sid); return NULL; }
 
     if (tun_send(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0) {
-        request_tunnel_reset("tun_send T_OPEN failed");
-        free(buf); ht_del(sid);
-        return NULL;
+        free(buf); ht_del(sid); return NULL;
     }
 
     int epfd = epoll_create1(EPOLL_CLOEXEC);
@@ -534,10 +545,7 @@ static void *conn_thread(void *arg) {
             ssize_t n = recv(cfd, buf, MAX_PAYLOAD, 0);
             if (n > 0) {
                 atomic_store(&s->last_active, (long)time(NULL));
-                if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
-                    request_tunnel_reset("tun_send T_DATA failed");
-                    goto conn_done;
-                }
+                if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) goto conn_done;
             } else if (n == 0) {
                 goto conn_done;
             } else {
@@ -566,12 +574,17 @@ static void *tunnel_reader(void *arg) {
 
     set_thread_priority_via_jni();
 
+    int epfd = epoll_create1(EPOLL_CLOEXEC);
+    if (epfd < 0) { request_tunnel_reset("tunnel_reader epoll_create failed"); return NULL; }
+    struct epoll_event ev = { .events = EPOLLIN, .data.fd = tfd };
+    epoll_ctl(epfd, EPOLL_CTL_ADD, tfd, &ev);
+
     uint8_t  hdr[FRAME_HDR];
     uint8_t *payload = malloc(MAX_PAYLOAD);
-    if (!payload) return NULL;
+    if (!payload) { close(epfd); request_tunnel_reset("tunnel_reader malloc failed"); return NULL; }
 
     while (atomic_load(&g_running) && atomic_load(&g_tunnel_epoch) == epoch) {
-        int rc = tun_recv_full(tfd, hdr, FRAME_HDR, 60000);
+        int rc = tun_recv_full(epfd, tfd, hdr, FRAME_HDR, 60000);
         if (!atomic_load(&g_running) || atomic_load(&g_tunnel_epoch) != epoch) break;
         if (rc == -2) {
             long last = atomic_load(&g_last_pong);
@@ -581,10 +594,7 @@ static void *tunnel_reader(void *arg) {
             }
             continue;
         }
-        if (rc < 0) {
-            request_tunnel_reset("tunnel header read failed");
-            break;
-        }
+        if (rc < 0) { request_tunnel_reset("tunnel header read failed"); break; }
 
         uint8_t  ft  = hdr[0];
         uint32_t sid = ((uint32_t)hdr[1] << 24) | ((uint32_t)hdr[2] << 16) |
@@ -593,7 +603,7 @@ static void *tunnel_reader(void *arg) {
 
         if (len > MAX_PAYLOAD) { request_tunnel_reset("payload too large"); break; }
         if (len > 0) {
-            rc = tun_recv_full(tfd, payload, len, 30000);
+            rc = tun_recv_full(epfd, tfd, payload, len, 30000);
             if (rc < 0) { request_tunnel_reset("tunnel payload read failed"); break; }
         }
 
@@ -628,7 +638,7 @@ static void *tunnel_reader(void *arg) {
             ht_del(sid);
             break;
         case T_PING:
-            tun_send(tfd, T_PONG, 0, NULL, 0);
+            tun_send_critical(tfd, T_PONG, 0);
             break;
         case T_PONG:
             atomic_store(&g_last_pong, (long)time(NULL));
@@ -637,7 +647,9 @@ static void *tunnel_reader(void *arg) {
             break;
         }
     }
+
     free(payload);
+    close(epfd);
     return NULL;
 }
 
@@ -660,10 +672,7 @@ static void *keepalive_thread(void *arg) {
             break;
         }
 
-        if (tun_send(tfd, T_PING, 0, NULL, 0) < 0) {
-            request_tunnel_reset("keepalive ping failed");
-            break;
-        }
+        if (tun_send_critical(tfd, T_PING, 0) < 0) break;
     }
     return NULL;
 }
@@ -760,26 +769,24 @@ static void *main_thread(void *arg) {
             notify_tunnel_reconnected();
         }
 
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+
         thr_args_t *ta_rd = malloc(sizeof(thr_args_t));
         thr_args_t *ta_ka = malloc(sizeof(thr_args_t));
         if (ta_rd) { ta_rd->tfd = tfd; ta_rd->epoch = cur_epoch; }
         if (ta_ka) { ta_ka->tfd = tfd; ta_ka->epoch = cur_epoch; }
 
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-
         pthread_t trd, tka, twd;
-        if (ta_rd) pthread_create(&trd, &attr, tunnel_reader, ta_rd);
-        else free(ta_rd);
-        if (ta_ka) pthread_create(&tka, &attr, keepalive_thread, ta_ka);
-        else free(ta_ka);
+        if (ta_rd) pthread_create(&trd, &attr, tunnel_reader, ta_rd); else free(ta_rd);
+        if (ta_ka) pthread_create(&tka, &attr, keepalive_thread, ta_ka); else free(ta_ka);
         pthread_create(&twd, &attr, watchdog_thread, (void*)(intptr_t)cur_epoch);
         pthread_attr_destroy(&attr);
 
         int epfd = epoll_create1(EPOLL_CLOEXEC);
-        struct epoll_event ev = { .events = EPOLLIN, .data.fd = rfd };
-        epoll_ctl(epfd, EPOLL_CTL_ADD, rfd, &ev);
+        struct epoll_event aev = { .events = EPOLLIN, .data.fd = rfd };
+        epoll_ctl(epfd, EPOLL_CTL_ADD, rfd, &aev);
         struct epoll_event events[MAX_EPOLL_EVENTS];
 
         while (atomic_load(&g_running)) {
@@ -797,9 +804,7 @@ static void *main_thread(void *arg) {
                 continue;
             }
             for (int i = 0; i < nr; i++) {
-                if (events[i].events & (EPOLLERR | EPOLLHUP)) {
-                    goto accept_loop_done;
-                }
+                if (events[i].events & (EPOLLERR | EPOLLHUP)) goto accept_loop_done;
                 while (atomic_load(&g_running)) {
                     struct sockaddr_in ca; socklen_t cl = sizeof(ca);
                     int cfd = accept(rfd, (struct sockaddr*)&ca, &cl);
