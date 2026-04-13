@@ -189,8 +189,8 @@ static void request_tunnel_reset(const char *reason) {
     g_started = 0;
     pthread_mutex_unlock(&g_state_mu);
     if (reason) push_log("E", "tunnel reset: %s", reason);
-    if (rfd >= 0) close(rfd);
-    if (tfd >= 0) close(tfd);
+    if (rfd >= 0) { shutdown(rfd, SHUT_RDWR); close(rfd); }
+    if (tfd >= 0) { shutdown(tfd, SHUT_RDWR); close(tfd); }
     ht_clear();
 }
 
@@ -364,6 +364,7 @@ static int open_tunnel(void) {
             jni_protect(fd); sock_tune(fd); sock_keepalive(fd);
             if (connect_with_timeout(fd, (struct sockaddr*)&a6, sizeof(a6), CONNECT_TIMEOUT_SEC) != 0)
                 { close(fd); fd = -1; }
+            else push_log("I", "tunnel IPv6 OK");
         }
     }
 
@@ -377,7 +378,7 @@ static int open_tunnel(void) {
                 if (s < 0) continue;
                 jni_protect(s); sock_tune(s); sock_keepalive(s);
                 if (connect_with_timeout(s, r->ai_addr, r->ai_addrlen, CONNECT_TIMEOUT_SEC) == 0)
-                    fd = s;
+                    { fd = s; push_log("I", "tunnel DNS OK"); }
                 else close(s);
             }
             freeaddrinfo(res);
@@ -385,8 +386,6 @@ static int open_tunnel(void) {
     }
 
     if (fd < 0) { push_log("E", "tunnel connect failed"); return -1; }
-
-    atomic_store(&g_last_pong, (long)time(NULL));
 
     char req1[256], h1[2048];
     int r1 = snprintf(req1, sizeof(req1),
@@ -438,25 +437,28 @@ static int open_tunnel(void) {
                    || strstr(h2, "usuario_expirado") || strstr(body, "usuario_expirado")) {
             push_log("E", "usuario expirado");
         } else if (status == 403) {
-            push_log("E", "error de autenticacion 403");
+            push_log("E", "error de autenticación 403");
         } else {
-            push_log("E", "error de autenticacion");
+            push_log("E", "error de autenticación");
         }
         close(fd); return -1;
     }
 
     char user_name[128] = {0};
     char user_days[32] = {0};
-    if (extract_header_value(h2, "X-User-Name", user_name, sizeof(user_name)))
+    if (extract_header_value(h2, "X-User-Name", user_name, sizeof(user_name))) {
         push_log("I", "user_name=%s", user_name);
-    if (extract_header_value(h2, "X-User-Days", user_days, sizeof(user_days)))
+    }
+    if (extract_header_value(h2, "X-User-Days", user_days, sizeof(user_days))) {
         push_log("I", "user_days=%s", user_days);
+    }
     clock_gettime(CLOCK_MONOTONIC, &t1);
     long ping_ms = (t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_nsec - t0.tv_nsec) / 1000000L;
     ping_ms -= 20;
     if (ping_ms < 0) ping_ms = 0;
     push_log("I", "ping_ms=%ld", ping_ms);
 
+    push_log("I", "tunnel handshake OK");
     return fd;
 }
 
@@ -709,9 +711,6 @@ static void *main_thread(void *arg) {
                 if (errno == EINTR) continue;
                 request_tunnel_reset("accept poll failed"); break;
             }
-            if (pr > 0 && (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))) {
-                break;
-            }
             if (pr == 0) {
                 pthread_mutex_lock(&g_state_mu);
                 int still_same = (g_tun_fd == tfd && g_relay_fd == rfd);
@@ -830,6 +829,4 @@ Java_com_blacktunnel_BtProxy_nativeDrainLogs(JNIEnv *env, jclass clazz) {
     g_log_len = 0; g_log_buf[0] = '\0';
     pthread_mutex_unlock(&g_log_mu);
     return (*env)->NewStringUTF(env, out);
-}
-UTF(env, out);
 }
