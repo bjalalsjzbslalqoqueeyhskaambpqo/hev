@@ -276,6 +276,7 @@ static int write_full(int fd, const uint8_t *buf, int len) {
 }
 
 static void tunnel_close(void);
+static void request_tunnel_reset(const char *reason);
 
 static void *writer_thread(void *arg) {
     int epoch = (int)(intptr_t)arg;
@@ -554,6 +555,7 @@ static int open_tunnel(void) {
     clock_gettime(CLOCK_MONOTONIC, &t0);
     send(fd, req2, r2, MSG_NOSIGNAL);
     int h2_len = recv_until_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
     int status = parse_http_status(h2);
     if (h2_len < 0 || status != 101) {
         char body[1024] = {0};
@@ -602,9 +604,8 @@ static int open_tunnel(void) {
         push_log("I", "user_name=%s", user_name);
     if (extract_header_value(h2, "X-User-Days", user_days, sizeof(user_days)))
         push_log("I", "user_days=%s", user_days);
-    clock_gettime(CLOCK_MONOTONIC, &t1);
     long ping_ms = (t1.tv_sec - t0.tv_sec) * 1000L +
-                   (t1.tv_nsec - t0.tv_nsec) / 1000000L - 20L;
+                   (t1.tv_nsec - t0.tv_nsec) / 1000000L;
     if (ping_ms < 0) ping_ms = 0;
     push_log("I", "ping_ms=%ld", ping_ms);
 
@@ -821,10 +822,10 @@ static void *keepalive_thread(void *arg) {
         }
         if (!g_running || atomic_load(&g_tunnel_epoch) != epoch) break;
         clock_gettime(CLOCK_MONOTONIC, &t1);
-        long rtt_ms = (t1.tv_sec - t0.tv_sec) * 1000L +
-                      (t1.tv_nsec - t0.tv_nsec) / 1000000L - 20L;
-        if (rtt_ms < 0) rtt_ms = 0;
-        push_log("I", "ping_rtt=%ldms", rtt_ms);
+        long ping_ms = (t1.tv_sec - t0.tv_sec) * 1000L +
+                       (t1.tv_nsec - t0.tv_nsec) / 1000000L;
+        if (ping_ms < 0) ping_ms = 0;
+        push_log("I", "ping_ms=%ld", ping_ms);
     }
     return NULL;
 }
