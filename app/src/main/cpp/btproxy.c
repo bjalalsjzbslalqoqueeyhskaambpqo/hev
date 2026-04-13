@@ -14,14 +14,22 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
+#include <sys/resource.h>
 #include <time.h>
 #include <unistd.h>
 #include <poll.h>
 #include <fcntl.h>
 
+#define DEBUG 0
+
 #define LOG_TAG "btproxy"
+#if DEBUG
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#else
+#define LOGI(...) do {} while(0)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#endif
 
 #define T_DATA  0x02
 #define T_CLOSE 0x03
@@ -29,17 +37,17 @@
 #define T_PONG  0x05
 #define T_OPEN  0x01
 
-#define FRAME_HDR        7
-#define MAX_PAYLOAD      16384
-#define RELAY_BACKLOG    512
-#define IDLE_SECS        90
-#define WD_INTERVAL      15
-#define KEEPALIVE_SEC    20
-#define PONG_TIMEOUT_SEC 45
-#define RECONNECT_DELAY_MIN 2
-#define RECONNECT_DELAY_MAX 30
-#define CONNECT_TIMEOUT_SEC 10
-#define HANDSHAKE_TIMEOUT_SEC 12
+#define FRAME_HDR            7
+#define MAX_PAYLOAD          32768
+#define RELAY_BACKLOG        512
+#define IDLE_SECS            60
+#define WD_INTERVAL          15
+#define KEEPALIVE_SEC        10
+#define PONG_TIMEOUT_SEC     25
+#define RECONNECT_DELAY_MIN  2
+#define RECONNECT_DELAY_MAX  10
+#define CONNECT_TIMEOUT_SEC  8
+#define HANDSHAKE_TIMEOUT_SEC 8
 
 #define HT_SIZE  4096
 #define HT_MASK  (HT_SIZE - 1)
@@ -89,19 +97,28 @@ static stream_t *ht_put(uint32_t sid, int fd) {
 
 static int ht_del(uint32_t sid) {
     int slot = (int)(sid & HT_MASK);
+    int fd_to_close = -1;
+    stream_t *to_free = NULL;
+
     pthread_mutex_lock(&g_ht_mu[slot]);
     stream_t **pp = &g_ht[slot];
     while (*pp) {
         if ((*pp)->sid == sid) {
-            stream_t *s = *pp; *pp = s->next;
-            pthread_mutex_unlock(&g_ht_mu[slot]);
-            if (s->fd >= 0) close(s->fd);
-            free(s);
-            return 1;
+            stream_t *s = *pp;
+            *pp = s->next;
+            fd_to_close = s->fd;
+            to_free = s;
+            break;
         }
         pp = &(*pp)->next;
     }
     pthread_mutex_unlock(&g_ht_mu[slot]);
+
+    if (to_free) {
+        if (fd_to_close >= 0) close(fd_to_close);
+        free(to_free);
+        return 1;
+    }
     return 0;
 }
 
@@ -109,13 +126,14 @@ static void ht_clear(void) {
     for (int i = 0; i < HT_SIZE; i++) {
         pthread_mutex_lock(&g_ht_mu[i]);
         stream_t *s = g_ht[i];
+        g_ht[i] = NULL;
+        pthread_mutex_unlock(&g_ht_mu[i]);
         while (s) {
             stream_t *nx = s->next;
             if (s->fd >= 0) close(s->fd);
-            free(s); s = nx;
+            free(s);
+            s = nx;
         }
-        g_ht[i] = NULL;
-        pthread_mutex_unlock(&g_ht_mu[i]);
     }
 }
 
@@ -145,7 +163,10 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz);
 static void push_log(const char *level, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     char msg[512]; vsnprintf(msg, sizeof(msg), fmt, ap); va_end(ap);
-    if (level[0] == 'E') LOGE("%s", msg); else LOGI("%s", msg);
+    if (level[0] == 'E') __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "%s", msg);
+#if DEBUG
+    else __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "%s", msg);
+#endif
     pthread_mutex_lock(&g_log_mu);
     char line[560];
     int n = snprintf(line, sizeof(line), "%s %s\n", level, msg);
@@ -196,16 +217,23 @@ static void request_tunnel_reset(const char *reason) {
 
 static void sock_tune(int fd) {
     int v;
-    v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
-    v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &v, sizeof(v));
-    v = 131072; setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,   &v, sizeof(v));
-    v = 131072; setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,   &v, sizeof(v));
+    v = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
+    v = 1; setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &v, sizeof(v));
+
+    int rcv = 512 * 1024;
+    int snd = 512 * 1024;
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcv, sizeof(rcv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &snd, sizeof(snd));
+
+    int lowat = 1;
+    setsockopt(fd, SOL_SOCKET, SO_RCVLOWAT, &lowat, sizeof(lowat));
+
     int flags = fcntl(fd, F_GETFD, 0);
     if (flags >= 0) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
 
 static void sock_keepalive(int fd) {
-    int one=1, idle=20, intvl=5, cnt=4;
+    int one=1, idle=10, intvl=3, cnt=3;
     setsockopt(fd, SOL_SOCKET,  SO_KEEPALIVE,  &one,   sizeof(one));
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,  &idle,  sizeof(idle));
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
@@ -244,10 +272,11 @@ static int tun_send(int tfd, uint8_t type, uint32_t sid,
 
     struct iovec iov[2];
     iov[0].iov_base = hdr;         iov[0].iov_len = FRAME_HDR;
-    iov[1].iov_base = (void*)data; iov[1].iov_len = dlen;
+    iov[1].iov_base = (void*)data; iov[1].iov_len = (dlen > 0) ? dlen : 0;
     int niov = dlen > 0 ? 2 : 1;
 
     ssize_t total = FRAME_HDR + dlen, sent = 0;
+
     pthread_mutex_lock(&g_tun_wmu);
     while (sent < total) {
         ssize_t n = writev(tfd, iov, niov);
@@ -264,7 +293,11 @@ static int tun_send(int tfd, uint8_t type, uint32_t sid,
                     }
                 }
             }
-        } else if (errno == EINTR || errno == EAGAIN) {
+        } else if (errno == EINTR) {
+            continue;
+        } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            struct pollfd pfd = { tfd, POLLOUT, 0 };
+            poll(&pfd, 1, 100);
             continue;
         } else {
             pthread_mutex_unlock(&g_tun_wmu);
@@ -453,7 +486,6 @@ static int open_tunnel(void) {
         push_log("I", "user_days=%s", user_days);
     clock_gettime(CLOCK_MONOTONIC, &t1);
     long ping_ms = (t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_nsec - t0.tv_nsec) / 1000000L;
-    ping_ms -= 20;
     if (ping_ms < 0) ping_ms = 0;
     push_log("I", "ping_ms=%ld", ping_ms);
 
@@ -463,6 +495,9 @@ static int open_tunnel(void) {
 typedef struct { int cfd; int tfd; uint32_t sid; } conn_args_t;
 
 static void *conn_thread(void *arg) {
+    pthread_setname_np(pthread_self(), "conn_thread");
+    setpriority(PRIO_PROCESS, 0, -10);
+
     conn_args_t *ca = (conn_args_t*)arg;
     int cfd = ca->cfd, tfd = ca->tfd;
     uint32_t sid = ca->sid;
@@ -483,7 +518,7 @@ static void *conn_thread(void *arg) {
 
     while (g_running) {
         struct pollfd pfd = { cfd, POLLIN, 0 };
-        int pr = poll(&pfd, 1, 5000);
+        int pr = poll(&pfd, 1, 1000);
         if (pr < 0) { if (errno == EINTR) continue; break; }
         if (pr == 0) continue;
         ssize_t n = recv(cfd, buf, sizeof(buf), 0);
@@ -503,6 +538,9 @@ static void *conn_thread(void *arg) {
 typedef struct { int tfd; int epoch; } thr_args_t;
 
 static void *tunnel_reader(void *arg) {
+    pthread_setname_np(pthread_self(), "tun_reader");
+    setpriority(PRIO_PROCESS, 0, -10);
+
     thr_args_t *ta = (thr_args_t*)arg;
     int tfd = ta->tfd;
     int epoch = ta->epoch;
@@ -575,6 +613,8 @@ static void *tunnel_reader(void *arg) {
 }
 
 static void *keepalive_thread(void *arg) {
+    pthread_setname_np(pthread_self(), "keepalive");
+
     thr_args_t *ta = (thr_args_t*)arg;
     int tfd = ta->tfd;
     int epoch = ta->epoch;
@@ -602,6 +642,8 @@ static void *keepalive_thread(void *arg) {
 }
 
 static void *watchdog_thread(void *arg) {
+    pthread_setname_np(pthread_self(), "watchdog");
+
     int epoch = (int)(intptr_t)arg;
     while (g_running && atomic_load(&g_tunnel_epoch) == epoch) {
         for (int i = 0; i < WD_INTERVAL && g_running && atomic_load(&g_tunnel_epoch) == epoch; i++)
@@ -618,9 +660,10 @@ static void *watchdog_thread(void *arg) {
                 if (now - atomic_load(&s->last_active) > IDLE_SECS) {
                     *pp = s->next;
                     uint32_t dsid = s->sid;
-                    if (s->fd >= 0) close(s->fd);
+                    int dfd = s->fd;
                     free(s);
                     pthread_mutex_unlock(&g_ht_mu[i]);
+                    if (dfd >= 0) close(dfd);
                     if (tfd >= 0) tun_send(tfd, T_CLOSE, dsid, NULL, 0);
                     pthread_mutex_lock(&g_ht_mu[i]);
                 } else {
@@ -636,6 +679,7 @@ static void *watchdog_thread(void *arg) {
 static int g_reconnect_delay = RECONNECT_DELAY_MIN;
 
 static void *main_thread(void *arg) {
+    pthread_setname_np(pthread_self(), "btproxy_main");
     int port = (int)(intptr_t)arg;
     static int first_start = 1;
 
@@ -703,7 +747,7 @@ static void *main_thread(void *arg) {
 
         while (g_running) {
             struct pollfd pfd = { rfd, POLLIN, 0 };
-            int pr = poll(&pfd, 1, 2000);
+            int pr = poll(&pfd, 1, 1000);
             if (!g_running) break;
             if (pr < 0) {
                 if (errno == EINTR) continue;
@@ -744,7 +788,10 @@ static void *main_thread(void *arg) {
         }
 
         request_tunnel_reset(NULL);
-        if (g_running) { push_log("E", "tunnel dropped, reconnecting"); sleep(1); }
+        if (g_running) {
+            push_log("E", "tunnel dropped, reconnecting");
+            usleep(200000);
+        }
     }
     g_started = 0;
     return NULL;
