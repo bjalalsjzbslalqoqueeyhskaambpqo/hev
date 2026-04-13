@@ -31,8 +31,8 @@
 #define MAX_PAYLOAD   16384
 #define RELAY_BACKLOG 512
 #define IDLE_SECS     120
-#define WD_INTERVAL   30
-#define KEEPALIVE_SEC 25
+#define WD_INTERVAL   15
+#define KEEPALIVE_SEC 10
 
 #define HT_SIZE  4096
 #define HT_MASK  (HT_SIZE - 1)
@@ -136,7 +136,7 @@ static char            g_log_buf[32768];
 static size_t          g_log_len  = 0;
 static pthread_mutex_t g_start_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_start_cv = PTHREAD_COND_INITIALIZER;
-static int             g_start_st = 0;          /* 0=pending, 1=ok, -1=err */
+static int             g_start_st = 0;      
 
 /* ── g_main_done: el main_thread señaliza cuando realmente terminó ──────── */
 static pthread_mutex_t g_done_mu  = PTHREAD_MUTEX_INITIALIZER;
@@ -223,14 +223,14 @@ static void request_tunnel_reset(const char *reason) {
 
 static void sock_tune(int fd) {
     int v;
-    v = 1;     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
-    v = 1;     setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &v, sizeof(v));
-    v = 65536; setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,    &v, sizeof(v));
-    v = 65536; setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,    &v, sizeof(v));
+    v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
+    v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &v, sizeof(v));
+    v = 131072; setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,    &v, sizeof(v));
+    v = 131072; setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,    &v, sizeof(v));
 }
 
 static void sock_keepalive(int fd) {
-    int one=1, idle=30, intvl=5, cnt=3;
+    int one=1, idle=10, intvl=3, cnt=5;
     setsockopt(fd, SOL_SOCKET,  SO_KEEPALIVE,  &one,   sizeof(one));
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,  &idle,  sizeof(idle));
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
@@ -351,10 +351,6 @@ static int extract_header_value(const char *headers, const char *key, char *out,
     return 1;
 }
 
-/*
- * open_tunnel — retorna fd >= 0 en éxito, ERR_NET (-1) o ERR_FATAL (-2).
- * ERR_FATAL significa que no tiene sentido reintentar (auth bloqueada).
- */
 static int open_tunnel(void) {
     int fd = -1;
 
@@ -636,8 +632,8 @@ static void *main_thread(void *arg) {
             if (g_start_st == 0) { g_start_st = -1; pthread_cond_broadcast(&g_start_cv); }
             pthread_mutex_unlock(&g_start_mu);
             if (!g_running) break;
-            push_log("E", "reconnect in 2s");
-            sleep(2); continue;
+            push_log("E", "reconnect in 1s");
+            sleep(1); continue;
         }
 
         /* ── Conexión exitosa ───────────────────────────────────────────── */
@@ -705,12 +701,11 @@ static void *main_thread(void *arg) {
         }
 
         request_tunnel_reset(NULL);
-        if (g_running) { push_log("E", "tunnel dropped, reconnecting in 2s"); sleep(2); }
+        if (g_running) { push_log("E", "tunnel dropped, reconnecting in 1s"); sleep(1); }
     }
 
     g_started = 0;
 
-    /* Señalizar que el main_thread terminó completamente */
     pthread_mutex_lock(&g_done_mu);
     g_main_done = 1;
     pthread_cond_broadcast(&g_done_cv);
@@ -742,7 +737,6 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     pthread_mutex_lock(&g_start_mu); g_start_st = 0;
     pthread_mutex_unlock(&g_start_mu);
 
-    /* Marcar main_thread como en ejecución antes de lanzarlo */
     pthread_mutex_lock(&g_done_mu);
     g_main_done = 0;
     pthread_mutex_unlock(&g_done_mu);
@@ -781,7 +775,6 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     jobject svc = g_vpn_svc; g_vpn_svc = NULL; g_jvm = NULL;
     pthread_mutex_unlock(&g_state_mu);
 
-    /* Cerrar fds activos para desbloquear accept() y tun_recv() */
     if (g_relay_fd >= 0) { close(g_relay_fd); g_relay_fd = -1; }
     if (g_tun_fd   >= 0) { close(g_tun_fd);   g_tun_fd   = -1; }
 
@@ -790,7 +783,6 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     if (g_start_st == 0) { g_start_st = -1; pthread_cond_broadcast(&g_start_cv); }
     pthread_mutex_unlock(&g_start_mu);
 
-    /* Esperar a que main_thread termine de verdad (hasta 3 segundos) */
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     ts.tv_sec += 3;
