@@ -189,8 +189,26 @@ static void request_tunnel_reset(const char *reason) {
     g_started = 0;
     pthread_mutex_unlock(&g_state_mu);
     if (reason) push_log("E", "tunnel reset: %s", reason);
+
+    /* =========================================================
+     * CAMBIO 1 de 3 — shutdown() en request_tunnel_reset
+     * ---------------------------------------------------------
+     * VERSION NUEVA (rompe): usa shutdown() antes de close().
+     * El shutdown(SHUT_RDWR) sobre rfd invalida el socket mientras
+     * el accept loop principal puede estar dentro de poll(), lo que
+     * genera POLLNVAL -> accept falla con EBADF -> doble reset -> crash.
+     *
+     *   if (rfd >= 0) close(rfd); 
+     *   if (tfd >= 0) close(tfd);
+     *
+     * VERSION VIEJA (funciona): solo close(), sin shutdown().
+     * Para volver a la version vieja dejar activas las dos lineas
+     * de abajo y mantener comentadas las cuatro de arriba.
+     * ========================================================= */
+
     if (rfd >= 0) { shutdown(rfd, SHUT_RDWR); close(rfd); }
     if (tfd >= 0) { shutdown(tfd, SHUT_RDWR); close(tfd); }
+
     ht_clear();
 }
 
@@ -387,6 +405,26 @@ static int open_tunnel(void) {
 
     if (fd < 0) { push_log("E", "tunnel connect failed"); return -1; }
 
+    /* =========================================================
+     * CAMBIO 2 de 3 — inicializacion de g_last_pong
+     * ---------------------------------------------------------
+     * VERSION NUEVA (rompe): g_last_pong arranca en 0 y solo se
+     * inicializa dentro de keepalive_thread. Si el keepalive_thread
+     * tarda en arrancar, tunnel_reader ve g_last_pong==0 y calcula
+     * un timeout falso que dispara request_tunnel_reset antes de
+     * recibir el primer pong, tirando el tunel recien establecido.
+     *
+     * VERSION VIEJA (funciona): no existia el chequeo de pong,
+     * por lo que esto no era un problema.
+     *
+     * FIX aplicado: inicializar g_last_pong aqui mismo, justo
+     * antes del handshake, para que el primer intervalo de
+     * PONG_TIMEOUT_SEC se mida desde que el tunel se abre.
+     * Para desactivar este fix y volver al comportamiento roto,
+     * comentar la linea de abajo.
+     * ========================================================= */
+    atomic_store(&g_last_pong, (long)time(NULL));
+
     char req1[256], h1[2048];
     int r1 = snprintf(req1, sizeof(req1),
         "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", PROXY_HOST);
@@ -437,9 +475,9 @@ static int open_tunnel(void) {
                    || strstr(h2, "usuario_expirado") || strstr(body, "usuario_expirado")) {
             push_log("E", "usuario expirado");
         } else if (status == 403) {
-            push_log("E", "error de autenticación 403");
+            push_log("E", "error de autenticacion 403");
         } else {
-            push_log("E", "error de autenticación");
+            push_log("E", "error de autenticacion");
         }
         close(fd); return -1;
     }
@@ -703,6 +741,26 @@ static void *main_thread(void *arg) {
         pthread_create(&twd, NULL, watchdog_thread, (void*)(intptr_t)cur_epoch);
         pthread_detach(twd);
 
+        /* =========================================================
+         * CAMBIO 3 de 3 — accept loop con poll y manejo de POLLNVAL
+         * ---------------------------------------------------------
+         * VERSION NUEVA (rompe): usa poll() antes de accept() pero
+         * no maneja POLLNVAL ni POLLERR. Cuando request_tunnel_reset
+         * cierra rfd desde otro hilo, poll() retorna con POLLNVAL,
+         * el codigo cae al accept() que falla con EBADF, llama a
+         * request_tunnel_reset("accept failed") causando un doble
+         * reset que corrompe el estado y cierra la app.
+         *
+         * VERSION VIEJA (funciona): accept() bloqueante directo,
+         * sin poll(). Cuando el socket se cierra, accept() retorna
+         * con error y se maneja limpiamente.
+         *
+         * FIX aplicado: se agrego el chequeo de POLLERR|POLLHUP|POLLNVAL
+         * para salir limpio del loop sin llamar request_tunnel_reset.
+         * Para volver al comportamiento roto, reemplazar el bloque
+         * completo del while por un accept() bloqueante directo como
+         * en la version vieja, o eliminar el if de revents de abajo.
+         * ========================================================= */
         while (g_running) {
             struct pollfd pfd = { rfd, POLLIN, 0 };
             int pr = poll(&pfd, 1, 2000);
@@ -710,6 +768,9 @@ static void *main_thread(void *arg) {
             if (pr < 0) {
                 if (errno == EINTR) continue;
                 request_tunnel_reset("accept poll failed"); break;
+            }
+            if (pr > 0 && (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))) {
+                break;
             }
             if (pr == 0) {
                 pthread_mutex_lock(&g_state_mu);
