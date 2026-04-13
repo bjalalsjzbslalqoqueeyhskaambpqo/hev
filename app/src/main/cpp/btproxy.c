@@ -189,26 +189,8 @@ static void request_tunnel_reset(const char *reason) {
     g_started = 0;
     pthread_mutex_unlock(&g_state_mu);
     if (reason) push_log("E", "tunnel reset: %s", reason);
-
-    /* =========================================================
-     * CAMBIO 1 de 3 — shutdown() en request_tunnel_reset
-     * ---------------------------------------------------------
-     * VERSION NUEVA (rompe): usa shutdown() antes de close().
-     * El shutdown(SHUT_RDWR) sobre rfd invalida el socket mientras
-     * el accept loop principal puede estar dentro de poll(), lo que
-     * genera POLLNVAL -> accept falla con EBADF -> doble reset -> crash.
-     *
-     *   if (rfd >= 0) close(rfd); 
-     *   if (tfd >= 0) close(tfd);
-     *
-     * VERSION VIEJA (funciona): solo close(), sin shutdown().
-     * Para volver a la version vieja dejar activas las dos lineas
-     * de abajo y mantener comentadas las cuatro de arriba.
-     * ========================================================= */
-
-    if (rfd >= 0) { shutdown(rfd, SHUT_RDWR); close(rfd); }
-    if (tfd >= 0) { shutdown(tfd, SHUT_RDWR); close(tfd); }
-
+    if (rfd >= 0) close(rfd);
+    if (tfd >= 0) close(tfd);
     ht_clear();
 }
 
@@ -382,7 +364,6 @@ static int open_tunnel(void) {
             jni_protect(fd); sock_tune(fd); sock_keepalive(fd);
             if (connect_with_timeout(fd, (struct sockaddr*)&a6, sizeof(a6), CONNECT_TIMEOUT_SEC) != 0)
                 { close(fd); fd = -1; }
-            else push_log("I", "tunnel IPv6 OK");
         }
     }
 
@@ -396,7 +377,7 @@ static int open_tunnel(void) {
                 if (s < 0) continue;
                 jni_protect(s); sock_tune(s); sock_keepalive(s);
                 if (connect_with_timeout(s, r->ai_addr, r->ai_addrlen, CONNECT_TIMEOUT_SEC) == 0)
-                    { fd = s; push_log("I", "tunnel DNS OK"); }
+                    fd = s;
                 else close(s);
             }
             freeaddrinfo(res);
@@ -405,24 +386,6 @@ static int open_tunnel(void) {
 
     if (fd < 0) { push_log("E", "tunnel connect failed"); return -1; }
 
-    /* =========================================================
-     * CAMBIO 2 de 3 — inicializacion de g_last_pong
-     * ---------------------------------------------------------
-     * VERSION NUEVA (rompe): g_last_pong arranca en 0 y solo se
-     * inicializa dentro de keepalive_thread. Si el keepalive_thread
-     * tarda en arrancar, tunnel_reader ve g_last_pong==0 y calcula
-     * un timeout falso que dispara request_tunnel_reset antes de
-     * recibir el primer pong, tirando el tunel recien establecido.
-     *
-     * VERSION VIEJA (funciona): no existia el chequeo de pong,
-     * por lo que esto no era un problema.
-     *
-     * FIX aplicado: inicializar g_last_pong aqui mismo, justo
-     * antes del handshake, para que el primer intervalo de
-     * PONG_TIMEOUT_SEC se mida desde que el tunel se abre.
-     * Para desactivar este fix y volver al comportamiento roto,
-     * comentar la linea de abajo.
-     * ========================================================= */
     atomic_store(&g_last_pong, (long)time(NULL));
 
     char req1[256], h1[2048];
@@ -484,19 +447,16 @@ static int open_tunnel(void) {
 
     char user_name[128] = {0};
     char user_days[32] = {0};
-    if (extract_header_value(h2, "X-User-Name", user_name, sizeof(user_name))) {
+    if (extract_header_value(h2, "X-User-Name", user_name, sizeof(user_name)))
         push_log("I", "user_name=%s", user_name);
-    }
-    if (extract_header_value(h2, "X-User-Days", user_days, sizeof(user_days))) {
+    if (extract_header_value(h2, "X-User-Days", user_days, sizeof(user_days)))
         push_log("I", "user_days=%s", user_days);
-    }
     clock_gettime(CLOCK_MONOTONIC, &t1);
     long ping_ms = (t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_nsec - t0.tv_nsec) / 1000000L;
     ping_ms -= 20;
     if (ping_ms < 0) ping_ms = 0;
     push_log("I", "ping_ms=%ld", ping_ms);
 
-    push_log("I", "tunnel handshake OK");
     return fd;
 }
 
@@ -741,26 +701,6 @@ static void *main_thread(void *arg) {
         pthread_create(&twd, NULL, watchdog_thread, (void*)(intptr_t)cur_epoch);
         pthread_detach(twd);
 
-        /* =========================================================
-         * CAMBIO 3 de 3 — accept loop con poll y manejo de POLLNVAL
-         * ---------------------------------------------------------
-         * VERSION NUEVA (rompe): usa poll() antes de accept() pero
-         * no maneja POLLNVAL ni POLLERR. Cuando request_tunnel_reset
-         * cierra rfd desde otro hilo, poll() retorna con POLLNVAL,
-         * el codigo cae al accept() que falla con EBADF, llama a
-         * request_tunnel_reset("accept failed") causando un doble
-         * reset que corrompe el estado y cierra la app.
-         *
-         * VERSION VIEJA (funciona): accept() bloqueante directo,
-         * sin poll(). Cuando el socket se cierra, accept() retorna
-         * con error y se maneja limpiamente.
-         *
-         * FIX aplicado: se agrego el chequeo de POLLERR|POLLHUP|POLLNVAL
-         * para salir limpio del loop sin llamar request_tunnel_reset.
-         * Para volver al comportamiento roto, reemplazar el bloque
-         * completo del while por un accept() bloqueante directo como
-         * en la version vieja, o eliminar el if de revents de abajo.
-         * ========================================================= */
         while (g_running) {
             struct pollfd pfd = { rfd, POLLIN, 0 };
             int pr = poll(&pfd, 1, 2000);
