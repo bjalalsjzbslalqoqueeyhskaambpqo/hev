@@ -597,18 +597,24 @@ static void *tunnel_reader(void *arg) {
             if (!s || len == 0) break;
             atomic_store(&s->last_active, (long)time(NULL));
             ssize_t off = 0;
+            int stream_ok = 1;
             while (off < len) {
                 ssize_t n = send(s->fd, payload + off, len - off,
                                  MSG_NOSIGNAL | MSG_DONTWAIT);
                 if (n > 0) { off += n; continue; }
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     struct pollfd spfd = { s->fd, POLLOUT, 0 };
-                    poll(&spfd, 1, 200);
-                    continue;
+                    int sp = poll(&spfd, 1, 8);
+                    if (sp > 0 && (spfd.revents & POLLOUT)) continue;
+                    stream_ok = 0;
+                    break;
                 }
+                stream_ok = 0;
+                break;
+            }
+            if (!stream_ok) {
                 ht_del(sid);
                 tun_send(tfd, T_CLOSE, sid, NULL, 0);
-                break;
             }
             break;
         }
