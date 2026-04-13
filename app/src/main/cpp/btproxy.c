@@ -357,10 +357,12 @@ static int open_tunnel(void) {
     if (recv_until_eoh(fd, h1, sizeof(h1), 8) < 0) { close(fd); return -1; }
 
     char req2[1024], h2[4096];
+    struct timespec t0 = {0}, t1 = {0};
     int r2 = snprintf(req2, sizeof(req2),
         "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
         "Connection: Upgrade\r\nAction: tunnel\r\nX-Internal-ID: %s\r\n\r\n",
         TUNNEL_HOST, g_internal_id[0] ? g_internal_id : "unknown");
+    clock_gettime(CLOCK_MONOTONIC, &t0);
     send(fd, req2, r2, MSG_NOSIGNAL);
     int h2_len = recv_until_eoh(fd, h2, sizeof(h2), 8);
     int status = parse_http_status(h2);
@@ -416,6 +418,10 @@ static int open_tunnel(void) {
     if (extract_header_value(h2, "X-User-Days", user_days, sizeof(user_days))) {
         push_log("I", "user_days=%s", user_days);
     }
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    long ping_ms = (t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_nsec - t0.tv_nsec) / 1000000L;
+    if (ping_ms < 0) ping_ms = 0;
+    push_log("I", "ping_ms=%ld", ping_ms);
 
     push_log("I", "tunnel handshake OK");
     return fd;

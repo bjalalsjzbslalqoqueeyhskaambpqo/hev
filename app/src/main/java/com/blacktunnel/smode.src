@@ -5,6 +5,10 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.Bundle;
@@ -34,13 +38,17 @@ public class SimpleModeActivity extends ComponentActivity {
     private TextView deviceIdView;
     private TextView userValueView;
     private TextView daysValueView;
+    private TextView pingValueView;
     private String internalId = "";
     private UiState uiState = UiState.DISCONNECTED;
     private long connectingSinceMs = 0L;
     private boolean lastRunning = false;
     private long autoDisconnectAtMs = -1L;
+    private String authState = "";
 
     private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
+    private ConnectivityManager connectivityManager;
+    private ConnectivityManager.NetworkCallback networkCallback;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private ActivityResultLauncher<Intent> vpnPermissionLauncher;
@@ -48,8 +56,12 @@ public class SimpleModeActivity extends ComponentActivity {
     private final Runnable logTicker = new Runnable() {
         @Override
         public void run() {
-            syncStateFromService();
-            refreshLogViews();
+            try {
+                syncStateFromService();
+                refreshLogViews();
+            } catch (Throwable t) {
+                BtVpnService.log("Error UI loop: " + t.getClass().getSimpleName());
+            }
             handler.postDelayed(this, 800);
         }
     };
@@ -79,6 +91,7 @@ public class SimpleModeActivity extends ComponentActivity {
         deviceIdView = findViewById(R.id.txtDeviceId);
         userValueView = findViewById(R.id.txtUser);
         daysValueView = findViewById(R.id.txtDays);
+        pingValueView = findViewById(R.id.txtPing);
         internalId = BtProxy.getOrCreateInternalId(this);
         if (deviceIdView != null) deviceIdView.setText("ID: " + internalId);
 
@@ -97,8 +110,40 @@ public class SimpleModeActivity extends ComponentActivity {
         });
         copyLogsBtn.setOnClickListener(v -> copyInternalIdToClipboard());
 
+        setupConnectivityMonitor();
         handler.post(logTicker);
         BtVpnService.log("Sistema listo");
+    }
+
+    private void setupConnectivityMonitor() {
+        connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (connectivityManager == null) return;
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override
+            public void onLost(Network network) {
+                BtVpnService.log("Red perdida");
+                if (BtVpnService.isRunningState()) stopVpn();
+                setUiState(UiState.DISCONNECTED);
+            }
+
+            @Override
+            public void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
+                if (caps == null) return;
+                boolean hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+                if (!hasInternet && uiState == UiState.CONNECTING) {
+                    BtVpnService.log("Sin internet disponible");
+                    setUiState(UiState.DISCONNECTED);
+                }
+            }
+        };
+        try {
+            NetworkRequest req = new NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .build();
+            connectivityManager.registerNetworkCallback(req, networkCallback);
+        } catch (Throwable t) {
+            BtVpnService.log("No se pudo registrar monitor de red");
+        }
     }
 
     private void copyInternalIdToClipboard() {
@@ -117,11 +162,15 @@ public class SimpleModeActivity extends ComponentActivity {
     protected void onDestroy() {
         handler.removeCallbacks(logTicker);
         handler.removeCallbacks(autoDisconnectRunnable);
+        if (connectivityManager != null && networkCallback != null) {
+            try { connectivityManager.unregisterNetworkCallback(networkCallback); } catch (Throwable ignored) {}
+        }
         super.onDestroy();
     }
 
     private void startVpnWithPermission() {
         setUiState(UiState.CONNECTING);
+        authState = "";
         BtVpnService.log("Conectando...");
 
         Intent prepare = VpnService.prepare(this);
@@ -162,6 +211,7 @@ public class SimpleModeActivity extends ComponentActivity {
 
         if (running && !lastRunning) {
             BtVpnService.log("Conexión establecida ✔");
+            authState = "";
             setUiState(UiState.CONNECTED);
         } else if (!running && lastRunning) {
             BtVpnService.log("Servicio detenido");
@@ -205,11 +255,15 @@ public class SimpleModeActivity extends ComponentActivity {
         if (logs == null || statusDetailsView == null) return;
         String lower = logs.toLowerCase();
         if (lower.contains("usuario no registrado") || lower.contains("not_registered")) {
+            if ("not_registered".equals(authState)) return;
+            authState = "not_registered";
             if (BtVpnService.isRunningState()) stopVpn();
             setUiState(UiState.DISCONNECTED);
             statusDetailsView.setText("✖ Usuario no registrado\nComparte tu ID interno para habilitación\nID: " + internalId);
             statusDetailsView.setTextColor(Color.parseColor("#FF4D4D"));
         } else if (lower.contains("usuario expirado") || lower.contains("expired")) {
+            if ("expired".equals(authState)) return;
+            authState = "expired";
             if (BtVpnService.isRunningState()) stopVpn();
             setUiState(UiState.DISCONNECTED);
             statusDetailsView.setText("✖ Usuario expirado\nRenueva tu acceso con soporte\nID: " + internalId);
@@ -242,6 +296,15 @@ public class SimpleModeActivity extends ComponentActivity {
                         scheduleAutoDisconnectFromDays(days);
                     } catch (Exception ignored) {}
                 }
+                break;
+            }
+        }
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i].trim();
+            int idxPing = line.indexOf("ping_ms=");
+            if (idxPing >= 0 && pingValueView != null) {
+                String value = line.substring(idxPing + "ping_ms=".length()).trim();
+                if (!value.isEmpty()) pingValueView.setText(value + " ms");
                 break;
             }
         }
