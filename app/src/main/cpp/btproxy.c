@@ -173,6 +173,9 @@ static atomic_int      g_tunnel_epoch   = 0;
 static atomic_int      g_stream_count   = 0;
 
 
+JNIEXPORT void JNICALL
+Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz);
+
 static void push_log(const char *level, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     char msg[512]; vsnprintf(msg, sizeof(msg), fmt, ap); va_end(ap);
