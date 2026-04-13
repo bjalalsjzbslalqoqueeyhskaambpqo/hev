@@ -42,6 +42,14 @@
 #define PROXY_PORT      80
 #define TUNNEL_HOST     "2.brawlpass.com.ar"
 
+/* ── Códigos de error para open_tunnel ──────────────────────────────────────
+ *  0  : éxito (devuelve fd ≥ 0)
+ * -1  : error de red — se puede reintentar
+ * -2  : error fatal de autenticación — NO reintentar (usuario bloqueado)
+ * ────────────────────────────────────────────────────────────────────────── */
+#define ERR_NET   -1
+#define ERR_FATAL -2
+
 typedef struct stream_s {
     struct stream_s *next;
     int              fd;
@@ -128,7 +136,12 @@ static char            g_log_buf[32768];
 static size_t          g_log_len  = 0;
 static pthread_mutex_t g_start_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_start_cv = PTHREAD_COND_INITIALIZER;
-static int             g_start_st = 0;
+static int             g_start_st = 0;          /* 0=pending, 1=ok, -1=err */
+
+/* ── g_main_done: el main_thread señaliza cuando realmente terminó ──────── */
+static pthread_mutex_t g_done_mu  = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_done_cv  = PTHREAD_COND_INITIALIZER;
+static int             g_main_done = 1;          /* 1 = no está corriendo   */
 
 JNIEXPORT void JNICALL
 Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz);
@@ -154,6 +167,7 @@ static void push_log(const char *level, const char *fmt, ...) {
     pthread_mutex_unlock(&g_log_mu);
 }
 
+/* Notifica a Java que el tunnel reconectó (para reiniciar hev). */
 static void notify_tunnel_reconnected(void) {
     JavaVM *jvm = NULL; jobject svc = NULL;
     pthread_mutex_lock(&g_state_mu);
@@ -167,6 +181,28 @@ static void notify_tunnel_reconnected(void) {
     jclass cls = (*env)->GetObjectClass(env, svc);
     jmethodID m = (*env)->GetMethodID(env, cls, "onTunnelReconnected", "()V");
     if (m) (*env)->CallVoidMethod(env, svc, m);
+    (*env)->DeleteLocalRef(env, cls);
+    if (att) (*jvm)->DetachCurrentThread(jvm);
+}
+
+/* Notifica a Java un error fatal para que detenga el servicio limpiamente. */
+static void notify_fatal_error(const char *reason) {
+    JavaVM *jvm = NULL; jobject svc = NULL;
+    pthread_mutex_lock(&g_state_mu);
+    jvm = g_jvm; svc = g_vpn_svc;
+    pthread_mutex_unlock(&g_state_mu);
+    if (!jvm || !svc) return;
+    JNIEnv *env = NULL; int att = 0;
+    if ((*jvm)->GetEnv(jvm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+        (*jvm)->AttachCurrentThread(jvm, &env, NULL); att = 1;
+    }
+    jclass cls = (*env)->GetObjectClass(env, svc);
+    jmethodID m = (*env)->GetMethodID(env, cls, "onFatalError", "(Ljava/lang/String;)V");
+    if (m) {
+        jstring jreason = (*env)->NewStringUTF(env, reason ? reason : "unknown");
+        (*env)->CallVoidMethod(env, svc, m, jreason);
+        (*env)->DeleteLocalRef(env, jreason);
+    }
     (*env)->DeleteLocalRef(env, cls);
     if (att) (*jvm)->DetachCurrentThread(jvm);
 }
@@ -315,6 +351,10 @@ static int extract_header_value(const char *headers, const char *key, char *out,
     return 1;
 }
 
+/*
+ * open_tunnel — retorna fd >= 0 en éxito, ERR_NET (-1) o ERR_FATAL (-2).
+ * ERR_FATAL significa que no tiene sentido reintentar (auth bloqueada).
+ */
 static int open_tunnel(void) {
     int fd = -1;
 
@@ -348,13 +388,17 @@ static int open_tunnel(void) {
         }
     }
 
-    if (fd < 0) { push_log("E", "tunnel connect failed"); return -1; }
+    if (fd < 0) { push_log("E", "tunnel connect failed"); return ERR_NET; }
 
     char req1[256], h1[2048];
     int r1 = snprintf(req1, sizeof(req1),
         "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", PROXY_HOST);
     send(fd, req1, r1, MSG_NOSIGNAL);
-    if (recv_until_eoh(fd, h1, sizeof(h1), 8) < 0) { close(fd); return -1; }
+    if (recv_until_eoh(fd, h1, sizeof(h1), 8) < 0) {
+        close(fd);
+        push_log("E", "tunnel primer handshake timeout");
+        return ERR_NET;
+    }
 
     char req2[1024], h2[4096];
     struct timespec t0 = {0}, t1 = {0};
@@ -367,63 +411,71 @@ static int open_tunnel(void) {
     int h2_len = recv_until_eoh(fd, h2, sizeof(h2), 8);
     int status = parse_http_status(h2);
     if (h2_len < 0 || status != 101) {
+        /* ── Leer body para detectar la causa ──────────────────────────── */
         char body[1024] = {0};
-        const char *eoh = strstr(h2, "\r\n\r\n");
         int body_len = 0;
-        if (eoh) {
-            const char *body_start = eoh + 4;
-            body_len = h2_len - (int)(body_start - h2);
-            if (body_len > 0) {
-                int c = body_len >= (int)sizeof(body) ? (int)sizeof(body) - 1 : body_len;
-                memcpy(body, body_start, c);
-                body[c] = '\0';
+        if (h2_len > 0) {
+            const char *eoh = strstr(h2, "\r\n\r\n");
+            if (eoh) {
+                const char *body_start = eoh + 4;
+                body_len = h2_len - (int)(body_start - h2);
+                if (body_len > 0) {
+                    int c = body_len >= (int)sizeof(body) ? (int)sizeof(body) - 1 : body_len;
+                    memcpy(body, body_start, c);
+                    body[c] = '\0';
+                }
             }
-        }
-        char clbuf[32] = {0};
-        if (extract_header_value(h2, "Content-Length", clbuf, sizeof(clbuf))) {
-            int want = atoi(clbuf);
-            if (want > body_len && want < (int)sizeof(body)) {
-                int remaining = want - body_len;
-                if (remaining > 0) {
+            char clbuf[32] = {0};
+            if (extract_header_value(h2, "Content-Length", clbuf, sizeof(clbuf))) {
+                int want = atoi(clbuf);
+                if (want > body_len && want < (int)sizeof(body)) {
+                    int remaining = want - body_len;
                     ssize_t rn = recv(fd, body + body_len, remaining, 0);
-                    if (rn > 0) {
-                        body_len += (int)rn;
-                        body[body_len] = '\0';
-                    }
+                    if (rn > 0) { body_len += (int)rn; body[body_len] = '\0'; }
                 }
             }
         }
 
-        if (strstr(h2, "not_registered") || strstr(body, "not_registered")
-            || strstr(h2, "no_registrado") || strstr(body, "no_registrado")
-            || strstr(h2, "usuario_no_registrado") || strstr(body, "usuario_no_registrado")) {
+        close(fd);
+
+        /* ── Clasificar: fatal vs reintentable ──────────────────────────── */
+        int is_not_registered =
+            strstr(h2, "not_registered")      || strstr(body, "not_registered")      ||
+            strstr(h2, "no_registrado")        || strstr(body, "no_registrado")        ||
+            strstr(h2, "usuario_no_registrado")|| strstr(body, "usuario_no_registrado");
+
+        int is_expired =
+            strstr(h2, "expired")             || strstr(body, "expired")             ||
+            strstr(h2, "expirado")            || strstr(body, "expirado")            ||
+            strstr(h2, "usuario_expirado")    || strstr(body, "usuario_expirado");
+
+        if (is_not_registered) {
             push_log("E", "usuario no registrado");
-        } else if (strstr(h2, "expired") || strstr(body, "expired")
-                   || strstr(h2, "expirado") || strstr(body, "expirado")
-                   || strstr(h2, "usuario_expirado") || strstr(body, "usuario_expirado")) {
+            return ERR_FATAL;
+        } else if (is_expired) {
             push_log("E", "usuario expirado");
+            return ERR_FATAL;
         } else if (status == 403) {
             push_log("E", "error de autenticación 403");
+            return ERR_FATAL;
         } else {
-            push_log("E", "error de autenticación");
+            /* Error de red / servidor caído / respuesta incompleta */
+            push_log("E", "error de conexión (status=%d)", status);
+            return ERR_NET;
         }
-        close(fd); return -1;
     }
 
     char user_name[128] = {0};
-    char user_days[32] = {0};
-    if (extract_header_value(h2, "X-User-Name", user_name, sizeof(user_name))) {
+    char user_days[32]  = {0};
+    if (extract_header_value(h2, "X-User-Name", user_name, sizeof(user_name)))
         push_log("I", "user_name=%s", user_name);
-    }
-    if (extract_header_value(h2, "X-User-Days", user_days, sizeof(user_days))) {
+    if (extract_header_value(h2, "X-User-Days", user_days, sizeof(user_days)))
         push_log("I", "user_days=%s", user_days);
-    }
+
     clock_gettime(CLOCK_MONOTONIC, &t1);
     long ping_ms = (t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_nsec - t0.tv_nsec) / 1000000L;
-    ping_ms -= 20;
-    if (ping_ms < 0) ping_ms = 0;
+    if (ping_ms < 20) ping_ms = 0; else ping_ms -= 20;
     push_log("I", "ping_ms=%ld", ping_ms);
-
     push_log("I", "tunnel handshake OK");
     return fd;
 }
@@ -567,7 +619,19 @@ static void *main_thread(void *arg) {
 
     while (g_running) {
         int tfd = open_tunnel();
-        if (tfd < 0) {
+
+        /* ── Error fatal: notificar a Java y salir sin reintentar ──────── */
+        if (tfd == ERR_FATAL) {
+            push_log("E", "error fatal, deteniendo servicio");
+            pthread_mutex_lock(&g_start_mu);
+            if (g_start_st == 0) { g_start_st = -1; pthread_cond_broadcast(&g_start_cv); }
+            pthread_mutex_unlock(&g_start_mu);
+            notify_fatal_error("auth_fatal");
+            break;
+        }
+
+        /* ── Error de red: reintentar después de pausa ──────────────────── */
+        if (tfd == ERR_NET) {
             pthread_mutex_lock(&g_start_mu);
             if (g_start_st == 0) { g_start_st = -1; pthread_cond_broadcast(&g_start_cv); }
             pthread_mutex_unlock(&g_start_mu);
@@ -575,6 +639,8 @@ static void *main_thread(void *arg) {
             push_log("E", "reconnect in 2s");
             sleep(2); continue;
         }
+
+        /* ── Conexión exitosa ───────────────────────────────────────────── */
         g_tun_fd = tfd;
 
         int rfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -641,7 +707,15 @@ static void *main_thread(void *arg) {
         request_tunnel_reset(NULL);
         if (g_running) { push_log("E", "tunnel dropped, reconnecting in 2s"); sleep(2); }
     }
+
     g_started = 0;
+
+    /* Señalizar que el main_thread terminó completamente */
+    pthread_mutex_lock(&g_done_mu);
+    g_main_done = 1;
+    pthread_cond_broadcast(&g_done_cv);
+    pthread_mutex_unlock(&g_done_mu);
+
     return NULL;
 }
 
@@ -668,11 +742,17 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     pthread_mutex_lock(&g_start_mu); g_start_st = 0;
     pthread_mutex_unlock(&g_start_mu);
 
+    /* Marcar main_thread como en ejecución antes de lanzarlo */
+    pthread_mutex_lock(&g_done_mu);
+    g_main_done = 0;
+    pthread_mutex_unlock(&g_done_mu);
+
     if (pthread_create(&g_main_thr, NULL, main_thread,
                        (void*)(intptr_t)port) != 0) {
         pthread_mutex_lock(&g_state_mu); g_running = 0;
         if (g_vpn_svc) { (*env)->DeleteGlobalRef(env, g_vpn_svc); g_vpn_svc = NULL; }
         g_jvm = NULL; pthread_mutex_unlock(&g_state_mu);
+        pthread_mutex_lock(&g_done_mu); g_main_done = 1; pthread_mutex_unlock(&g_done_mu);
         return -1;
     }
     pthread_detach(g_main_thr);
@@ -700,12 +780,25 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     g_internal_id[0] = '\0';
     jobject svc = g_vpn_svc; g_vpn_svc = NULL; g_jvm = NULL;
     pthread_mutex_unlock(&g_state_mu);
+
+    /* Cerrar fds activos para desbloquear accept() y tun_recv() */
     if (g_relay_fd >= 0) { close(g_relay_fd); g_relay_fd = -1; }
     if (g_tun_fd   >= 0) { close(g_tun_fd);   g_tun_fd   = -1; }
+
+    /* Desbloquear nativeStart si aún está esperando */
     pthread_mutex_lock(&g_start_mu);
     if (g_start_st == 0) { g_start_st = -1; pthread_cond_broadcast(&g_start_cv); }
     pthread_mutex_unlock(&g_start_mu);
-    for (int i = 0; i < 10 && g_started; i++) usleep(10000);
+
+    /* Esperar a que main_thread termine de verdad (hasta 3 segundos) */
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += 3;
+    pthread_mutex_lock(&g_done_mu);
+    while (!g_main_done)
+        if (pthread_cond_timedwait(&g_done_cv, &g_done_mu, &ts) != 0) break;
+    pthread_mutex_unlock(&g_done_mu);
+
     ht_clear();
     if (svc) (*env)->DeleteGlobalRef(env, svc);
     g_started = 0;
