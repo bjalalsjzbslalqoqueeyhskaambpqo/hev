@@ -171,10 +171,7 @@ static int             g_start_st       = 0;
 static atomic_long     g_last_pong      = 0;
 static atomic_int      g_tunnel_epoch   = 0;
 static atomic_int      g_stream_count   = 0;
-static atomic_long     g_last_rtt_ms    = -1;
 
-JNIEXPORT void JNICALL
-Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz);
 
 static void push_log(const char *level, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
@@ -195,40 +192,6 @@ static void push_log(const char *level, const char *fmt, ...) {
         g_log_buf[g_log_len] = '\0';
     }
     pthread_mutex_unlock(&g_log_mu);
-}
-
-static void notify_tunnel_reconnected(void) {
-    JavaVM *jvm = NULL; jobject svc = NULL;
-    pthread_mutex_lock(&g_state_mu);
-    jvm = g_jvm; svc = g_vpn_svc;
-    pthread_mutex_unlock(&g_state_mu);
-    if (!jvm || !svc) return;
-    JNIEnv *env = NULL; int att = 0;
-    if ((*jvm)->GetEnv(jvm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) {
-        (*jvm)->AttachCurrentThread(jvm, &env, NULL); att = 1;
-    }
-    jclass cls = (*env)->GetObjectClass(env, svc);
-    jmethodID m = (*env)->GetMethodID(env, cls, "onTunnelReconnected", "()V");
-    if (m) (*env)->CallVoidMethod(env, svc, m);
-    (*env)->DeleteLocalRef(env, cls);
-    if (att) (*jvm)->DetachCurrentThread(jvm);
-}
-
-static void notify_rtt_updated(long rtt_ms) {
-    JavaVM *jvm = NULL; jobject svc = NULL;
-    pthread_mutex_lock(&g_state_mu);
-    jvm = g_jvm; svc = g_vpn_svc;
-    pthread_mutex_unlock(&g_state_mu);
-    if (!jvm || !svc) return;
-    JNIEnv *env = NULL; int att = 0;
-    if ((*jvm)->GetEnv(jvm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) {
-        (*jvm)->AttachCurrentThread(jvm, &env, NULL); att = 1;
-    }
-    jclass cls = (*env)->GetObjectClass(env, svc);
-    jmethodID m = (*env)->GetMethodID(env, cls, "onLatencyUpdated", "(J)V");
-    if (m) (*env)->CallVoidMethod(env, svc, m, (jlong)rtt_ms);
-    (*env)->DeleteLocalRef(env, cls);
-    if (att) (*jvm)->DetachCurrentThread(jvm);
 }
 
 static void tunnel_close(void) {
@@ -469,6 +432,8 @@ static int open_tunnel(void) {
         "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
         "Connection: Upgrade\r\nAction: tunnel\r\nX-Internal-ID: %s\r\n\r\n",
         TUNNEL_HOST, g_internal_id[0] ? g_internal_id : "unknown");
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
     send(fd, req2, r2, MSG_NOSIGNAL);
     int h2_len = recv_until_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
     int status = parse_http_status(h2);
@@ -518,6 +483,11 @@ static int open_tunnel(void) {
         push_log("I", "user_name=%s", user_name);
     if (extract_header_value(h2, "X-User-Days", user_days, sizeof(user_days)))
         push_log("I", "user_days=%s", user_days);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    long ping_ms = (t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_nsec - t0.tv_nsec) / 1000000L;
+    ping_ms -= 20;
+    if (ping_ms < 0) ping_ms = 0;
+    push_log("I", "ping_ms=%ld", ping_ms);
 
     push_log("I", "tunnel connected fd=%d", fd);
     return fd;
@@ -756,17 +726,17 @@ static void *keepalive_thread(void *arg) {
             break;
         }
 
-        for (int w = 0; w < PING_INTERVAL && g_running; w++) {
+        for (int w = 0; w < PING_INTERVAL && g_running && atomic_load(&g_tunnel_epoch) == epoch; w++) {
             sleep(1);
             if (atomic_load(&g_last_pong) != prev_pong) break;
         }
+        /* Si el túnel cambió de epoch durante la espera, salir sin tocar JNI */
+        if (!g_running || atomic_load(&g_tunnel_epoch) != epoch) break;
         clock_gettime(CLOCK_MONOTONIC, &t1);
         long rtt_ms = (t1.tv_sec - t0.tv_sec) * 1000L +
                       (t1.tv_nsec - t0.tv_nsec) / 1000000L - 20L;
         if (rtt_ms < 0) rtt_ms = 0;
-        atomic_store(&g_last_rtt_ms, rtt_ms);
         push_log("I", "ping_rtt=%ldms", rtt_ms);
-        notify_rtt_updated(rtt_ms);
     }
     return NULL;
 }
@@ -807,7 +777,7 @@ static int g_reconnect_delay = RECONNECT_DELAY_MIN;
 
 static void *main_thread(void *arg) {
     int port = (int)(intptr_t)arg;
-    static int first_start = 1;
+    int first_start = 1;  /* no static: se resetea en cada llamada a nativeStart */
 
     while (g_running) {
         int fd = open_tunnel();
@@ -863,7 +833,7 @@ static void *main_thread(void *arg) {
         if (first_start) {
             first_start = 0;
         } else {
-            notify_tunnel_reconnected();
+            push_log("I", "tunnel reconnected");
         }
 
         thr_args_t *ta = malloc(sizeof(thr_args_t));
@@ -966,7 +936,6 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     g_running = 1; g_started = 0;
     g_reconnect_delay = RECONNECT_DELAY_MIN;
     atomic_store(&g_stream_count, 0);
-    atomic_store(&g_last_rtt_ms, -1);
     pthread_mutex_unlock(&g_state_mu);
 
     pthread_mutex_lock(&g_start_mu); g_start_st = 0;
@@ -976,7 +945,8 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
                        (void*)(intptr_t)port) != 0) {
         pthread_mutex_lock(&g_state_mu); g_running = 0;
         if (g_vpn_svc) { (*env)->DeleteGlobalRef(env, g_vpn_svc); g_vpn_svc = NULL; }
-        g_jvm = NULL; pthread_mutex_unlock(&g_state_mu);
+        g_jvm = NULL;
+        pthread_mutex_unlock(&g_state_mu);
         return -1;
     }
     pthread_detach(g_main_thr);
@@ -1028,9 +998,4 @@ Java_com_blacktunnel_BtProxy_nativeDrainLogs(JNIEnv *env, jclass clazz) {
     g_log_len = 0; g_log_buf[0] = '\0';
     pthread_mutex_unlock(&g_log_mu);
     return (*env)->NewStringUTF(env, out);
-}
-
-JNIEXPORT jlong JNICALL
-Java_com_blacktunnel_BtProxy_nativeGetLastRtt(JNIEnv *env, jclass clazz) {
-    return (jlong)atomic_load(&g_last_rtt_ms);
 }
