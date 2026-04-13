@@ -130,9 +130,9 @@ public class BtVpnService extends VpnService {
         Builder builder = new Builder()
                 .setSession("bt-hev")
                 .setMtu(1400)
-                .addAddress("10.10.10.1", 30)
+                .addAddress("100.64.0.1", 30)
                 .addAddress("fc00::1", 126)
-                .addDnsServer("10.10.10.2")
+                .addDnsServer("100.64.0.2")
                 .addDnsServer("8.8.8.8");
         addPublicRoutes(builder);
         builder.addRoute("::", 0);
@@ -178,8 +178,6 @@ public class BtVpnService extends VpnService {
             "10.0.0.0/8",
             "172.16.0.0/12",
             "192.168.0.0/16",
-            "100.64.0.0/10",
-            "198.18.0.0/15",
             "169.254.0.0/16",
             "224.0.0.0/4",
             "240.0.0.0/4",
@@ -282,10 +280,10 @@ public class BtVpnService extends VpnService {
 
     private File writeHevCfg() {
         String yml =
-            "tunnel:\n  name: bt-hev\n  mtu: 1400\n  ipv4: 10.10.10.1\n  ipv6: fc00::1\n"
+            "tunnel:\n  name: bt-hev\n  mtu: 1400\n  ipv4: 100.64.0.1\n  ipv6: fc00::1\n"
           + "socks5:\n  address: 127.0.0.1\n  port: " + BtProxy.SOCKS5_PORT + "\n"
           + "  udp: 'tcp'\n  pipeline: true\n"
-          + "mapdns:\n  address: 10.10.10.2\n  port: 53\n"
+          + "mapdns:\n  address: 100.64.0.2\n  port: 53\n"
           + "  network: 100.64.0.0\n  netmask: 255.192.0.0\n  cache-size: 512\n"
           + "misc:\n  task-stack-size: 40960\n  tcp-buffer-size: 4096\n"
           + "  udp-copy-buffer-nums: 4\n  connect-timeout: 3000\n"
