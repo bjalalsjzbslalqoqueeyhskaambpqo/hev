@@ -214,19 +214,15 @@ static void notify_fatal_error(const char *reason) {
     if (att) (*jvm)->DetachCurrentThread(jvm);
 }
 
-/*
- * FIX: request_tunnel_reset vuelve a tomar solo (reason) como en la versión
- * que funcionaba. La versión nueva pasaba (relay_fd, tun_fd, reason) pero
- * conn_thread no siempre tiene acceso correcto a esos fds, causando cierre
- * de fds equivocados. Se usa los atomics globales igual que antes.
- */
-static void request_tunnel_reset(const char *reason) {
-    int rfd = atomic_exchange(&g_relay_fd, -1);
-    int tfd = atomic_exchange(&g_tun_fd,   -1);
+static void request_tunnel_reset(int relay_fd, int tun_fd, const char *reason) {
+    int expected_rfd = relay_fd;
+    int expected_tfd = tun_fd;
+    atomic_compare_exchange_strong(&g_relay_fd, &expected_rfd, -1);
+    atomic_compare_exchange_strong(&g_tun_fd,   &expected_tfd, -1);
     atomic_store(&g_started, 0);
     if (reason) push_log("E", "tunnel reset: %s", reason);
-    if (rfd >= 0) close(rfd);
-    if (tfd >= 0) close(tfd);
+    if (relay_fd >= 0) close(relay_fd);
+    if (tun_fd   >= 0) close(tun_fd);
     ht_clear();
 }
 
@@ -483,15 +479,11 @@ static int open_tunnel(void) {
     return fd;
 }
 
-/* FIX: conn_args_t vuelve a la versión simple sin rfd.
- * La versión nueva agregó rfd al struct pero conn_thread lo usaba para
- * llamar request_tunnel_reset(rfd, tfd, ...) con fds que podían ya estar
- * cerrados/reasignados por otro hilo. */
-typedef struct { int cfd; int tfd; uint32_t sid; } conn_args_t;
+typedef struct { int cfd; int tfd; int rfd; uint32_t sid; } conn_args_t;
 
 static void *conn_thread(void *arg) {
     conn_args_t *ca = (conn_args_t*)arg;
-    int cfd = ca->cfd, tfd = ca->tfd;
+    int cfd = ca->cfd, tfd = ca->tfd, rfd = ca->rfd;
     uint32_t sid = ca->sid;
     free(ca);
 
@@ -503,7 +495,7 @@ static void *conn_thread(void *arg) {
     if (first <= 0) { ht_del(sid); return NULL; }
 
     if (tun_send(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0) {
-        request_tunnel_reset("tun_send T_OPEN failed");
+        request_tunnel_reset(rfd, tfd, "tun_send T_OPEN failed");
         ht_del(sid);
         return NULL;
     }
@@ -513,7 +505,7 @@ static void *conn_thread(void *arg) {
         if (n <= 0) break;
         atomic_store(&s->last_active, (long)time(NULL));
         if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
-            request_tunnel_reset("tun_send T_DATA failed");
+            request_tunnel_reset(rfd, tfd, "tun_send T_DATA failed");
             break;
         }
     }
@@ -523,17 +515,18 @@ static void *conn_thread(void *arg) {
     return NULL;
 }
 
-/* FIX: tunnel_reader y keepalive_thread vuelven a recibir int* como en la
- * versión que funcionaba. La versión nueva usaba structs con malloc que
- * introducían una posible carrera si el puntero se liberaba antes de que
- * el hilo lo leyera. */
+typedef struct { int tfd; int rfd; } reader_args_t;
+
 static void *tunnel_reader(void *arg) {
-    int tfd = *(int*)arg;
+    reader_args_t *ra = (reader_args_t*)arg;
+    int tfd = ra->tfd, rfd = ra->rfd;
+    free(ra);
+
     uint8_t hdr[FRAME_HDR], payload[MAX_PAYLOAD];
 
     while (atomic_load(&g_running)) {
         if (tun_recv(tfd, hdr, FRAME_HDR) < 0) {
-            request_tunnel_reset("tunnel header read failed"); break;
+            request_tunnel_reset(rfd, tfd, "tunnel header read failed"); break;
         }
 
         uint8_t  ft  = hdr[0];
@@ -541,9 +534,9 @@ static void *tunnel_reader(void *arg) {
                        ((uint32_t)hdr[3] <<  8) |  (uint32_t)hdr[4];
         uint16_t len = ((uint16_t)hdr[5] << 8) | hdr[6];
 
-        if (len > MAX_PAYLOAD) { request_tunnel_reset("payload too large"); break; }
+        if (len > MAX_PAYLOAD) { request_tunnel_reset(rfd, tfd, "payload too large"); break; }
         if (len > 0 && tun_recv(tfd, payload, len) < 0) {
-            request_tunnel_reset("tunnel payload read failed"); break;
+            request_tunnel_reset(rfd, tfd, "tunnel payload read failed"); break;
         }
 
         switch (ft) {
@@ -582,13 +575,18 @@ static void *tunnel_reader(void *arg) {
     return NULL;
 }
 
+typedef struct { int tfd; int rfd; } ka_args_t;
+
 static void *keepalive_thread(void *arg) {
-    int tfd = *(int*)arg;
+    ka_args_t *ka = (ka_args_t*)arg;
+    int tfd = ka->tfd, rfd = ka->rfd;
+    free(ka);
+
     while (atomic_load(&g_running)) {
         sleep(KEEPALIVE_SEC);
         if (!atomic_load(&g_running)) break;
         if (tun_send(tfd, T_PING, 0, NULL, 0) < 0) {
-            request_tunnel_reset("keepalive ping failed"); break;
+            request_tunnel_reset(rfd, tfd, "keepalive ping failed"); break;
         }
     }
     return NULL;
@@ -684,10 +682,20 @@ static void *main_thread(void *arg) {
         }
         first_start = 0;
 
-        /* Pasar puntero al fd global — igual que la versión que funcionaba */
+        reader_args_t *ra = malloc(sizeof(reader_args_t));
+        ka_args_t     *ka = malloc(sizeof(ka_args_t));
+        if (!ra || !ka) {
+            free(ra); free(ka);
+            close(rfd); close(tfd);
+            atomic_store(&g_relay_fd, -1); atomic_store(&g_tun_fd, -1);
+            sleep(1); continue;
+        }
+        ra->tfd = tfd; ra->rfd = rfd;
+        ka->tfd = tfd; ka->rfd = rfd;
+
         pthread_t trd, tka, twd;
-        pthread_create(&trd, NULL, tunnel_reader,    (void*)&g_tun_fd);
-        pthread_create(&tka, NULL, keepalive_thread, (void*)&g_tun_fd);
+        pthread_create(&trd, NULL, tunnel_reader,    ra);
+        pthread_create(&tka, NULL, keepalive_thread, ka);
         pthread_create(&twd, NULL, watchdog_thread,  NULL);
         pthread_detach(trd); pthread_detach(tka); pthread_detach(twd);
 
@@ -697,7 +705,7 @@ static void *main_thread(void *arg) {
             if (cfd < 0) {
                 if (!atomic_load(&g_running)) break;
                 if (errno == EINTR || errno == EAGAIN) continue;
-                request_tunnel_reset("accept failed"); break;
+                request_tunnel_reset(rfd, tfd, "accept failed"); break;
             }
             sock_tune(cfd);
 
@@ -708,7 +716,7 @@ static void *main_thread(void *arg) {
 
             conn_args_t *ca2 = malloc(sizeof(conn_args_t));
             if (!ca2) { close(cfd); continue; }
-            ca2->cfd = cfd; ca2->tfd = tfd; ca2->sid = sid;
+            ca2->cfd = cfd; ca2->tfd = tfd; ca2->rfd = rfd; ca2->sid = sid;
 
             pthread_t ct;
             if (pthread_create(&ct, NULL, conn_thread, ca2) != 0)
@@ -716,7 +724,7 @@ static void *main_thread(void *arg) {
             else pthread_detach(ct);
         }
 
-        request_tunnel_reset(NULL);
+        request_tunnel_reset(atomic_load(&g_relay_fd), atomic_load(&g_tun_fd), NULL);
         if (atomic_load(&g_running)) { push_log("E", "tunnel dropped, reconnecting in 1s"); sleep(1); }
     }
 
