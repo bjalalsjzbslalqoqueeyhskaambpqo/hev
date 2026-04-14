@@ -4,6 +4,11 @@
     android:layout_height="match_parent"
     android:background="@color/color_bg">
 
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/bg_atmosphere" />
+
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="match_parent"
@@ -25,7 +30,8 @@
                     android:layout_height="wrap_content"
                     android:background="@drawable/bg_card_header"
                     android:orientation="vertical"
-                    android:padding="20dp">
+                    android:paddingHorizontal="20dp"
+                    android:paddingVertical="28dp">
 
                     <LinearLayout
                         android:layout_width="match_parent"
@@ -46,7 +52,8 @@
                             android:layout_marginStart="10dp"
                             android:text="@string/app_brand"
                             android:textColor="@color/color_text_primary"
-                            android:textSize="20sp"
+                            android:letterSpacing="0.15"
+                            android:textSize="22sp"
                             android:textStyle="bold" />
                     </LinearLayout>
 
@@ -82,10 +89,10 @@
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:layout_marginStart="8dp"
-                            android:letterSpacing="0.08"
+                            android:letterSpacing="0.12"
                             android:text="DESCONECTADO"
                             android:textColor="@color/color_disconnected"
-                            android:textSize="12sp"
+                            android:textSize="15sp"
                             android:textStyle="bold" />
                     </LinearLayout>
                 </LinearLayout>
@@ -98,12 +105,13 @@
             </FrameLayout>
 
             <LinearLayout
+                android:id="@+id/layoutDataStrip"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:background="@drawable/bg_card_metrics"
+                android:layout_marginTop="20dp"
+                android:layout_marginBottom="20dp"
                 android:orientation="horizontal"
-                android:padding="20dp">
+                android:paddingHorizontal="24dp">
 
                 <LinearLayout
                     android:layout_width="0dp"
@@ -114,10 +122,11 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:letterSpacing="0.08"
+                        android:letterSpacing="0.12"
                         android:text="PING"
-                        android:textColor="@color/color_text_secondary"
-                        android:textSize="12sp" />
+                        android:textColor="#484848"
+                        android:textSize="10sp"
+                        android:textStyle="bold" />
 
                     <LinearLayout
                         android:layout_width="wrap_content"
@@ -133,7 +142,7 @@
                             android:fontFamily="monospace"
                             android:text="--"
                             android:textColor="@color/color_text_disabled"
-                            android:textSize="52sp"
+                            android:textSize="22sp"
                             android:textStyle="bold" />
 
                         <TextView
@@ -143,15 +152,9 @@
                             android:layout_marginStart="6dp"
                             android:text="ms"
                             android:textColor="@color/color_text_secondary"
-                            android:textSize="18sp" />
+                            android:textSize="11sp" />
                     </LinearLayout>
                 </LinearLayout>
-
-                <View
-                    android:layout_width="1dp"
-                    android:layout_height="48dp"
-                    android:layout_gravity="center_vertical"
-                    android:background="@color/color_divider" />
 
                 <LinearLayout
                     android:layout_width="0dp"
@@ -164,10 +167,11 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:letterSpacing="0.08"
+                        android:letterSpacing="0.12"
                         android:text="USUARIO"
-                        android:textColor="@color/color_text_secondary"
-                        android:textSize="12sp" />
+                        android:textColor="#484848"
+                        android:textSize="10sp"
+                        android:textStyle="bold" />
 
                     <TextView
                         android:id="@+id/txtUser"
@@ -175,16 +179,10 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="6dp"
                         android:text="--"
-                        android:textColor="@color/color_text_primary"
+                        android:textColor="#CCCCCC"
                         android:textSize="22sp"
                         android:textStyle="bold" />
                 </LinearLayout>
-
-                <View
-                    android:layout_width="1dp"
-                    android:layout_height="48dp"
-                    android:layout_gravity="center_vertical"
-                    android:background="@color/color_divider" />
 
                 <LinearLayout
                     android:layout_width="0dp"
@@ -196,10 +194,11 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:letterSpacing="0.08"
+                        android:letterSpacing="0.12"
                         android:text="DÍAS"
-                        android:textColor="@color/color_text_secondary"
-                        android:textSize="12sp" />
+                        android:textColor="#484848"
+                        android:textSize="10sp"
+                        android:textStyle="bold" />
 
                     <TextView
                         android:id="@+id/txtDays"
@@ -216,15 +215,14 @@
             <Button
                 android:id="@+id/btnConnect"
                 android:layout_width="match_parent"
-                android:layout_height="60dp"
-                android:layout_marginTop="16dp"
+                android:layout_height="58dp"
                 android:background="@drawable/btn_connect_selector"
-                android:letterSpacing="0.08"
+                android:letterSpacing="0.10"
                 android:stateListAnimator="@animator/btn_press"
                 android:text="@string/connect"
                 android:textAllCaps="true"
                 android:textColor="@color/color_bg"
-                android:textSize="15sp"
+                android:textSize="14sp"
                 android:textStyle="bold" />
 
             <LinearLayout
@@ -318,12 +316,13 @@
             </LinearLayout>
 
             <LinearLayout
+                android:id="@+id/layoutStatusMessage"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:background="@drawable/strike_panel_body"
                 android:orientation="vertical"
-                android:padding="20dp">
+                android:paddingHorizontal="20dp"
+                android:paddingVertical="12dp">
 
                 <TextView
                     android:id="@+id/txtStatusDetails"
@@ -331,8 +330,8 @@
                     android:layout_height="wrap_content"
                     android:padding="20dp"
                     android:text="Esperando conexión..."
-                    android:textColor="@color/color_text_secondary"
-                    android:textSize="14sp" />
+                    android:textColor="#666666"
+                    android:textSize="13sp" />
             </LinearLayout>
 
             <LinearLayout

@@ -313,8 +313,15 @@ public class SimpleModeActivity extends ComponentActivity {
             gamingDescriptionView.setVisibility(enabled ? View.VISIBLE : View.GONE);
         }
         if (gamingSelectedCountView != null) {
-            gamingSelectedCountView.setText(getString(R.string.gaming_selected_count, selected.size()));
-            gamingSelectedCountView.setTextColor(enabled ? c(R.color.color_text_primary) : c(R.color.color_text_secondary));
+            if (selected.isEmpty()) {
+                gamingSelectedCountView.setText("Ninguna app seleccionada");
+                gamingSelectedCountView.setTextColor(c(R.color.color_text_disabled));
+            } else {
+                String first = selected.get(0);
+                String summary = selected.size() > 1 ? first + " +" + (selected.size() - 1) + " más" : first;
+                gamingSelectedCountView.setText(summary);
+                gamingSelectedCountView.setTextColor(c(R.color.color_gaming));
+            }
         }
         if (selectGamingAppsBtn != null) {
             selectGamingAppsBtn.setEnabled(enabled);
@@ -648,6 +655,7 @@ public class SimpleModeActivity extends ComponentActivity {
             setHideInternalId(false);
             if (BtVpnService.isRunningState()) stopVpn();
             setUiState(UiState.DISCONNECTED);
+            statusDetailsView.setVisibility(View.VISIBLE);
             statusDetailsView.setText("✖ Usuario no registrado\nComparte tu ID interno para habilitación\nID: " + internalId);
             statusDetailsView.setTextColor(c(R.color.color_disconnected));
             if (connectBtn != null) connectBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
@@ -657,6 +665,7 @@ public class SimpleModeActivity extends ComponentActivity {
             setHideInternalId(false);
             if (BtVpnService.isRunningState()) stopVpn();
             setUiState(UiState.DISCONNECTED);
+            statusDetailsView.setVisibility(View.VISIBLE);
             statusDetailsView.setText("✖ Usuario expirado\nRenueva tu acceso con soporte\nID: " + internalId);
             statusDetailsView.setTextColor(c(R.color.color_connecting));
             if (connectBtn != null) connectBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
@@ -782,6 +791,7 @@ public class SimpleModeActivity extends ComponentActivity {
         stopVpn();
         setHideInternalId(false);
         if (statusDetailsView != null) {
+            statusDetailsView.setVisibility(View.VISIBLE);
             statusDetailsView.setText("✖ Usuario expirado\nDesconexión automática local\nID: " + internalId);
             statusDetailsView.setTextColor(c(R.color.color_connecting));
         }
@@ -808,7 +818,7 @@ public class SimpleModeActivity extends ComponentActivity {
                 connectBtn.setActivated(false);
                 connectBtn.setText(BtProxy.isGamingMode(this) ? getString(R.string.connect_gaming) : getString(R.string.connect));
                 connectBtn.setBackgroundResource(R.drawable.btn_connect_selector);
-                connectBtn.setTextColor(c(R.color.color_bg));
+                connectBtn.setTextColor(0xFF050505);
             }
         }
 
@@ -853,16 +863,17 @@ public class SimpleModeActivity extends ComponentActivity {
 
         if (statusDetailsView != null) {
             if (newState == UiState.CONNECTING) {
-                statusDetailsView.setText("… Estableciendo conexión");
-                statusDetailsView.setTextColor(c(R.color.color_text_primary));
+                statusDetailsView.setVisibility(View.VISIBLE);
+                statusDetailsView.setText("• Estableciendo conexión...");
+                statusDetailsView.setTextColor(c(R.color.color_connecting));
             } else if (newState == UiState.CONNECTED) {
                 String eta = autoDisconnectAtMs > 0 ? "Autodesconexión local activa" : "Conexión activa";
-                statusDetailsView.setText("✔ Conectado correctamente\n" + eta);
-                statusDetailsView.setTextColor(c(R.color.color_text_primary));
+                statusDetailsView.setVisibility(View.VISIBLE);
+                statusDetailsView.setText("✓ " + eta);
+                statusDetailsView.setTextColor(0xFF555555);
                 if (canAnimate()) statusDetailsView.startAnimation(AnimationUtils.loadAnimation(this, R.anim.fade_slide_in));
             } else {
-                statusDetailsView.setText("✖ Servicio desconectado");
-                statusDetailsView.setTextColor(c(R.color.color_text_secondary));
+                statusDetailsView.setVisibility(View.GONE);
                 if (pingValueView != null) {
                     pingValueView.setText("--");
                     pingValueView.setTextColor(c(R.color.color_text_disabled));
