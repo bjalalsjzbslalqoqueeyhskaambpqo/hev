@@ -33,9 +33,10 @@
 #define FRAME_HDR               7
 #define MAX_PAYLOAD             16384
 #define RELAY_BACKLOG           512
-#define DAILY_IDLE_SECS         3600
+#define DAILY_IDLE_SECS         21600
 #define GAMING_IDLE_SECS        3600
-#define WD_INTERVAL             15
+#define DAILY_WD_INTERVAL       60
+#define GAMING_WD_INTERVAL      15
 #define KEEPALIVE_SEC           20
 #define DAILY_PONG_TIMEOUT_SEC  180
 #define GAMING_PONG_TIMEOUT_SEC 180
@@ -50,7 +51,6 @@
 #define DAILY_FIRST_RECV_TIMEOUT_MS   30000
 #define GAMING_FIRST_RECV_TIMEOUT_MS   30000
 
-/* Gaming mode: sin coalescing, sin fill target, latencia mínima */
 
 #define PROXY_HOST_IPV6 "2606:4700::6812:16b7"
 #define PROXY_HOST      "emailmarketing.personal.com.ar"
@@ -60,17 +60,20 @@
 #define GLOBAL_MODE_DAILY   0
 #define GLOBAL_MODE_GAMING  1
 
-/* DAILY: poll moderado para mejor respuesta sin castigar CPU */
-#define DAILY_POLL_MS           1000
-/* Chunk de 64KB: buen balance throughput sin saturar el bus del kernel */
+#define DAILY_POLL_ACTIVE_MS    250
+#define DAILY_POLL_WARM_MS      1000
+#define DAILY_POLL_IDLE_MS      3000
+#define DAILY_POLL_DEEP_MS      5000
+#define DAILY_STAGE_ACTIVE_SEC  5
+#define DAILY_STAGE_WARM_SEC    30
+#define DAILY_STAGE_IDLE_SEC    120
 #define DAILY_BULK_CHUNK        65536
-/* Sin pace artificial en normal para no frenar streams largos */
 #define DAILY_BULK_PACE_MS      0
 
-/* GAMING: poll ultra corto para latencia mínima */
-#define GAMING_POLL_MS          500
+#define GAMING_POLL_MS          120
+#define DAILY_ACCEPT_POLL_MS    2000
+#define GAMING_ACCEPT_POLL_MS   2000
 
-/* Keepalive pings: activo cada 10s, idle cada 10 minutos */
 #define PING_ACTIVE_SEC         10
 #define PING_IDLE_SEC           600
 #define IDLE_TRAFFIC_SEC        10
@@ -81,6 +84,32 @@ static int current_pong_timeout_sec(void) {
     return atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
             ? GAMING_PONG_TIMEOUT_SEC
             : DAILY_PONG_TIMEOUT_SEC;
+}
+
+static int current_idle_secs(void) {
+    return atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
+            ? GAMING_IDLE_SECS
+            : DAILY_IDLE_SECS;
+}
+
+static int current_watchdog_interval_secs(void) {
+    return atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
+            ? GAMING_WD_INTERVAL
+            : DAILY_WD_INTERVAL;
+}
+
+static int current_accept_poll_ms(void) {
+    return atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
+            ? GAMING_ACCEPT_POLL_MS
+            : DAILY_ACCEPT_POLL_MS;
+}
+
+static int current_daily_stream_poll_ms(long now_sec, long last_active_sec) {
+    long idle_sec = now_sec - last_active_sec;
+    if (idle_sec <= DAILY_STAGE_ACTIVE_SEC) return DAILY_POLL_ACTIVE_MS;
+    if (idle_sec <= DAILY_STAGE_WARM_SEC) return DAILY_POLL_WARM_MS;
+    if (idle_sec <= DAILY_STAGE_IDLE_SEC) return DAILY_POLL_IDLE_MS;
+    return DAILY_POLL_DEEP_MS;
 }
 
 typedef struct stream_s {
@@ -239,14 +268,6 @@ static void request_tunnel_reset(const char *reason) {
     ht_clear();
 }
 
-/*
- * sock_tune_daily: prioriza throughput y ahorro de recursos.
- *   - Nagle activo (TCP_NODELAY=0): el kernel agrupa paquetes pequeños,
- *     reduce syscalls y overhead de red.
- *   - TCP_QUICKACK desactivado: menos ACKs, menos interrupciones de CPU.
- *   - Buffers grandes: el kernel puede acumular más datos sin bloquear
- *     al thread, reduciendo wakeups.
- */
 static void sock_tune_daily(int fd) {
     int v;
     v = 0;      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
@@ -257,15 +278,6 @@ static void sock_tune_daily(int fd) {
     if (flags >= 0) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
 
-/*
- * sock_tune_gaming: prioriza latencia mínima.
- *   - TCP_NODELAY=1: cada write sale inmediatamente, sin esperar a llenar
- *     un segmento. Elimina la latencia artificial de Nagle.
- *   - TCP_QUICKACK=1: el kernel confirma datos de inmediato, el otro
- *     extremo no espera el ACK retrasado para enviar el siguiente paquete.
- *   - Buffers moderados: suficiente para no perder datos, sin acumular
- *     cola innecesaria que agregue latencia.
- */
 static void sock_tune_gaming(int fd) {
     int v;
     v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
@@ -545,12 +557,6 @@ static int open_tunnel(void) {
     return fd;
 }
 
-/*
- * send_daily: envía datos en chunks con un pequeño pace entre ellos.
- * Objetivo: maximizar throughput sin despertar el CPU en cada byte.
- * El pacing mínimo da margen al scheduler para atender otras tareas
- * (notificaciones, apps de fondo) sin impacto visible en streaming/video.
- */
 static int send_daily(int tfd, uint32_t sid, const uint8_t *buf, int n) {
     int off = 0;
     while (off < n) {
@@ -566,22 +572,12 @@ static int send_daily(int tfd, uint32_t sid, const uint8_t *buf, int n) {
     return 0;
 }
 
-/*
- * send_gaming: envía los datos de una sola vez, sin chunking ni pacing.
- * Cada paquete del juego sale inmediatamente al tunnel.
- * No hay ningún delay artificial entre frames.
- */
 static int send_gaming(int tfd, uint32_t sid, const uint8_t *buf, int n) {
     return tun_send(tfd, T_DATA, sid, buf, (uint16_t)n);
 }
 
 typedef struct { int cfd; int tfd; uint32_t sid; } conn_args_t;
 
-/*
- * gaming_recv: poll bloqueante + recv simple, sin coalescing ni delay.
- * El kernel despierta el thread exactamente cuando llegan datos.
- * CPU = 0 mientras no hay datos; latencia = minima fisica posible.
- */
 static int gaming_recv(int cfd, uint8_t *buf, int bufsz) {
     struct pollfd pfd = { cfd, POLLIN, 0 };
     int pr = poll(&pfd, 1, GAMING_POLL_MS);
@@ -638,7 +634,10 @@ static void *conn_thread(void *arg) {
             if (n == 0) continue;
         } else {
             struct pollfd pfd = { cfd, POLLIN, 0 };
-            int pr = poll(&pfd, 1, DAILY_POLL_MS);
+            long now_sec = (long)time(NULL);
+            long last_active_sec = atomic_load(&s->last_active);
+            int daily_poll_ms = current_daily_stream_poll_ms(now_sec, last_active_sec);
+            int pr = poll(&pfd, 1, daily_poll_ms);
             if (pr < 0) { if (errno == EINTR) continue; break; }
             if (pr == 0) continue;
 
@@ -787,10 +786,12 @@ static void *keepalive_thread(void *arg) {
             break;
         }
 
-        for (int w = 0; w < 30 && g_running; w++) {
+        int wait_us = 5000;
+        for (int elapsed_us = 0; elapsed_us < 3000000 && g_running; elapsed_us += wait_us) {
             long new_pong = atomic_load(&g_last_pong);
             if (new_pong > last_pong) break;
-            usleep(100000);
+            usleep(wait_us);
+            if (wait_us < 50000) wait_us *= 2;
         }
 
         clock_gettime(CLOCK_MONOTONIC, &tp1);
@@ -805,13 +806,16 @@ static void *keepalive_thread(void *arg) {
 static void *watchdog_thread(void *arg) {
     int epoch = (int)(intptr_t)arg;
     while (g_running && atomic_load(&g_tunnel_epoch) == epoch) {
-        sleep(WD_INTERVAL);
+        int wd_interval = current_watchdog_interval_secs();
+        for (int i = 0; i < wd_interval && g_running && atomic_load(&g_tunnel_epoch) == epoch; i++) {
+            sleep(1);
+        }
         if (!g_running || atomic_load(&g_tunnel_epoch) != epoch) break;
 
         long now = (long)time(NULL);
-        int gmode = atomic_load(&g_global_mode);
-        int idle_secs = (gmode == GLOBAL_MODE_GAMING) ? GAMING_IDLE_SECS : DAILY_IDLE_SECS;
+        int idle_secs = current_idle_secs();
         int tfd = g_tun_fd;
+        if (atomic_load(&g_stream_count) <= 0) continue;
         for (int i = 0; i < HT_SIZE; i++) {
             pthread_mutex_lock(&g_ht_mu[i]);
             stream_t **pp = &g_ht[i];
@@ -905,7 +909,7 @@ static void *main_thread(void *arg) {
 
         while (g_running) {
             struct pollfd pfd = { rfd, POLLIN, 0 };
-            int pr = poll(&pfd, 1, 2000);
+            int pr = poll(&pfd, 1, current_accept_poll_ms());
             if (!g_running) break;
             if (pr < 0) {
                 if (errno == EINTR) continue;
