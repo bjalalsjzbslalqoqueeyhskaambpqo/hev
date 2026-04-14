@@ -60,12 +60,12 @@
 #define GLOBAL_MODE_DAILY   0
 #define GLOBAL_MODE_GAMING  1
 
-#define DAILY_POLL_MS           15000
+#define DAILY_POLL_MS           1000
 #define DAILY_BULK_CHUNK        65536
 #define DAILY_BULK_PACE_MS      0
 
 #define GAMING_POLL_MS          500
-#define DAILY_ACCEPT_POLL_MS    15000
+#define DAILY_ACCEPT_POLL_MS    2000
 #define GAMING_ACCEPT_POLL_MS   2000
 
 #define PING_ACTIVE_SEC         10
