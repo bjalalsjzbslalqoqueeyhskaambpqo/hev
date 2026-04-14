@@ -103,7 +103,7 @@ public class BtVpnService extends VpnService {
 
         Builder builder = new Builder()
                 .setSession("bt-hev")
-                .setMtu(1380)
+                .setMtu(1350)
                 .addAddress("100.64.0.1", 30)
                 .addAddress("2001:db8::1", 126)
                 .addDnsServer("100.64.0.2");
@@ -349,7 +349,7 @@ public class BtVpnService extends VpnService {
         String yml =
                 "tunnel:\n" +
                 "  name: bt-hev\n" +
-                "  mtu: 1400\n" +
+                "  mtu: 1350\n" +
                 "  ipv4: 100.64.0.1\n" +
                 "  ipv6: '2001:db8::1'\n" +
                 "socks5:\n" +
