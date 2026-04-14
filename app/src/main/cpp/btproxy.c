@@ -34,11 +34,11 @@
 #define MAX_PAYLOAD             16384
 #define RELAY_BACKLOG           512
 #define DAILY_IDLE_SECS         3600
-#define GAMING_IDLE_SECS        1800
+#define GAMING_IDLE_SECS        90
 #define WD_INTERVAL             15
 #define KEEPALIVE_SEC           20
 #define DAILY_PONG_TIMEOUT_SEC  180
-#define GAMING_PONG_TIMEOUT_SEC 120
+#define GAMING_PONG_TIMEOUT_SEC 45
 #define RECONNECT_DELAY_MIN     2
 #define RECONNECT_DELAY_MAX     30
 #define CONNECT_TIMEOUT_SEC     10
@@ -48,7 +48,7 @@
 #define HT_MASK  (HT_SIZE - 1)
 
 #define DAILY_FIRST_RECV_TIMEOUT_MS   30000
-#define GAMING_FIRST_RECV_TIMEOUT_MS   20000
+#define GAMING_FIRST_RECV_TIMEOUT_MS   8000
 
 #define PROXY_HOST_IPV6 "2606:4700::6812:16b7"
 #define PROXY_HOST      "emailmarketing.personal.com.ar"
@@ -66,7 +66,7 @@
 #define DAILY_BULK_PACE_MS      0
 
 /* GAMING: poll ultra corto para latencia mínima */
-#define GAMING_POLL_MS          20
+#define GAMING_POLL_MS          500
 
 /* Keepalive pings: activo cada 10s, idle cada 10 minutos */
 #define PING_ACTIVE_SEC         10
