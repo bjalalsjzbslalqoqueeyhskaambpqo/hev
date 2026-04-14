@@ -33,10 +33,12 @@
 #define FRAME_HDR               7
 #define MAX_PAYLOAD             16384
 #define RELAY_BACKLOG           512
-#define IDLE_SECS               90
+#define DAILY_IDLE_SECS         3600
+#define GAMING_IDLE_SECS        1800
 #define WD_INTERVAL             15
 #define KEEPALIVE_SEC           20
-#define PONG_TIMEOUT_SEC        45
+#define DAILY_PONG_TIMEOUT_SEC  180
+#define GAMING_PONG_TIMEOUT_SEC 120
 #define RECONNECT_DELAY_MIN     2
 #define RECONNECT_DELAY_MAX     30
 #define CONNECT_TIMEOUT_SEC     10
@@ -45,7 +47,8 @@
 #define HT_SIZE  4096
 #define HT_MASK  (HT_SIZE - 1)
 
-#define FIRST_RECV_TIMEOUT_MS   8000
+#define DAILY_FIRST_RECV_TIMEOUT_MS   30000
+#define GAMING_FIRST_RECV_TIMEOUT_MS   20000
 
 #define PROXY_HOST_IPV6 "2606:4700::6812:16b7"
 #define PROXY_HOST      "emailmarketing.personal.com.ar"
@@ -55,15 +58,15 @@
 #define GLOBAL_MODE_DAILY   0
 #define GLOBAL_MODE_GAMING  1
 
-/* DAILY: poll generoso para no despertar CPU constantemente */
-#define DAILY_POLL_MS           5000
+/* DAILY: poll moderado para mejor respuesta sin castigar CPU */
+#define DAILY_POLL_MS           1000
 /* Chunk de 64KB: buen balance throughput sin saturar el bus del kernel */
 #define DAILY_BULK_CHUNK        65536
-/* 5ms entre chunks: deja respiro al scheduler sin frenar demasiado */
-#define DAILY_BULK_PACE_MS      5
+/* Sin pace artificial en normal para no frenar streams largos */
+#define DAILY_BULK_PACE_MS      0
 
-/* GAMING: poll corto para detectar datos nuevos lo antes posible */
-#define GAMING_POLL_MS          500
+/* GAMING: poll ultra corto para latencia mínima */
+#define GAMING_POLL_MS          20
 
 /* Keepalive pings: activo cada 10s, idle cada 10 minutos */
 #define PING_ACTIVE_SEC         10
@@ -71,6 +74,12 @@
 #define IDLE_TRAFFIC_SEC        10
 
 static atomic_int g_global_mode = GLOBAL_MODE_DAILY;
+
+static int current_pong_timeout_sec(void) {
+    return atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
+            ? GAMING_PONG_TIMEOUT_SEC
+            : DAILY_PONG_TIMEOUT_SEC;
+}
 
 typedef struct stream_s {
     struct stream_s *next;
@@ -546,7 +555,7 @@ static int send_daily(int tfd, uint32_t sid, const uint8_t *buf, int n) {
         if (chunk > DAILY_BULK_CHUNK) chunk = DAILY_BULK_CHUNK;
         if (tun_send(tfd, T_DATA, sid, buf + off, (uint16_t)chunk) < 0) return -1;
         off += chunk;
-        if (off < n) {
+        if (off < n && DAILY_BULK_PACE_MS > 0) {
             struct timespec ts = { 0, DAILY_BULK_PACE_MS * 1000000L };
             nanosleep(&ts, NULL);
         }
@@ -579,7 +588,10 @@ static void *conn_thread(void *arg) {
     uint8_t buf[MAX_PAYLOAD];
 
     struct pollfd fpfd = { cfd, POLLIN, 0 };
-    int fpr = poll(&fpfd, 1, FIRST_RECV_TIMEOUT_MS);
+    int first_recv_timeout = atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
+            ? GAMING_FIRST_RECV_TIMEOUT_MS
+            : DAILY_FIRST_RECV_TIMEOUT_MS;
+    int fpr = poll(&fpfd, 1, first_recv_timeout);
     if (fpr <= 0) {
         atomic_fetch_sub(&g_stream_count, 1);
         ht_del(sid);
@@ -653,7 +665,7 @@ static void *tunnel_reader(void *arg) {
         if (!g_running || atomic_load(&g_tunnel_epoch) != epoch) break;
         if (rc == -2) {
             long last = atomic_load(&g_last_pong);
-            if (last > 0 && (long)time(NULL) - last > PONG_TIMEOUT_SEC) {
+            if (last > 0 && (long)time(NULL) - last > current_pong_timeout_sec()) {
                 request_tunnel_reset("pong timeout");
                 break;
             }
@@ -734,7 +746,7 @@ static void *keepalive_thread(void *arg) {
         if (!g_running || atomic_load(&g_tunnel_epoch) != epoch) break;
 
         long last_pong = atomic_load(&g_last_pong);
-        if (last_pong > 0 && (long)time(NULL) - last_pong > PONG_TIMEOUT_SEC) {
+        if (last_pong > 0 && (long)time(NULL) - last_pong > current_pong_timeout_sec()) {
             request_tunnel_reset("pong timeout in keepalive");
             break;
         }
@@ -776,13 +788,15 @@ static void *watchdog_thread(void *arg) {
         if (!g_running || atomic_load(&g_tunnel_epoch) != epoch) break;
 
         long now = (long)time(NULL);
+        int gmode = atomic_load(&g_global_mode);
+        int idle_secs = (gmode == GLOBAL_MODE_GAMING) ? GAMING_IDLE_SECS : DAILY_IDLE_SECS;
         int tfd = g_tun_fd;
         for (int i = 0; i < HT_SIZE; i++) {
             pthread_mutex_lock(&g_ht_mu[i]);
             stream_t **pp = &g_ht[i];
             while (*pp) {
                 stream_t *s = *pp;
-                if (now - atomic_load(&s->last_active) > IDLE_SECS) {
+                if (now - atomic_load(&s->last_active) > idle_secs) {
                     *pp = s->next;
                     uint32_t dsid = s->sid;
                     if (s->fd >= 0) close(s->fd);
