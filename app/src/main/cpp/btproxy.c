@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <time.h>
@@ -29,46 +30,71 @@
 #define T_PONG  0x05
 #define T_OPEN  0x01
 
-#define FRAME_HDR        7
-#define MAX_PAYLOAD      16384
-#define RELAY_BACKLOG    512
-#define IDLE_SECS        90
-#define WD_INTERVAL      15
-#define KEEPALIVE_SEC    20
-#define PONG_TIMEOUT_SEC 45
-#define RECONNECT_DELAY_MIN 2
-#define RECONNECT_DELAY_MAX 30
-#define CONNECT_TIMEOUT_SEC 10
-#define HANDSHAKE_TIMEOUT_SEC 12
+#define FRAME_HDR               7
+#define MAX_PAYLOAD             16384
+#define RELAY_BACKLOG           512
+#define IDLE_SECS               90
+#define WD_INTERVAL             15
+#define KEEPALIVE_SEC           20
+#define PONG_TIMEOUT_SEC        45
+#define RECONNECT_DELAY_MIN     2
+#define RECONNECT_DELAY_MAX     30
+#define CONNECT_TIMEOUT_SEC     10
+#define HANDSHAKE_TIMEOUT_SEC   12
 
 #define HT_SIZE  4096
 #define HT_MASK  (HT_SIZE - 1)
 
-#define STREAM_THRESH_LO   10
-#define STREAM_THRESH_MID  30
-#define STREAM_THRESH_HI   60
-#define STREAM_THRESH_MAX  100
-#define FILL_TARGET_LO     0
-#define FILL_TARGET_MID    1024
-#define FILL_TARGET_HI     2048
-#define FILL_TARGET_MAX    4096
-#define FILL_DRAIN_MS      2
-#define FIRST_RECV_TIMEOUT_MS 8000
+#define FIRST_RECV_TIMEOUT_MS   8000
 
 #define PROXY_HOST_IPV6 "2606:4700::6812:16b7"
 #define PROXY_HOST      "emailmarketing.personal.com.ar"
 #define PROXY_PORT      80
 #define TUNNEL_HOST     "2.brawlpass.com.ar"
 
+#define MODE_NORMAL  0
+#define MODE_GAMING  1
+#define MODE_BULK    2
+
+#define MODE_EVAL_PACKETS       100
+#define GAMING_AVG_THRESH       500
+#define GAMING_FREQ_THRESH      30
+#define BULK_AVG_THRESH         8192
+#define MODE_HYSTERESIS_MS      2000
+
+#define BULK_PACE_CHUNK         32768
+#define BULK_PACE_INTERVAL_MS   8
+#define NORMAL_PACE_INTERVAL_MS 2
+
+#define PING_ACTIVE_SEC         10
+#define PING_IDLE_SEC           300
+#define IDLE_TRAFFIC_SEC        10
+
+#define MAX_EPOLL_EVENTS        64
+
 typedef struct stream_s {
     struct stream_s *next;
     int              fd;
     atomic_long      last_active;
     uint32_t         sid;
+
+    uint64_t         pkt_count;
+    uint64_t         byte_count;
+    uint64_t         mode_pkt_base;
+    uint64_t         mode_byte_base;
+    long             mode_since_ms;
+    int              mode;
+    long             last_mode_change_ms;
 } stream_t;
 
 static stream_t       *g_ht[HT_SIZE];
 static pthread_mutex_t g_ht_mu[HT_SIZE];
+
+static long now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+}
 
 static void ht_init(void) {
     for (int i = 0; i < HT_SIZE; i++) {
@@ -89,7 +115,12 @@ static stream_t *ht_get(uint32_t sid) {
 static stream_t *ht_put(uint32_t sid, int fd) {
     stream_t *s = malloc(sizeof(stream_t));
     if (!s) return NULL;
-    s->sid = sid; s->fd = fd;
+    memset(s, 0, sizeof(stream_t));
+    s->sid  = sid;
+    s->fd   = fd;
+    s->mode = MODE_NORMAL;
+    s->mode_since_ms       = now_ms();
+    s->last_mode_change_ms = now_ms();
     atomic_store(&s->last_active, (long)time(NULL));
     int slot = (int)(sid & HT_MASK);
     pthread_mutex_lock(&g_ht_mu[slot]);
@@ -150,6 +181,7 @@ static int             g_start_st  = 0;
 static atomic_long     g_last_pong = 0;
 static atomic_int      g_tunnel_epoch = 0;
 static atomic_int      g_stream_count = 0;
+static atomic_long     g_last_traffic = 0;
 
 JNIEXPORT void JNICALL
 Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz);
@@ -480,35 +512,67 @@ static int open_tunnel(void) {
     return fd;
 }
 
-typedef struct { int cfd; int tfd; uint32_t sid; } conn_args_t;
+static void stream_update_mode(stream_t *s, int pkt_size) {
+    s->pkt_count++;
+    s->byte_count += (uint64_t)pkt_size;
 
-static int fill_target_for(int sc) {
-    if (sc >= STREAM_THRESH_MAX) return FILL_TARGET_MAX;
-    if (sc >= STREAM_THRESH_HI)  return FILL_TARGET_HI;
-    if (sc >= STREAM_THRESH_MID) return FILL_TARGET_MID;
-    return FILL_TARGET_LO;
-}
+    if ((s->pkt_count - s->mode_pkt_base) < MODE_EVAL_PACKETS) return;
 
-static int coalesce_recv(int cfd, uint8_t *buf, int bufsz, int sc) {
-    struct pollfd pfd = { cfd, POLLIN, 0 };
-    int pr = poll(&pfd, 1, 5000);
-    if (pr <= 0) return (pr == 0) ? 0 : -1;
-    ssize_t n = recv(cfd, buf, bufsz, 0);
-    if (n <= 0) return (int)n;
+    long t = now_ms();
+    long dt = t - s->mode_since_ms;
+    if (dt <= 0) dt = 1;
 
-    int target = fill_target_for(sc);
-    if (target <= 0 || n >= bufsz) return (int)n;
+    uint64_t pkts  = s->pkt_count - s->mode_pkt_base;
+    uint64_t bytes = s->byte_count - s->mode_byte_base;
+    uint64_t avg   = bytes / pkts;
+    long     freq  = (long)(pkts * 1000 / (uint64_t)dt);
 
-    while (n < target) {
-        pfd.revents = 0;
-        pr = poll(&pfd, 1, FILL_DRAIN_MS);
-        if (pr <= 0) break;
-        ssize_t more = recv(cfd, buf + n, bufsz - n, MSG_DONTWAIT);
-        if (more > 0) n += more;
-        else break;
+    int new_mode;
+    if (avg < GAMING_AVG_THRESH && freq >= GAMING_FREQ_THRESH)
+        new_mode = MODE_GAMING;
+    else if (avg > BULK_AVG_THRESH)
+        new_mode = MODE_BULK;
+    else
+        new_mode = MODE_NORMAL;
+
+    if (new_mode != s->mode) {
+        long since_change = t - s->last_mode_change_ms;
+        if (since_change >= MODE_HYSTERESIS_MS) {
+            s->mode = new_mode;
+            s->last_mode_change_ms = t;
+        }
     }
-    return (int)n;
+
+    s->mode_pkt_base  = s->pkt_count;
+    s->mode_byte_base = s->byte_count;
+    s->mode_since_ms  = t;
 }
+
+static int stream_send_paced(int tfd, uint32_t sid, const uint8_t *buf, int n, int mode) {
+    if (mode == MODE_GAMING || mode == MODE_NORMAL) {
+        return tun_send(tfd, T_DATA, sid, buf, (uint16_t)n);
+    }
+
+    int off = 0;
+    while (off < n) {
+        int chunk = n - off;
+        if (chunk > BULK_PACE_CHUNK) chunk = BULK_PACE_CHUNK;
+        if (tun_send(tfd, T_DATA, sid, buf + off, (uint16_t)chunk) < 0)
+            return -1;
+        off += chunk;
+        if (off < n) {
+            struct timespec ts = { 0, BULK_PACE_INTERVAL_MS * 1000000L };
+            nanosleep(&ts, NULL);
+        }
+    }
+    return 0;
+}
+
+typedef struct {
+    int      cfd;
+    int      tfd;
+    uint32_t sid;
+} conn_args_t;
 
 static void *conn_thread(void *arg) {
     conn_args_t *ca = (conn_args_t*)arg;
@@ -522,6 +586,7 @@ static void *conn_thread(void *arg) {
     atomic_fetch_add(&g_stream_count, 1);
 
     uint8_t buf[MAX_PAYLOAD];
+
     struct pollfd fpfd = { cfd, POLLIN, 0 };
     int fpr = poll(&fpfd, 1, FIRST_RECV_TIMEOUT_MS);
     if (fpr <= 0) {
@@ -536,6 +601,9 @@ static void *conn_thread(void *arg) {
         return NULL;
     }
 
+    stream_update_mode(s, (int)first);
+    atomic_store(&g_last_traffic, (long)time(NULL));
+
     if (tun_send(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0) {
         request_tunnel_reset("tun_send T_OPEN failed");
         atomic_fetch_sub(&g_stream_count, 1);
@@ -544,12 +612,29 @@ static void *conn_thread(void *arg) {
     }
 
     while (g_running) {
-        int sc = atomic_load(&g_stream_count);
-        int n = coalesce_recv(cfd, buf, sizeof(buf), sc);
-        if (n < 0) { if (errno == EINTR) continue; break; }
-        if (n == 0) continue;
+        int poll_ms;
+        if (s->mode == MODE_GAMING)       poll_ms = 1000;
+        else if (s->mode == MODE_BULK)    poll_ms = 5000;
+        else                              poll_ms = 3000;
+
+        struct pollfd pfd = { cfd, POLLIN, 0 };
+        int pr = poll(&pfd, 1, poll_ms);
+        if (pr < 0) { if (errno == EINTR) continue; break; }
+        if (pr == 0) continue;
+
+        ssize_t n = recv(cfd, buf, sizeof(buf), MSG_DONTWAIT);
+        if (n < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+            break;
+        }
+        if (n == 0) break;
+
         atomic_store(&s->last_active, (long)time(NULL));
-        if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
+        atomic_store(&g_last_traffic, (long)time(NULL));
+
+        stream_update_mode(s, (int)n);
+
+        if (stream_send_paced(tfd, sid, buf, (int)n, s->mode) < 0) {
             request_tunnel_reset("tun_send T_DATA failed");
             break;
         }
@@ -603,6 +688,7 @@ static void *tunnel_reader(void *arg) {
             stream_t *s = ht_get(sid);
             if (!s || len == 0) break;
             atomic_store(&s->last_active, (long)time(NULL));
+            atomic_store(&g_last_traffic, (long)time(NULL));
             ssize_t off = 0;
             int stream_ok = 1;
             while (off < len) {
@@ -648,22 +734,48 @@ static void *keepalive_thread(void *arg) {
     free(ta);
 
     atomic_store(&g_last_pong, (long)time(NULL));
+    atomic_store(&g_last_traffic, (long)time(NULL));
+
+    long last_ping_report = 0;
 
     while (g_running && atomic_load(&g_tunnel_epoch) == epoch) {
         for (int i = 0; i < KEEPALIVE_SEC && g_running && atomic_load(&g_tunnel_epoch) == epoch; i++)
             sleep(1);
         if (!g_running || atomic_load(&g_tunnel_epoch) != epoch) break;
 
-        long last = atomic_load(&g_last_pong);
-        if (last > 0 && (long)time(NULL) - last > PONG_TIMEOUT_SEC) {
+        long last_pong = atomic_load(&g_last_pong);
+        if (last_pong > 0 && (long)time(NULL) - last_pong > PONG_TIMEOUT_SEC) {
             request_tunnel_reset("pong timeout in keepalive");
             break;
         }
 
+        long last_traffic = atomic_load(&g_last_traffic);
+        long now = (long)time(NULL);
+        int is_idle = (now - last_traffic) > IDLE_TRAFFIC_SEC;
+
+        int ping_interval = is_idle ? PING_IDLE_SEC : PING_ACTIVE_SEC;
+        int should_ping   = (now - last_ping_report) >= ping_interval;
+
+        if (!should_ping) continue;
+
+        struct timespec tp0, tp1;
+        clock_gettime(CLOCK_MONOTONIC, &tp0);
         if (tun_send(tfd, T_PING, 0, NULL, 0) < 0) {
             request_tunnel_reset("keepalive ping failed");
             break;
         }
+
+        for (int w = 0; w < 30 && g_running; w++) {
+            long new_pong = atomic_load(&g_last_pong);
+            if (new_pong > last_pong) break;
+            usleep(100000);
+        }
+
+        clock_gettime(CLOCK_MONOTONIC, &tp1);
+        long rtt = (tp1.tv_sec - tp0.tv_sec) * 1000L + (tp1.tv_nsec - tp0.tv_nsec) / 1000000L;
+        if (rtt > 0) push_log("I", "ping_ms=%ld", rtt);
+
+        last_ping_report = now;
     }
     return NULL;
 }
@@ -671,8 +783,7 @@ static void *keepalive_thread(void *arg) {
 static void *watchdog_thread(void *arg) {
     int epoch = (int)(intptr_t)arg;
     while (g_running && atomic_load(&g_tunnel_epoch) == epoch) {
-        for (int i = 0; i < WD_INTERVAL && g_running && atomic_load(&g_tunnel_epoch) == epoch; i++)
-            sleep(1);
+        sleep(WD_INTERVAL);
         if (!g_running || atomic_load(&g_tunnel_epoch) != epoch) break;
 
         long now = (long)time(NULL);
@@ -836,6 +947,7 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     g_running = 1; g_started = 0;
     g_reconnect_delay = RECONNECT_DELAY_MIN;
     atomic_store(&g_next_sid, 1);
+    atomic_store(&g_last_traffic, (long)time(NULL));
     pthread_mutex_unlock(&g_state_mu);
 
     pthread_mutex_lock(&g_start_mu); g_start_st = 0;
