@@ -337,14 +337,10 @@ public class SimpleModeActivity extends ComponentActivity {
             }
         }
         if (gamingModePanel != null) {
-            gamingModePanel.setBackgroundResource(enabled ? R.drawable.bg_card_gaming_on : R.drawable.bg_card_gaming_off);
+            gamingModePanel.setActivated(enabled);
         }
         if (panelConnectionView != null) {
-            panelConnectionView.setBackgroundResource(
-                    enabled && uiState == UiState.CONNECTED
-                            ? R.drawable.strike_panel_gaming
-                            : R.drawable.bg_card_header
-            );
+            panelConnectionView.setSelected(enabled && uiState == UiState.CONNECTED);
         }
         if (connectBtn != null && uiState != UiState.CONNECTED) {
             connectBtn.setText(enabled ? getString(R.string.connect_gaming) : getString(R.string.connect));

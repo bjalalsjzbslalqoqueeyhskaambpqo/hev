@@ -28,7 +28,7 @@
                     android:id="@+id/panelConnection"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:background="@drawable/bg_card_header"
+                    android:background="@drawable/bg_connection_panel"
                     android:orientation="vertical"
                     android:paddingHorizontal="20dp"
                     android:paddingVertical="28dp">
@@ -225,7 +225,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="12dp"
-                android:background="@drawable/bg_card_gaming_off"
+                android:background="@drawable/bg_gaming_mode_panel"
                 android:orientation="vertical"
                 android:padding="20dp">
 
