@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class BtVpnService extends VpnService {
     public static final String ACTION_START = "com.blacktunnel.START";
     public static final String ACTION_STOP  = "com.blacktunnel.STOP";
+    public static final String ACTION_APPLY = "com.blacktunnel.APPLY";
     private static final String CH_ID = "bt_vpn";
     private static final int NF_ID = 33;
     private static final AtomicBoolean runningState = new AtomicBoolean(false);
@@ -142,8 +143,19 @@ public class BtVpnService extends VpnService {
             executor.execute(() -> stopAll(true));
             return START_NOT_STICKY;
         }
+        if (ACTION_APPLY.equals(action)) {
+            executor.execute(this::applyRuntimeChanges);
+            return START_STICKY;
+        }
         executor.execute(this::startAll);
         return START_STICKY;
+    }
+
+    private void applyRuntimeChanges() {
+        if (!running.get() || stopping.get()) return;
+        BtProxy.applyStoredGamingMode(this);
+        hevCfgFile = writeHevCfg();
+        rebuildTunnel();
     }
 
     private void startAll() {
@@ -343,8 +355,8 @@ public class BtVpnService extends VpnService {
         boolean gamingMode = BtProxy.isGamingMode(this);
 
         int mtu = gamingMode ? 1280 : 1350;
-        String socksUdp = "udp";
-        boolean pipeline = false;
+        String socksUdp = "tcp";
+        boolean pipeline = true;
 
         String yml =
                 "tunnel:\n" +

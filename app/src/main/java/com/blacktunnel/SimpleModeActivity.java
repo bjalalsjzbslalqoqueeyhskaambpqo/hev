@@ -148,7 +148,7 @@ public class SimpleModeActivity extends ComponentActivity {
                 BtProxy.setGamingMode(this, isChecked);
                 refreshGamingModeUi();
                 if (BtVpnService.isRunningState()) {
-                    Toast.makeText(this, getString(R.string.gaming_apply_notice), Toast.LENGTH_LONG).show();
+                    applyGamingChangesIfRunning();
                 }
             });
         }
@@ -269,7 +269,7 @@ public class SimpleModeActivity extends ComponentActivity {
                 .setPositiveButton("Guardar", (d, which) -> {
                     BtProxy.setGamingSelectedPackages(this, new ArrayList<>(selectedPackages));
                     refreshGamingModeUi();
-                    Toast.makeText(this, getString(R.string.gaming_apply_notice), Toast.LENGTH_LONG).show();
+                    applyGamingChangesIfRunning();
                 })
                 .create();
 
@@ -469,6 +469,13 @@ public class SimpleModeActivity extends ComponentActivity {
         setUiState(UiState.DISCONNECTED);
         handler.removeCallbacks(autoDisconnectRunnable);
         autoDisconnectAtMs = -1L;
+    }
+
+    private void applyGamingChangesIfRunning() {
+        if (!BtVpnService.isRunningState()) return;
+        Intent i = new Intent(this, BtVpnService.class);
+        i.setAction(BtVpnService.ACTION_APPLY);
+        startService(i);
     }
 
     private void syncStateFromService() {
