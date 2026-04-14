@@ -709,15 +709,20 @@ static void *tunnel_reader(void *arg) {
             atomic_store(&g_last_traffic, (long)time(NULL));
             ssize_t off = 0;
             int stream_ok = 1;
+            int gmode = atomic_load(&g_global_mode);
+            int poll_step_ms = gmode == GLOBAL_MODE_GAMING ? 20 : 8;
+            int max_wait_ms = gmode == GLOBAL_MODE_GAMING ? 1000 : 200;
+            int waited_ms = 0;
             while (off < len) {
                 ssize_t n = send(s->fd, payload + off, len - off,
                                  MSG_NOSIGNAL | MSG_DONTWAIT);
-                if (n > 0) { off += n; continue; }
+                if (n > 0) { off += n; waited_ms = 0; continue; }
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    int wait_ms = atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING ? 30 : 8;
                     struct pollfd spfd = { s->fd, POLLOUT, 0 };
-                    int sp = poll(&spfd, 1, wait_ms);
+                    int sp = poll(&spfd, 1, poll_step_ms);
                     if (sp > 0 && (spfd.revents & POLLOUT)) continue;
+                    waited_ms += poll_step_ms;
+                    if (waited_ms < max_wait_ms) continue;
                     stream_ok = 0; break;
                 }
                 stream_ok = 0; break;
