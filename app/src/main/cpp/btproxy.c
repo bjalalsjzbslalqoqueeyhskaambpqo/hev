@@ -50,7 +50,6 @@
 #define DAILY_FIRST_RECV_TIMEOUT_MS   30000
 #define GAMING_FIRST_RECV_TIMEOUT_MS   30000
 
-/* Gaming mode: sin coalescing, sin fill target, latencia mínima */
 
 #define PROXY_HOST_IPV6 "2606:4700::6812:16b7"
 #define PROXY_HOST      "emailmarketing.personal.com.ar"
@@ -60,17 +59,12 @@
 #define GLOBAL_MODE_DAILY   0
 #define GLOBAL_MODE_GAMING  1
 
-/* DAILY: poll moderado para mejor respuesta sin castigar CPU */
 #define DAILY_POLL_MS           1000
-/* Chunk de 64KB: buen balance throughput sin saturar el bus del kernel */
 #define DAILY_BULK_CHUNK        65536
-/* Sin pace artificial en normal para no frenar streams largos */
 #define DAILY_BULK_PACE_MS      0
 
-/* GAMING: poll ultra corto para latencia mínima */
 #define GAMING_POLL_MS          500
 
-/* Keepalive pings: activo cada 10s, idle cada 10 minutos */
 #define PING_ACTIVE_SEC         10
 #define PING_IDLE_SEC           600
 #define IDLE_TRAFFIC_SEC        10
@@ -239,14 +233,6 @@ static void request_tunnel_reset(const char *reason) {
     ht_clear();
 }
 
-/*
- * sock_tune_daily: prioriza throughput y ahorro de recursos.
- *   - Nagle activo (TCP_NODELAY=0): el kernel agrupa paquetes pequeños,
- *     reduce syscalls y overhead de red.
- *   - TCP_QUICKACK desactivado: menos ACKs, menos interrupciones de CPU.
- *   - Buffers grandes: el kernel puede acumular más datos sin bloquear
- *     al thread, reduciendo wakeups.
- */
 static void sock_tune_daily(int fd) {
     int v;
     v = 0;      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
@@ -257,15 +243,6 @@ static void sock_tune_daily(int fd) {
     if (flags >= 0) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
 
-/*
- * sock_tune_gaming: prioriza latencia mínima.
- *   - TCP_NODELAY=1: cada write sale inmediatamente, sin esperar a llenar
- *     un segmento. Elimina la latencia artificial de Nagle.
- *   - TCP_QUICKACK=1: el kernel confirma datos de inmediato, el otro
- *     extremo no espera el ACK retrasado para enviar el siguiente paquete.
- *   - Buffers moderados: suficiente para no perder datos, sin acumular
- *     cola innecesaria que agregue latencia.
- */
 static void sock_tune_gaming(int fd) {
     int v;
     v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
@@ -545,12 +522,6 @@ static int open_tunnel(void) {
     return fd;
 }
 
-/*
- * send_daily: envía datos en chunks con un pequeño pace entre ellos.
- * Objetivo: maximizar throughput sin despertar el CPU en cada byte.
- * El pacing mínimo da margen al scheduler para atender otras tareas
- * (notificaciones, apps de fondo) sin impacto visible en streaming/video.
- */
 static int send_daily(int tfd, uint32_t sid, const uint8_t *buf, int n) {
     int off = 0;
     while (off < n) {
@@ -566,22 +537,12 @@ static int send_daily(int tfd, uint32_t sid, const uint8_t *buf, int n) {
     return 0;
 }
 
-/*
- * send_gaming: envía los datos de una sola vez, sin chunking ni pacing.
- * Cada paquete del juego sale inmediatamente al tunnel.
- * No hay ningún delay artificial entre frames.
- */
 static int send_gaming(int tfd, uint32_t sid, const uint8_t *buf, int n) {
     return tun_send(tfd, T_DATA, sid, buf, (uint16_t)n);
 }
 
 typedef struct { int cfd; int tfd; uint32_t sid; } conn_args_t;
 
-/*
- * gaming_recv: poll bloqueante + recv simple, sin coalescing ni delay.
- * El kernel despierta el thread exactamente cuando llegan datos.
- * CPU = 0 mientras no hay datos; latencia = minima fisica posible.
- */
 static int gaming_recv(int cfd, uint8_t *buf, int bufsz) {
     struct pollfd pfd = { cfd, POLLIN, 0 };
     int pr = poll(&pfd, 1, GAMING_POLL_MS);

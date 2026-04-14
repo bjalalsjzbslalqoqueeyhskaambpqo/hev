@@ -32,9 +32,6 @@ jobs:
               -o app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so
           fi
 
-      - name: Restore Java source extensions
-        run: ./scripts/prepare_ci_sources.sh
-
       - name: Prepare release keystore
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
