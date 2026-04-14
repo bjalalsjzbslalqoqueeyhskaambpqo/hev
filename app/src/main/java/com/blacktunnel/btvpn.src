@@ -345,14 +345,6 @@ public class BtVpnService extends VpnService {
 
         String socksUdp = gamingMode ? "tcp" : "udp";
         boolean pipeline = gamingMode;
-        int cacheSize = gamingMode ? 4096 : 8192;
-        int taskStackSize = gamingMode ? 81920 : 131072;
-        int tcpBuffer = gamingMode ? 65536 : 131072;
-        int udpCopyBuffers = gamingMode ? 10 : 32;
-        int connectTimeout = gamingMode ? 5000 : 10000;
-        int tcpTimeout = gamingMode ? 60000 : 180000;
-        int udpTimeout = gamingMode ? 30000 : 120000;
-        int maxSessions = gamingMode ? 4096 : 8192;
 
         String yml =
                 "tunnel:\n" +
@@ -370,24 +362,21 @@ public class BtVpnService extends VpnService {
                 "  port: 53\n" +
                 "  network: 100.64.0.0\n" +
                 "  netmask: 255.192.0.0\n" +
-                "  cache-size: " + cacheSize + "\n" +
+                "  cache-size: 4096\n" +
                 "misc:\n" +
-                "  task-stack-size: " + taskStackSize + "\n" +
-                "  tcp-buffer-size: " + tcpBuffer + "\n" +
-                "  udp-copy-buffer-nums: " + udpCopyBuffers + "\n" +
-                "  connect-timeout: " + connectTimeout + "\n" +
-                "  tcp-read-write-timeout: " + tcpTimeout + "\n" +
-                "  udp-read-write-timeout: " + udpTimeout + "\n" +
-                "  max-session-count: " + maxSessions + "\n" +
+                "  task-stack-size: 81920\n" +
+                "  tcp-buffer-size: 65536\n" +
+                "  udp-copy-buffer-nums: 10\n" +
+                "  connect-timeout: 5000\n" +
+                "  tcp-read-write-timeout: 60000\n" +
+                "  udp-read-write-timeout: 30000\n" +
+                "  max-session-count: 4096\n" +
                 "  log-level: warn\n" +
                 "  limit-nofile: 65535\n";
 
         log("hev profile=" + (gamingMode ? "gaming" : "normal") +
                 " udp=" + socksUdp +
-                " pipeline=" + pipeline +
-                " cto=" + connectTimeout +
-                " tto=" + tcpTimeout +
-                " uto=" + udpTimeout);
+                " pipeline=" + pipeline);
 
         File f = new File(getFilesDir(), "hev.yml");
         try {

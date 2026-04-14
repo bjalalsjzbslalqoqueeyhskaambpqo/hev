@@ -490,22 +490,45 @@ public class SimpleModeActivity extends ComponentActivity {
 
     private void updateServerAuthStatus(String logs) {
         if (logs == null || statusDetailsView == null) return;
-        String lower = logs.toLowerCase();
-        if (lower.contains("usuario no registrado") || lower.contains("not_registered")) {
+        String latestAuth = findLatestAuthState(logs);
+        if ("not_registered".equals(latestAuth)) {
             if ("not_registered".equals(authState)) return;
             authState = "not_registered";
             if (BtVpnService.isRunningState()) stopVpn();
             setUiState(UiState.DISCONNECTED);
             statusDetailsView.setText("✖ Usuario no registrado\nComparte tu ID interno para habilitación\nID: " + internalId);
             statusDetailsView.setTextColor(Color.parseColor("#FF4D4D"));
-        } else if (lower.contains("usuario expirado") || lower.contains("expired")) {
+        } else if ("expired".equals(latestAuth)) {
             if ("expired".equals(authState)) return;
             authState = "expired";
             if (BtVpnService.isRunningState()) stopVpn();
             setUiState(UiState.DISCONNECTED);
             statusDetailsView.setText("✖ Usuario expirado\nRenueva tu acceso con soporte\nID: " + internalId);
             statusDetailsView.setTextColor(Color.parseColor("#FFB020"));
+        } else if ("ok".equals(latestAuth)) {
+            authState = "";
         }
+    }
+
+    private String findLatestAuthState(String logs) {
+        String[] lines = logs.split("\n");
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i];
+            if (line == null) continue;
+            String lower = line.trim().toLowerCase(Locale.ROOT);
+            if (lower.isEmpty()) continue;
+
+            if (lower.contains("usuario no registrado") || lower.contains("not_registered")) {
+                return "not_registered";
+            }
+            if (lower.contains("usuario expirado") || lower.contains("expired")) {
+                return "expired";
+            }
+            if (lower.contains("user_name=") || lower.contains("user_days=") || lower.contains("ping_ms=")) {
+                return "ok";
+            }
+        }
+        return "";
     }
 
 
