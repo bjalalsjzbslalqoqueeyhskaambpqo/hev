@@ -64,6 +64,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private Button copyIdBtn;
     private TextView statusBadgeView;
     private View statusDotView;
+    private View statusHaloView;
     private TextView statusDetailsView;
     private TextView deviceIdView;
     private TextView userValueView;
@@ -78,6 +79,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private LinearLayout gamingControlsLayout;
     private GamingBorderView gamingBorderView;
     private Animator statusPulseAnimator;
+    private Animator statusHaloAnimator;
     private final ExecutorService appLoadExecutor = Executors.newSingleThreadExecutor();
     private String internalId = "";
     private UiState uiState = UiState.DISCONNECTED;
@@ -86,6 +88,8 @@ public class SimpleModeActivity extends ComponentActivity {
     private long autoDisconnectAtMs = -1L;
     private String authState = "";
     private boolean hideInternalId = false;
+    private boolean applyingRuntimeChanges = false;
+    private int lastPingMs = -1;
 
     private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
     private ConnectivityManager connectivityManager;
@@ -125,11 +129,12 @@ public class SimpleModeActivity extends ComponentActivity {
         copyIdBtn = findViewById(R.id.btnCopyLogs);
         statusBadgeView = findViewById(R.id.txtStatusBadge);
         statusDotView = findViewById(R.id.viewStatusDot);
+        statusHaloView = findViewById(R.id.viewStatusHalo);
         statusDetailsView = findViewById(R.id.txtStatusDetails);
         deviceIdView = findViewById(R.id.txtDeviceId);
         userValueView = findViewById(R.id.txtUser);
         daysValueView = findViewById(R.id.txtDays);
-        pingValueView = findViewById(R.id.txtPing);
+        pingValueView = findViewById(R.id.txtPingValue);
         gamingModeSwitch = findViewById(R.id.switchGamingMode);
         gamingModeBadgeView = findViewById(R.id.txtGamingBadge);
         gamingDescriptionView = findViewById(R.id.txtGamingDescription);
@@ -226,6 +231,7 @@ public class SimpleModeActivity extends ComponentActivity {
         handler.removeCallbacks(stateTicker);
         handler.removeCallbacks(autoDisconnectRunnable);
         stopStatusPulse();
+        stopStatusHaloWave();
         if (gamingBorderView != null) gamingBorderView.stop();
         if (connectivityManager != null && networkCallback != null) {
             try { connectivityManager.unregisterNetworkCallback(networkCallback); } catch (Throwable ignored) {}
@@ -258,6 +264,22 @@ public class SimpleModeActivity extends ComponentActivity {
         }
     }
 
+    private void startStatusHaloWave() {
+        if (statusHaloView == null || !canAnimate()) return;
+        if (statusHaloAnimator == null) statusHaloAnimator = AnimatorInflater.loadAnimator(this, R.animator.status_halo_wave);
+        statusHaloAnimator.setTarget(statusHaloView);
+        if (!statusHaloAnimator.isStarted()) statusHaloAnimator.start();
+    }
+
+    private void stopStatusHaloWave() {
+        if (statusHaloAnimator != null) statusHaloAnimator.cancel();
+        if (statusHaloView != null) {
+            statusHaloView.setScaleX(1f);
+            statusHaloView.setScaleY(1f);
+            statusHaloView.setAlpha(0.20f);
+        }
+    }
+
     private static final class AppOption {
         final String packageName;
         final String appName;
@@ -278,10 +300,12 @@ public class SimpleModeActivity extends ComponentActivity {
             if (enabled) {
                 gamingModeBadgeView.setText(R.string.gaming_mode_on_compact);
                 gamingModeBadgeView.setTextColor(c(R.color.color_gaming));
+                gamingModeBadgeView.setBackgroundResource(R.drawable.strike_chip_left);
+                gamingModeBadgeView.setLetterSpacing(0.14f);
                 gamingModeBadgeView.setShadowLayer(0f, 0f, 0f, 0);
             } else {
                 gamingModeBadgeView.setText(R.string.gaming_mode_off_compact);
-                gamingModeBadgeView.setTextColor(c(R.color.color_text_disabled));
+                gamingModeBadgeView.setTextColor(c(R.color.color_btn_disabled));
                 gamingModeBadgeView.setShadowLayer(0f, 0f, 0f, 0);
             }
         }
@@ -307,7 +331,7 @@ public class SimpleModeActivity extends ComponentActivity {
             }
         }
         if (gamingModePanel != null) {
-            gamingModePanel.setBackgroundResource(enabled ? R.drawable.strike_panel_gaming : R.drawable.strike_panel_body);
+            gamingModePanel.setBackgroundResource(enabled ? R.drawable.bg_card_gaming_on : R.drawable.bg_card_gaming_off);
         }
         if (gamingBorderView != null) {
             if (enabled && uiState == UiState.CONNECTED) {
@@ -545,6 +569,9 @@ public class SimpleModeActivity extends ComponentActivity {
 
     private void applyGamingChangesIfRunning() {
         if (!BtVpnService.isRunningState()) return;
+        applyingRuntimeChanges = true;
+        connectingSinceMs = SystemClock.elapsedRealtime();
+        setUiState(UiState.CONNECTING);
         Intent i = new Intent(this, BtVpnService.class);
         i.setAction(BtVpnService.ACTION_APPLY);
         startService(i);
@@ -586,14 +613,20 @@ public class SimpleModeActivity extends ComponentActivity {
 
         if (running && !lastRunning) {
             authState = "";
+            applyingRuntimeChanges = false;
             setUiState(UiState.CONNECTED);
         } else if (!running && lastRunning) {
+            applyingRuntimeChanges = false;
             setUiState(UiState.DISCONNECTED);
         } else if (!running && uiState == UiState.CONNECTING) {
             long elapsed = SystemClock.elapsedRealtime() - connectingSinceMs;
             if (elapsed > 9000) {
+                applyingRuntimeChanges = false;
                 setUiState(UiState.DISCONNECTED);
             }
+        } else if (running && applyingRuntimeChanges) {
+            applyingRuntimeChanges = false;
+            setUiState(UiState.CONNECTED);
         }
 
         lastRunning = running;
@@ -676,6 +709,7 @@ public class SimpleModeActivity extends ComponentActivity {
                     daysValueView.setText(value + " días");
                     try {
                         int days = Integer.parseInt(value.replaceAll("[^0-9]", ""));
+                        daysValueView.setTextColor(days < 7 ? c(R.color.color_connecting) : c(R.color.color_connected));
                         scheduleAutoDisconnectFromDays(days);
                     } catch (Exception ignored) {}
                 }
@@ -687,10 +721,48 @@ public class SimpleModeActivity extends ComponentActivity {
             int idxPing = line.indexOf("ping_ms=");
             if (idxPing >= 0 && pingValueView != null) {
                 String value = line.substring(idxPing + "ping_ms=".length()).trim();
-                if (!value.isEmpty()) pingValueView.setText(value + " ms");
+                if (!value.isEmpty()) {
+                    try {
+                        int ping = Integer.parseInt(value.replaceAll("[^0-9]", ""));
+                        animatePingTo(ping);
+                    } catch (Exception ignored) {
+                        pingValueView.setText("--");
+                        pingValueView.setTextColor(c(R.color.color_text_disabled));
+                    }
+                }
                 break;
             }
         }
+    }
+
+    private void animatePingTo(int targetPing) {
+        if (pingValueView == null) return;
+        int start = lastPingMs >= 0 ? lastPingMs : targetPing;
+        if (!canAnimate() || lastPingMs < 0) {
+            pingValueView.setText(String.valueOf(targetPing));
+            pingValueView.setTextColor(resolvePingColor(targetPing));
+            lastPingMs = targetPing;
+            return;
+        }
+
+        android.animation.ValueAnimator counter = android.animation.ValueAnimator.ofInt(start, targetPing);
+        counter.setDuration(400);
+        counter.addUpdateListener(a -> pingValueView.setText(String.valueOf((int) a.getAnimatedValue())));
+        counter.start();
+
+        int fromColor = pingValueView.getCurrentTextColor();
+        int toColor = resolvePingColor(targetPing);
+        android.animation.ValueAnimator colorAnim = android.animation.ValueAnimator.ofObject(new android.animation.ArgbEvaluator(), fromColor, toColor);
+        colorAnim.setDuration(600);
+        colorAnim.addUpdateListener(a -> pingValueView.setTextColor((Integer) a.getAnimatedValue()));
+        colorAnim.start();
+        lastPingMs = targetPing;
+    }
+
+    private int resolvePingColor(int ping) {
+        if (ping < 80) return c(R.color.color_connected);
+        if (ping <= 150) return c(R.color.color_accent);
+        return c(R.color.color_connecting);
     }
 
 
@@ -748,27 +820,40 @@ public class SimpleModeActivity extends ComponentActivity {
                     : c(R.color.color_text_disabled);
             statusDotView.setBackgroundTintList(ColorStateList.valueOf(dotColor));
         }
+        if (statusHaloView != null) {
+            int haloColor = newState == UiState.CONNECTED
+                    ? c(R.color.color_connected)
+                    : newState == UiState.CONNECTING
+                    ? c(R.color.color_connecting)
+                    : c(R.color.color_text_disabled);
+            statusHaloView.setBackgroundTintList(ColorStateList.valueOf(haloColor));
+        }
 
         if (statusBadgeView != null) {
             if (newState == UiState.CONNECTING) {
                 statusBadgeView.setText("CONECTANDO...");
                 statusBadgeView.setTextColor(c(R.color.color_connecting));
                 startStatusPulse();
+                startStatusHaloWave();
             } else if (newState == UiState.CONNECTED) {
                 statusBadgeView.setText("CONECTADO");
                 statusBadgeView.setTextColor(BtProxy.isGamingMode(this) ? c(R.color.color_gaming) : c(R.color.color_connected));
                 stopStatusPulse();
+                stopStatusHaloWave();
+                if (statusHaloView != null) statusHaloView.setAlpha(0.15f);
             } else {
                 statusBadgeView.setText("DESCONECTADO");
                 statusBadgeView.setTextColor(c(R.color.color_disconnected));
                 stopStatusPulse();
+                stopStatusHaloWave();
+                if (statusHaloView != null) statusHaloView.setAlpha(0.20f);
             }
             statusBadgeView.setShadowLayer(0f, 0f, 0f, 0);
         }
 
         if (statusDetailsView != null) {
             if (newState == UiState.CONNECTING) {
-                statusDetailsView.setText("… Aplicando cambios");
+                statusDetailsView.setText("… Estableciendo conexión");
                 statusDetailsView.setTextColor(c(R.color.color_text_primary));
             } else if (newState == UiState.CONNECTED) {
                 String eta = autoDisconnectAtMs > 0 ? "Autodesconexión local activa" : "Conexión activa";
@@ -778,6 +863,11 @@ public class SimpleModeActivity extends ComponentActivity {
             } else {
                 statusDetailsView.setText("✖ Servicio desconectado");
                 statusDetailsView.setTextColor(c(R.color.color_text_secondary));
+                if (pingValueView != null) {
+                    pingValueView.setText("--");
+                    pingValueView.setTextColor(c(R.color.color_text_disabled));
+                    lastPingMs = -1;
+                }
             }
         }
         refreshGamingModeUi();
