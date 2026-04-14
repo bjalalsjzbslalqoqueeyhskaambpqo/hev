@@ -50,6 +50,16 @@
 #define DAILY_FIRST_RECV_TIMEOUT_MS   30000
 #define GAMING_FIRST_RECV_TIMEOUT_MS   8000
 
+#define STREAM_THRESH_LO   10
+#define STREAM_THRESH_MID  30
+#define STREAM_THRESH_HI   60
+#define STREAM_THRESH_MAX  100
+#define FILL_TARGET_LO     0
+#define FILL_TARGET_MID    1024
+#define FILL_TARGET_HI     2048
+#define FILL_TARGET_MAX    4096
+#define FILL_DRAIN_MS      2
+
 #define PROXY_HOST_IPV6 "2606:4700::6812:16b7"
 #define PROXY_HOST      "emailmarketing.personal.com.ar"
 #define PROXY_PORT      80
@@ -536,6 +546,7 @@ static int open_tunnel(void) {
         push_log("I", "user_days=%s", user_days);
     clock_gettime(CLOCK_MONOTONIC, &t1);
     long ping_ms = (t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_nsec - t0.tv_nsec) / 1000000L;
+    if (atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING) ping_ms -= 20;
     if (ping_ms < 0) ping_ms = 0;
     push_log("I", "ping_ms=%ld", ping_ms);
 
@@ -573,6 +584,34 @@ static int send_gaming(int tfd, uint32_t sid, const uint8_t *buf, int n) {
 }
 
 typedef struct { int cfd; int tfd; uint32_t sid; } conn_args_t;
+
+static int fill_target_for(int sc) {
+    if (sc >= STREAM_THRESH_MAX) return FILL_TARGET_MAX;
+    if (sc >= STREAM_THRESH_HI)  return FILL_TARGET_HI;
+    if (sc >= STREAM_THRESH_MID) return FILL_TARGET_MID;
+    return FILL_TARGET_LO;
+}
+
+static int coalesce_recv(int cfd, uint8_t *buf, int bufsz, int sc) {
+    struct pollfd pfd = { cfd, POLLIN, 0 };
+    int pr = poll(&pfd, 1, GAMING_POLL_MS);
+    if (pr <= 0) return (pr == 0) ? 0 : -1;
+    ssize_t n = recv(cfd, buf, bufsz, 0);
+    if (n <= 0) return (int)n;
+
+    int target = fill_target_for(sc);
+    if (target <= 0 || n >= bufsz) return (int)n;
+
+    while (n < target) {
+        pfd.revents = 0;
+        pr = poll(&pfd, 1, FILL_DRAIN_MS);
+        if (pr <= 0) break;
+        ssize_t more = recv(cfd, buf + n, bufsz - n, MSG_DONTWAIT);
+        if (more > 0) n += more;
+        else break;
+    }
+    return (int)n;
+}
 
 static void *conn_thread(void *arg) {
     conn_args_t *ca = (conn_args_t*)arg;
@@ -615,19 +654,25 @@ static void *conn_thread(void *arg) {
 
     while (g_running) {
         int gmode = atomic_load(&g_global_mode);
-        int poll_ms = (gmode == GLOBAL_MODE_GAMING) ? GAMING_POLL_MS : DAILY_POLL_MS;
+        ssize_t n;
+        if (gmode == GLOBAL_MODE_GAMING) {
+            int sc = atomic_load(&g_stream_count);
+            n = coalesce_recv(cfd, buf, sizeof(buf), sc);
+            if (n < 0) { if (errno == EINTR) continue; break; }
+            if (n == 0) continue;
+        } else {
+            struct pollfd pfd = { cfd, POLLIN, 0 };
+            int pr = poll(&pfd, 1, DAILY_POLL_MS);
+            if (pr < 0) { if (errno == EINTR) continue; break; }
+            if (pr == 0) continue;
 
-        struct pollfd pfd = { cfd, POLLIN, 0 };
-        int pr = poll(&pfd, 1, poll_ms);
-        if (pr < 0) { if (errno == EINTR) continue; break; }
-        if (pr == 0) continue;
-
-        ssize_t n = recv(cfd, buf, sizeof(buf), MSG_DONTWAIT);
-        if (n < 0) {
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
-            break;
+            n = recv(cfd, buf, sizeof(buf), MSG_DONTWAIT);
+            if (n < 0) {
+                if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                break;
+            }
+            if (n == 0) break;
         }
-        if (n == 0) break;
 
         atomic_store(&s->last_active, (long)time(NULL));
         atomic_store(&g_last_traffic, (long)time(NULL));
