@@ -106,11 +106,9 @@ public class BtVpnService extends VpnService {
                 .setSession("bt-hev")
                 .setMtu(tunMtu)
                 .addAddress("100.64.0.1", 30)
-                .addAddress("2001:db8::1", 126)
                 .addDnsServer("100.64.0.2");
 
         addPublicRoutes(builder);
-        builder.addRoute("::", 0);
 
         applyPerAppVpnPolicy(builder);
 
@@ -174,11 +172,9 @@ public class BtVpnService extends VpnService {
                 .setSession("bt-hev")
                 .setMtu(tunMtu)
                 .addAddress("100.64.0.1", 30)
-                .addAddress("2001:db8::1", 126)
                 .addDnsServer("100.64.0.2");
 
         addPublicRoutes(builder);
-        builder.addRoute("::", 0);
 
         applyPerAppVpnPolicy(builder);
 
@@ -291,7 +287,7 @@ public class BtVpnService extends VpnService {
         boolean gamingMode = BtProxy.isGamingMode(this);
         List<String> selectedPackages = BtProxy.getGamingSelectedPackages(this);
 
-        if (gamingMode) {
+        if (gamingMode && !selectedPackages.isEmpty()) {
             for (String pkg : selectedPackages) {
                 if (pkg == null || pkg.isBlank()) continue;
                 try { builder.addAllowedApplication(pkg); } catch (Exception ignored) {}
@@ -355,7 +351,6 @@ public class BtVpnService extends VpnService {
                 "  name: bt-hev\n" +
                 "  mtu: " + mtu + "\n" +
                 "  ipv4: 100.64.0.1\n" +
-                "  ipv6: '2001:db8::1'\n" +
                 "socks5:\n" +
                 "  address: 127.0.0.1\n" +
                 "  port: " + BtProxy.SOCKS5_PORT + "\n" +
