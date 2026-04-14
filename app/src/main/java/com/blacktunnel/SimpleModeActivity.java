@@ -48,6 +48,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class SimpleModeActivity extends ComponentActivity {
+    private static final String PREF_UI = "ui_state";
+    private static final String KEY_HIDE_ID = "hide_internal_id";
+
     private enum UiState {
         DISCONNECTED,
         CONNECTING,
@@ -74,6 +77,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private boolean lastRunning = false;
     private long autoDisconnectAtMs = -1L;
     private String authState = "";
+    private boolean hideInternalId = false;
 
     private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
     private ConnectivityManager connectivityManager;
@@ -125,7 +129,9 @@ public class SimpleModeActivity extends ComponentActivity {
 
         internalId = BtProxy.getOrCreateInternalId(this);
         BtProxy.applyStoredGamingMode(this);
+        hideInternalId = getSharedPreferences(PREF_UI, MODE_PRIVATE).getBoolean(KEY_HIDE_ID, false);
         if (deviceIdView != null) deviceIdView.setText("ID: " + internalId);
+        refreshDeviceIdVisibility();
 
         boolean running = BtVpnService.isRunningState();
         setUiState(running ? UiState.CONNECTED : UiState.DISCONNECTED);
@@ -148,6 +154,11 @@ public class SimpleModeActivity extends ComponentActivity {
                 BtProxy.setGamingMode(this, isChecked);
                 refreshGamingModeUi();
                 if (BtVpnService.isRunningState()) {
+                    showGamingApplyFeedback(
+                            isChecked ? "Modo gaming: activando..." : "Modo normal: aplicando...",
+                            isChecked ? "Modo gaming activo" : "Modo normal activo",
+                            isChecked ? "#00FFA3" : "#8B9BB0"
+                    );
                     applyGamingChangesIfRunning();
                 }
             });
@@ -269,6 +280,7 @@ public class SimpleModeActivity extends ComponentActivity {
                 .setPositiveButton("Guardar", (d, which) -> {
                     BtProxy.setGamingSelectedPackages(this, new ArrayList<>(selectedPackages));
                     refreshGamingModeUi();
+                    showGamingApplyFeedback("Aplicando selección de apps...", "Selección aplicada", "#00E0FF");
                     applyGamingChangesIfRunning();
                 })
                 .create();
@@ -478,6 +490,37 @@ public class SimpleModeActivity extends ComponentActivity {
         startService(i);
     }
 
+    private void setHideInternalId(boolean hide) {
+        if (hideInternalId == hide) return;
+        hideInternalId = hide;
+        getSharedPreferences(PREF_UI, MODE_PRIVATE).edit().putBoolean(KEY_HIDE_ID, hide).apply();
+        refreshDeviceIdVisibility();
+    }
+
+    private void refreshDeviceIdVisibility() {
+        if (deviceIdView != null) {
+            deviceIdView.setVisibility(hideInternalId ? View.GONE : View.VISIBLE);
+        }
+        if (copyIdBtn != null) {
+            copyIdBtn.setVisibility(hideInternalId ? View.GONE : View.VISIBLE);
+        }
+    }
+
+    private void showGamingApplyFeedback(String start, String done, String colorHex) {
+        if (gamingModeBadgeView == null) return;
+        gamingModeBadgeView.setText(start);
+        gamingModeBadgeView.setTextColor(Color.parseColor(colorHex));
+        gamingModeBadgeView.animate().cancel();
+        gamingModeBadgeView.setAlpha(0.55f);
+        gamingModeBadgeView.animate().alpha(1f).setDuration(220).start();
+        handler.postDelayed(() -> {
+            if (gamingModeBadgeView != null) {
+                gamingModeBadgeView.setText(done);
+            }
+            handler.postDelayed(this::refreshGamingModeUi, 500);
+        }, 500);
+    }
+
     private void syncStateFromService() {
         boolean running = BtVpnService.isRunningState();
 
@@ -509,6 +552,7 @@ public class SimpleModeActivity extends ComponentActivity {
         if ("not_registered".equals(latestAuth)) {
             if ("not_registered".equals(authState)) return;
             authState = "not_registered";
+            setHideInternalId(false);
             if (BtVpnService.isRunningState()) stopVpn();
             setUiState(UiState.DISCONNECTED);
             statusDetailsView.setText("✖ Usuario no registrado\nComparte tu ID interno para habilitación\nID: " + internalId);
@@ -516,12 +560,14 @@ public class SimpleModeActivity extends ComponentActivity {
         } else if ("expired".equals(latestAuth)) {
             if ("expired".equals(authState)) return;
             authState = "expired";
+            setHideInternalId(false);
             if (BtVpnService.isRunningState()) stopVpn();
             setUiState(UiState.DISCONNECTED);
             statusDetailsView.setText("✖ Usuario expirado\nRenueva tu acceso con soporte\nID: " + internalId);
             statusDetailsView.setTextColor(Color.parseColor("#FFB020"));
         } else if ("ok".equals(latestAuth)) {
             authState = "";
+            setHideInternalId(true);
         }
     }
 
@@ -600,6 +646,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private void runAutoDisconnect() {
         if (!BtVpnService.isRunningState()) return;
         stopVpn();
+        setHideInternalId(false);
         if (statusDetailsView != null) {
             statusDetailsView.setText("✖ Usuario expirado\nDesconexión automática local\nID: " + internalId);
             statusDetailsView.setTextColor(Color.parseColor("#FFB020"));
