@@ -355,6 +355,9 @@ public class BtVpnService extends VpnService {
         boolean gamingMode = BtProxy.isGamingMode(this);
 
         int mtu = gamingMode ? 1280 : 1420;
+        int tcpBufferSize = gamingMode ? 65536 : 4096;
+        int taskStackSize = 20480 + tcpBufferSize;
+        int maxSessionCount = gamingMode ? 1024 : 256;
         String socksUdp = "tcp";
         boolean pipeline = true;
 
@@ -375,18 +378,21 @@ public class BtVpnService extends VpnService {
                 "  netmask: 255.192.0.0\n" +
                 "  cache-size: 4096\n" +
                 "misc:\n" +
-                "  task-stack-size: 81920\n" +
-                "  tcp-buffer-size: 65536\n" +
+                "  task-stack-size: " + taskStackSize + "\n" +
+                "  tcp-buffer-size: " + tcpBufferSize + "\n" +
                 "  udp-copy-buffer-nums: 10\n" +
                 "  connect-timeout: 5000\n" +
                 "  tcp-read-write-timeout: 60000\n" +
                 "  udp-read-write-timeout: 30000\n" +
-                "  max-session-count: 4096\n" +
+                "  max-session-count: " + maxSessionCount + "\n" +
                 "  log-level: warn\n" +
                 "  limit-nofile: 65535\n";
 
         log("hev profile=" + (gamingMode ? "gaming" : "normal") +
                 " mtu=" + mtu +
+                " tcpBuffer=" + tcpBufferSize +
+                " taskStack=" + taskStackSize +
+                " maxSessions=" + maxSessionCount +
                 " udp=" + socksUdp +
                 " pipeline=" + pipeline);
 

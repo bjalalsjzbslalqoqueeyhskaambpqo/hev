@@ -52,15 +52,14 @@
 #define GLOBAL_MODE_DAILY   0
 #define GLOBAL_MODE_GAMING  1
 
-#define DAILY_BULK_CHUNK        65536
-#define DAILY_BULK_PACE_MS      0
-
 #define DAILY_ACCEPT_POLL_MS    2000
-#define GAMING_ACCEPT_POLL_MS   2000
+#define GAMING_ACCEPT_POLL_MS   500
 
 #define PING_ACTIVE_SEC         10
 #define PING_IDLE_SEC           600
 #define IDLE_TRAFFIC_SEC        10
+#define DAILY_CONN_WORKERS      32
+#define GAMING_CONN_WORKERS     64
 
 static atomic_int g_global_mode = GLOBAL_MODE_DAILY;
 
@@ -176,8 +175,23 @@ static atomic_int      g_tunnel_epoch = 0;
 static atomic_int      g_stream_count = 0;
 static atomic_long     g_last_traffic = 0;
 
+typedef struct conn_task_s {
+    struct conn_task_s *next;
+    int cfd;
+    int tfd;
+    uint32_t sid;
+} conn_task_t;
+
+static pthread_mutex_t g_connq_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_connq_cv = PTHREAD_COND_INITIALIZER;
+static conn_task_t    *g_connq_head = NULL;
+static conn_task_t    *g_connq_tail = NULL;
+static pthread_t       g_conn_workers[GAMING_CONN_WORKERS];
+static int             g_conn_workers_started = 0;
+
 JNIEXPORT void JNICALL
 Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz);
+static void connq_clear(void);
 
 static void push_log(const char *level, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
@@ -228,16 +242,17 @@ static void request_tunnel_reset(const char *reason) {
     if (reason) push_log("E", "tunnel reset: %s", reason);
     if (rfd >= 0) close(rfd);
     if (tfd >= 0) close(tfd);
+    connq_clear();
     atomic_store(&g_stream_count, 0);
     ht_clear();
 }
 
 static void sock_tune_daily(int fd) {
     int v;
-    v = 0;      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
+    v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
     v = 0;      setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &v, sizeof(v));
-    v = 524288; setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,   &v, sizeof(v));
-    v = 524288; setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,   &v, sizeof(v));
+    v = 65536;  setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,   &v, sizeof(v));
+    v = 65536;  setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,   &v, sizeof(v));
     int flags = fcntl(fd, F_GETFD, 0);
     if (flags >= 0) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
@@ -303,10 +318,11 @@ static int tun_send(int tfd, uint8_t type, uint32_t sid,
     int niov = dlen > 0 ? 2 : 1;
 
     ssize_t total = FRAME_HDR + dlen, sent = 0;
-    pthread_mutex_lock(&g_tun_wmu);
     while (sent < total) {
+        pthread_mutex_lock(&g_tun_wmu);
         ssize_t n = writev(tfd, iov, niov);
         if (n > 0) {
+            pthread_mutex_unlock(&g_tun_wmu);
             sent += n;
             if (sent < total) {
                 size_t skip = (size_t)n;
@@ -320,20 +336,18 @@ static int tun_send(int tfd, uint8_t type, uint32_t sid,
                 }
             }
         } else if (errno == EINTR) {
+            pthread_mutex_unlock(&g_tun_wmu);
             continue;
         } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            pthread_mutex_unlock(&g_tun_wmu);
             struct pollfd wpfd = { tfd, POLLOUT, 0 };
             int wp = poll(&wpfd, 1, 30);
-            if (wp <= 0 || !(wpfd.revents & POLLOUT)) {
-                pthread_mutex_unlock(&g_tun_wmu);
-                return -1;
-            }
+            if (wp <= 0 || !(wpfd.revents & POLLOUT)) return -1;
         } else {
             pthread_mutex_unlock(&g_tun_wmu);
             return -1;
         }
     }
-    pthread_mutex_unlock(&g_tun_wmu);
     return 0;
 }
 
@@ -521,35 +535,13 @@ static int open_tunnel(void) {
     return fd;
 }
 
-static int send_daily(int tfd, uint32_t sid, const uint8_t *buf, int n) {
-    int off = 0;
-    while (off < n) {
-        int chunk = n - off;
-        if (chunk > DAILY_BULK_CHUNK) chunk = DAILY_BULK_CHUNK;
-        if (tun_send(tfd, T_DATA, sid, buf + off, (uint16_t)chunk) < 0) return -1;
-        off += chunk;
-        if (off < n && DAILY_BULK_PACE_MS > 0) {
-            struct timespec ts = { 0, DAILY_BULK_PACE_MS * 1000000L };
-            nanosleep(&ts, NULL);
-        }
-    }
-    return 0;
-}
-
-static int send_gaming(int tfd, uint32_t sid, const uint8_t *buf, int n) {
+static int stream_send(int tfd, uint32_t sid, const uint8_t *buf, int n) {
     return tun_send(tfd, T_DATA, sid, buf, (uint16_t)n);
 }
 
-typedef struct { int cfd; int tfd; uint32_t sid; } conn_args_t;
-
-static void *conn_thread(void *arg) {
-    conn_args_t *ca = (conn_args_t*)arg;
-    int cfd = ca->cfd, tfd = ca->tfd;
-    uint32_t sid = ca->sid;
-    free(ca);
-
+static void conn_handle(int cfd, int tfd, uint32_t sid) {
     stream_t *s = ht_put(sid, cfd);
-    if (!s) { close(cfd); return NULL; }
+    if (!s) { close(cfd); return; }
 
     atomic_fetch_add(&g_stream_count, 1);
 
@@ -559,7 +551,7 @@ static void *conn_thread(void *arg) {
     if (first <= 0) {
         atomic_fetch_sub(&g_stream_count, 1);
         ht_del(sid);
-        return NULL;
+        return;
     }
 
     atomic_store(&g_last_traffic, (long)time(NULL));
@@ -568,11 +560,10 @@ static void *conn_thread(void *arg) {
         request_tunnel_reset("tun_send T_OPEN failed");
         atomic_fetch_sub(&g_stream_count, 1);
         ht_del(sid);
-        return NULL;
+        return;
     }
 
     while (g_running) {
-        int gmode = atomic_load(&g_global_mode);
         ssize_t n = recv(cfd, buf, sizeof(buf), 0);
         if (n < 0) { if (errno == EINTR) continue; break; }
         if (n == 0) break;
@@ -580,11 +571,7 @@ static void *conn_thread(void *arg) {
         atomic_store(&s->last_active, (long)time(NULL));
         atomic_store(&g_last_traffic, (long)time(NULL));
 
-        int ok;
-        if (gmode == GLOBAL_MODE_GAMING)
-            ok = send_gaming(tfd, sid, buf, (int)n);
-        else
-            ok = send_daily(tfd, sid, buf, (int)n);
+        int ok = stream_send(tfd, sid, buf, (int)n);
 
         if (ok < 0) {
             request_tunnel_reset("tun_send T_DATA failed");
@@ -595,7 +582,84 @@ static void *conn_thread(void *arg) {
     tun_send(tfd, T_CLOSE, sid, NULL, 0);
     atomic_fetch_sub(&g_stream_count, 1);
     ht_del(sid);
+}
+
+static void connq_push(int cfd, int tfd, uint32_t sid) {
+    conn_task_t *t = malloc(sizeof(conn_task_t));
+    if (!t) { close(cfd); return; }
+    t->next = NULL;
+    t->cfd = cfd;
+    t->tfd = tfd;
+    t->sid = sid;
+
+    pthread_mutex_lock(&g_connq_mu);
+    if (g_connq_tail) g_connq_tail->next = t;
+    else g_connq_head = t;
+    g_connq_tail = t;
+    pthread_cond_signal(&g_connq_cv);
+    pthread_mutex_unlock(&g_connq_mu);
+}
+
+static conn_task_t *connq_pop(void) {
+    pthread_mutex_lock(&g_connq_mu);
+    while (g_running && g_connq_head == NULL)
+        pthread_cond_wait(&g_connq_cv, &g_connq_mu);
+
+    conn_task_t *t = g_connq_head;
+    if (t) {
+        g_connq_head = t->next;
+        if (!g_connq_head) g_connq_tail = NULL;
+    }
+    pthread_mutex_unlock(&g_connq_mu);
+    return t;
+}
+
+static void connq_clear(void) {
+    pthread_mutex_lock(&g_connq_mu);
+    conn_task_t *t = g_connq_head;
+    while (t) {
+        conn_task_t *nx = t->next;
+        if (t->cfd >= 0) close(t->cfd);
+        free(t);
+        t = nx;
+    }
+    g_connq_head = NULL;
+    g_connq_tail = NULL;
+    pthread_mutex_unlock(&g_connq_mu);
+}
+
+static void *conn_worker(void *arg) {
+    (void)arg;
+    while (g_running) {
+        conn_task_t *t = connq_pop();
+        if (!t) continue;
+        conn_handle(t->cfd, t->tfd, t->sid);
+        free(t);
+    }
     return NULL;
+}
+
+static int current_conn_workers(void) {
+    return atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
+            ? GAMING_CONN_WORKERS : DAILY_CONN_WORKERS;
+}
+
+static void start_conn_workers(void) {
+    if (g_conn_workers_started > 0) return;
+    int n = current_conn_workers();
+    for (int i = 0; i < n; i++) {
+        if (pthread_create(&g_conn_workers[i], NULL, conn_worker, NULL) != 0) break;
+        g_conn_workers_started++;
+    }
+}
+
+static void stop_conn_workers(void) {
+    pthread_mutex_lock(&g_connq_mu);
+    pthread_cond_broadcast(&g_connq_cv);
+    pthread_mutex_unlock(&g_connq_mu);
+    for (int i = 0; i < g_conn_workers_started; i++)
+        pthread_join(g_conn_workers[i], NULL);
+    g_conn_workers_started = 0;
 }
 
 typedef struct { int tfd; int epoch; } thr_args_t;
@@ -643,22 +707,11 @@ static void *tunnel_reader(void *arg) {
             atomic_store(&g_last_traffic, (long)time(NULL));
             ssize_t off = 0;
             int stream_ok = 1;
-            int gmode = atomic_load(&g_global_mode);
-            int poll_step_ms = gmode == GLOBAL_MODE_GAMING ? 20 : 8;
-            int max_wait_ms = gmode == GLOBAL_MODE_GAMING ? 1000 : 200;
-            int waited_ms = 0;
             while (off < len) {
                 ssize_t n = send(s->fd, payload + off, len - off,
                                  MSG_NOSIGNAL | MSG_DONTWAIT);
-                if (n > 0) { off += n; waited_ms = 0; continue; }
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    struct pollfd spfd = { s->fd, POLLOUT, 0 };
-                    int sp = poll(&spfd, 1, poll_step_ms);
-                    if (sp > 0 && (spfd.revents & POLLOUT)) continue;
-                    waited_ms += poll_step_ms;
-                    if (waited_ms < max_wait_ms) continue;
-                    stream_ok = 0; break;
-                }
+                if (n > 0) { off += n; continue; }
+                if (errno == EAGAIN || errno == EWOULDBLOCK) { stream_ok = 0; break; }
                 stream_ok = 0; break;
             }
             if (!stream_ok) {
@@ -743,6 +796,7 @@ static int g_reconnect_delay = RECONNECT_DELAY_MIN;
 static void *main_thread(void *arg) {
     int port = (int)(intptr_t)arg;
     static int first_start = 1;
+    start_conn_workers();
 
     while (g_running) {
         int tfd = open_tunnel();
@@ -834,19 +888,14 @@ static void *main_thread(void *arg) {
                 sid = (uint32_t)atomic_fetch_add(&g_next_sid, 1) & 0x7FFFFFFF;
             } while (sid == 0 || ht_get(sid) != NULL);
 
-            conn_args_t *ca2 = malloc(sizeof(conn_args_t));
-            if (!ca2) { close(cfd); continue; }
-            ca2->cfd = cfd; ca2->tfd = tfd; ca2->sid = sid;
-
-            pthread_t ct;
-            if (pthread_create(&ct, NULL, conn_thread, ca2) != 0)
-                { free(ca2); close(cfd); }
-            else pthread_detach(ct);
+            connq_push(cfd, tfd, sid);
         }
 
         request_tunnel_reset(NULL);
         if (g_running) { push_log("E", "tunnel dropped, reconnecting"); sleep(1); }
     }
+    connq_clear();
+    stop_conn_workers();
     g_started = 0;
     return NULL;
 }
@@ -911,6 +960,9 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     atomic_fetch_add(&g_tunnel_epoch, 1);
     if (g_relay_fd >= 0) { shutdown(g_relay_fd, SHUT_RDWR); close(g_relay_fd); g_relay_fd = -1; }
     if (g_tun_fd   >= 0) { shutdown(g_tun_fd,   SHUT_RDWR); close(g_tun_fd);   g_tun_fd   = -1; }
+    pthread_mutex_lock(&g_connq_mu);
+    pthread_cond_broadcast(&g_connq_cv);
+    pthread_mutex_unlock(&g_connq_mu);
     pthread_mutex_lock(&g_start_mu);
     if (g_start_st == 0) { g_start_st = -1; pthread_cond_broadcast(&g_start_cv); }
     pthread_mutex_unlock(&g_start_mu);
