@@ -42,6 +42,14 @@ public class GamingBorderView extends View {
         super.onDetachedFromWindow();
     }
 
+    @Override
+    protected void onVisibilityChanged(View changedView, int visibility) {
+        super.onVisibilityChanged(changedView, visibility);
+        if (visibility != VISIBLE) {
+            if (animator != null) animator.pause();
+        }
+    }
+
     private void ensureAnimator() {
         if (animator != null) return;
         animator = ValueAnimator.ofFloat(0f, 1f);
@@ -56,8 +64,12 @@ public class GamingBorderView extends View {
 
     public void start() {
         ensureAnimator();
-        if (ValueAnimator.areAnimatorsEnabled() && animator != null && !animator.isStarted()) {
-            animator.start();
+        if (ValueAnimator.areAnimatorsEnabled() && animator != null) {
+            if (animator.isPaused()) {
+                animator.resume();
+            } else if (!animator.isStarted()) {
+                animator.start();
+            }
         }
     }
 
