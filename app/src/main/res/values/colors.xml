@@ -1,0 +1,25 @@
+<resources>
+    <color name="color_bg">#0D0D0D</color>
+    <color name="color_surface">#1A1A1A</color>
+    <color name="color_surface_elevated">#222222</color>
+    <color name="color_divider">#2C2C2C</color>
+
+    <color name="color_text_primary">#F5F5F5</color>
+    <color name="color_text_secondary">#9E9E9E</color>
+    <color name="color_text_disabled">#4A4A4A</color>
+
+    <color name="color_connected">#00E676</color>
+    <color name="color_disconnected">#FF1744</color>
+    <color name="color_connecting">#FFB300</color>
+    <color name="color_gaming">#7C4DFF</color>
+    <color name="color_gaming_light">#B388FF</color>
+    <color name="color_accent">#00E5FF</color>
+
+    <color name="color_btn_connect">#00E676</color>
+    <color name="color_btn_disconnect">#FF1744</color>
+    <color name="color_btn_gaming_on">#7C4DFF</color>
+    <color name="color_btn_disabled">#2A2A2A</color>
+
+    <color name="color_switch_track_on">#557C4DFF</color>
+    <color name="color_switch_track_off">#332C2C2C</color>
+</resources>

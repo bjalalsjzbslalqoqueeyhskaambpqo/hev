@@ -2,20 +2,7 @@
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#0B0F14">
-
-    <ImageView
-        android:id="@+id/imgBackground"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:alpha="0.22"
-        android:scaleType="centerCrop"
-        android:src="@drawable/strike_bg" />
-
-    <View
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:background="@drawable/strike_bg_depth" />
+    android:background="@color/color_bg">
 
     <ScrollView
         android:layout_width="match_parent"
@@ -26,65 +13,83 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:padding="14dp">
+            android:padding="16dp">
 
-            <LinearLayout
+            <FrameLayout
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="@drawable/strike_panel_surface"
-                android:orientation="vertical"
-                android:padding="14dp">
+                android:layout_height="wrap_content">
 
                 <LinearLayout
+                    android:id="@+id/panelConnection"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
+                    android:background="@drawable/strike_panel_surface"
+                    android:orientation="vertical"
+                    android:padding="20dp">
 
-                    <ImageView
-                        android:id="@+id/imgLogo"
-                        android:layout_width="24dp"
-                        android:layout_height="24dp"
-                        android:src="@drawable/strike_logo" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
+                    <LinearLayout
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginStart="8dp"
-                        android:fontFamily="monospace"
-                        android:shadowColor="#6600E0FF"
-                        android:shadowDx="0"
-                        android:shadowDy="0"
-                        android:shadowRadius="6"
-                        android:text="@string/app_brand"
-                        android:textColor="#E6EDF3"
-                        android:textSize="19sp"
-                        android:textStyle="bold" />
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <ImageView
+                            android:id="@+id/imgLogo"
+                            android:layout_width="40dp"
+                            android:layout_height="40dp"
+                            android:contentDescription="@string/app_brand"
+                            android:src="@drawable/strike_logo" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="10dp"
+                            android:text="@string/app_brand"
+                            android:textColor="@color/color_text_primary"
+                            android:textSize="20sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <View
+                            android:id="@+id/viewStatusDot"
+                            android:layout_width="10dp"
+                            android:layout_height="10dp"
+                            android:background="@drawable/shape_status_dot" />
+
+                        <TextView
+                            android:id="@+id/txtStatusBadge"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:letterSpacing="0.08"
+                            android:text="DESCONECTADO"
+                            android:textColor="@color/color_disconnected"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
                 </LinearLayout>
 
-                <TextView
-                    android:id="@+id/txtStatusBadge"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    android:fontFamily="monospace"
-                    android:shadowColor="#7700FFA3"
-                    android:shadowDx="0"
-                    android:shadowDy="0"
-                    android:shadowRadius="9"
-                    android:text="● DESCONECTADO"
-                    android:textColor="#FF4D4D"
-                    android:textSize="16sp"
-                    android:textStyle="bold" />
-            </LinearLayout>
+                <com.blacktunnel.GamingBorderView
+                    android:id="@+id/viewGamingBorder"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:visibility="gone" />
+            </FrameLayout>
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
+                android:layout_marginTop="8dp"
                 android:background="@drawable/strike_panel_body"
                 android:orientation="horizontal"
-                android:padding="14dp">
+                android:padding="20dp">
 
                 <LinearLayout
                     android:layout_width="0dp"
@@ -95,10 +100,9 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:fontFamily="monospace"
-                        android:letterSpacing="0.06"
+                        android:letterSpacing="0.08"
                         android:text="PING"
-                        android:textColor="#8B9BB0"
+                        android:textColor="@color/color_text_secondary"
                         android:textSize="12sp" />
 
                     <TextView
@@ -106,30 +110,31 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="6dp"
-                        android:fontFamily="monospace"
-                        android:shadowColor="#6600E0FF"
-                        android:shadowDx="0"
-                        android:shadowDy="0"
-                        android:shadowRadius="7"
                         android:text="-- ms"
-                        android:textColor="#00E0FF"
-                        android:textSize="18sp"
+                        android:textColor="@color/color_accent"
+                        android:textSize="28sp"
                         android:textStyle="bold" />
                 </LinearLayout>
+
+                <View
+                    android:layout_width="1dp"
+                    android:layout_height="match_parent"
+                    android:background="@color/color_divider" />
 
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:orientation="vertical">
+                    android:orientation="vertical"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp">
 
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:fontFamily="monospace"
-                        android:letterSpacing="0.06"
+                        android:letterSpacing="0.08"
                         android:text="USUARIO"
-                        android:textColor="#8B9BB0"
+                        android:textColor="@color/color_text_secondary"
                         android:textSize="12sp" />
 
                     <TextView
@@ -137,26 +142,30 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="6dp"
-                        android:fontFamily="monospace"
                         android:text="--"
-                        android:textColor="#E6EDF3"
-                        android:textSize="18sp"
+                        android:textColor="@color/color_text_primary"
+                        android:textSize="22sp"
                         android:textStyle="bold" />
                 </LinearLayout>
+
+                <View
+                    android:layout_width="1dp"
+                    android:layout_height="match_parent"
+                    android:background="@color/color_divider" />
 
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:orientation="vertical">
+                    android:orientation="vertical"
+                    android:paddingStart="12dp">
 
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:fontFamily="monospace"
-                        android:letterSpacing="0.06"
-                        android:text="TIEMPO"
-                        android:textColor="#8B9BB0"
+                        android:letterSpacing="0.08"
+                        android:text="DÍAS"
+                        android:textColor="@color/color_text_secondary"
                         android:textSize="12sp" />
 
                     <TextView
@@ -164,14 +173,9 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="6dp"
-                        android:fontFamily="monospace"
-                        android:shadowColor="#7700FFA3"
-                        android:shadowDx="0"
-                        android:shadowDy="0"
-                        android:shadowRadius="7"
                         android:text="-- días"
-                        android:textColor="#00FFA3"
-                        android:textSize="18sp"
+                        android:textColor="@color/color_connected"
+                        android:textSize="22sp"
                         android:textStyle="bold" />
                 </LinearLayout>
             </LinearLayout>
@@ -179,28 +183,24 @@
             <Button
                 android:id="@+id/btnConnect"
                 android:layout_width="match_parent"
-                android:layout_height="50dp"
-                android:layout_marginTop="10dp"
-                android:background="@drawable/strike_btn_primary"
-                android:elevation="6dp"
-                android:fontFamily="monospace"
-                android:letterSpacing="0.05"
-                android:text="Conectar"
+                android:layout_height="56dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/btn_connect_selector"
+                android:letterSpacing="0.08"
+                android:text="@string/connect"
                 android:textAllCaps="true"
-                android:textColor="#101820"
+                android:textColor="@color/color_bg"
                 android:textSize="16sp"
                 android:textStyle="bold" />
-
-
 
             <LinearLayout
                 android:id="@+id/panelGamingMode"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
+                android:layout_marginTop="8dp"
                 android:background="@drawable/strike_panel_body"
                 android:orientation="vertical"
-                android:padding="14dp">
+                android:padding="20dp">
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -217,9 +217,8 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:fontFamily="monospace"
                             android:text="@string/gaming_mode_title"
-                            android:textColor="#E6EDF3"
+                            android:textColor="@color/color_text_primary"
                             android:textSize="16sp"
                             android:textStyle="bold" />
 
@@ -228,9 +227,8 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="4dp"
-                            android:fontFamily="monospace"
                             android:text="@string/gaming_mode_desc"
-                            android:textColor="#8B9BB0"
+                            android:textColor="@color/color_text_secondary"
                             android:textSize="12sp" />
                     </LinearLayout>
 
@@ -238,7 +236,9 @@
                         android:id="@+id/switchGamingMode"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:showText="false" />
+                        android:showText="false"
+                        android:thumbTint="@color/switch_thumb_gaming"
+                        android:trackTint="@color/switch_track_gaming" />
                 </LinearLayout>
 
                 <TextView
@@ -247,12 +247,11 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="10dp"
                     android:background="@drawable/strike_chip_left"
-                    android:fontFamily="monospace"
                     android:gravity="center"
                     android:padding="10dp"
-                    android:text="@string/gaming_mode_off_badge"
-                    android:textColor="#E6EDF3"
-                    android:textSize="14sp"
+                    android:text="@string/gaming_mode_off_compact"
+                    android:textColor="@color/color_text_disabled"
+                    android:textSize="12sp"
                     android:textStyle="bold" />
 
                 <LinearLayout
@@ -265,12 +264,11 @@
                     <Button
                         android:id="@+id/btnSelectGamingApps"
                         android:layout_width="match_parent"
-                        android:layout_height="44dp"
+                        android:layout_height="48dp"
                         android:background="@drawable/strike_btn_secondary"
-                        android:fontFamily="monospace"
                         android:text="@string/gaming_select_apps"
                         android:textAllCaps="false"
-                        android:textColor="#051017"
+                        android:textColor="@color/color_bg"
                         android:textSize="14sp"
                         android:textStyle="bold" />
 
@@ -279,26 +277,25 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="8dp"
-                        android:fontFamily="monospace"
-                        android:textColor="#8B9BB0"
+                        android:textColor="@color/color_text_secondary"
                         android:textSize="12sp" />
                 </LinearLayout>
             </LinearLayout>
+
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
+                android:layout_marginTop="8dp"
                 android:background="@drawable/strike_panel_body"
                 android:orientation="vertical"
-                android:padding="14dp">
+                android:padding="20dp">
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:fontFamily="monospace"
                     android:text="Estado"
-                    android:textColor="#8B9BB0"
-                    android:textSize="15sp"
+                    android:textColor="@color/color_text_secondary"
+                    android:textSize="16sp"
                     android:textStyle="bold" />
 
                 <TextView
@@ -307,17 +304,16 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
                     android:background="@drawable/strike_chip_left"
-                    android:fontFamily="monospace"
                     android:padding="12dp"
                     android:text="Esperando conexión..."
-                    android:textColor="#E6EDF3"
+                    android:textColor="@color/color_text_secondary"
                     android:textSize="14sp" />
             </LinearLayout>
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
+                android:layout_marginTop="8dp"
                 android:layout_marginBottom="12dp"
                 android:background="@drawable/strike_panel_surface"
                 android:gravity="center_vertical"
@@ -330,16 +326,14 @@
                     android:layout_height="wrap_content"
                     android:layout_weight="7"
                     android:background="@drawable/strike_chip_left"
-                    android:fontFamily="monospace"
+                    android:ellipsize="end"
                     android:gravity="center_vertical"
+                    android:maxLines="2"
                     android:paddingHorizontal="10dp"
                     android:paddingVertical="10dp"
-                    android:ellipsize="end"
-                    android:maxLines="2"
-                    android:scrollHorizontally="false"
-                    android:textIsSelectable="true"
                     android:text="@string/device_id_default"
-                    android:textColor="#E6EDF3"
+                    android:textColor="@color/color_text_primary"
+                    android:textIsSelectable="true"
                     android:textSize="12sp" />
 
                 <Button
@@ -349,10 +343,9 @@
                     android:layout_marginStart="8dp"
                     android:layout_weight="3"
                     android:background="@drawable/strike_btn_secondary"
-                    android:fontFamily="monospace"
                     android:text="@string/copy"
                     android:textAllCaps="false"
-                    android:textColor="#051017"
+                    android:textColor="@color/color_bg"
                     android:textSize="14sp"
                     android:textStyle="bold" />
             </LinearLayout>

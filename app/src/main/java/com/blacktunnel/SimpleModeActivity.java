@@ -1,13 +1,15 @@
 package com.blacktunnel;
 
 import android.app.AlertDialog;
+import android.animation.Animator;
+import android.animation.AnimatorInflater;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.ColorStateList;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
-import android.graphics.Color;
 import android.graphics.drawable.Drawable;
 import android.net.ConnectivityManager;
 import android.net.Network;
@@ -24,6 +26,7 @@ import android.text.TextWatcher;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.animation.AnimationUtils;
 import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -60,6 +63,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private Button connectBtn;
     private Button copyIdBtn;
     private TextView statusBadgeView;
+    private View statusDotView;
     private TextView statusDetailsView;
     private TextView deviceIdView;
     private TextView userValueView;
@@ -72,6 +76,8 @@ public class SimpleModeActivity extends ComponentActivity {
     private Button selectGamingAppsBtn;
     private LinearLayout gamingModePanel;
     private LinearLayout gamingControlsLayout;
+    private GamingBorderView gamingBorderView;
+    private Animator statusPulseAnimator;
     private final ExecutorService appLoadExecutor = Executors.newSingleThreadExecutor();
     private String internalId = "";
     private UiState uiState = UiState.DISCONNECTED;
@@ -118,6 +124,7 @@ public class SimpleModeActivity extends ComponentActivity {
         connectBtn = findViewById(R.id.btnConnect);
         copyIdBtn = findViewById(R.id.btnCopyLogs);
         statusBadgeView = findViewById(R.id.txtStatusBadge);
+        statusDotView = findViewById(R.id.viewStatusDot);
         statusDetailsView = findViewById(R.id.txtStatusDetails);
         deviceIdView = findViewById(R.id.txtDeviceId);
         userValueView = findViewById(R.id.txtUser);
@@ -130,6 +137,7 @@ public class SimpleModeActivity extends ComponentActivity {
         selectGamingAppsBtn = findViewById(R.id.btnSelectGamingApps);
         gamingModePanel = findViewById(R.id.panelGamingMode);
         gamingControlsLayout = findViewById(R.id.layoutGamingControls);
+        gamingBorderView = findViewById(R.id.viewGamingBorder);
 
         internalId = BtProxy.getOrCreateInternalId(this);
         BtProxy.applyStoredGamingMode(this);
@@ -161,7 +169,7 @@ public class SimpleModeActivity extends ComponentActivity {
                     showGamingApplyFeedback(
                             isChecked ? "Modo gaming: activando..." : "Modo normal: aplicando...",
                             isChecked ? "Modo gaming activo" : "Modo normal activo",
-                            isChecked ? "#00FFA3" : "#8B9BB0"
+                            isChecked ? R.color.color_gaming : R.color.color_text_secondary
                     );
                     applyGamingChangesIfRunning();
                 }
@@ -217,11 +225,37 @@ public class SimpleModeActivity extends ComponentActivity {
     protected void onDestroy() {
         handler.removeCallbacks(stateTicker);
         handler.removeCallbacks(autoDisconnectRunnable);
+        stopStatusPulse();
+        if (gamingBorderView != null) gamingBorderView.stop();
         if (connectivityManager != null && networkCallback != null) {
             try { connectivityManager.unregisterNetworkCallback(networkCallback); } catch (Throwable ignored) {}
         }
         appLoadExecutor.shutdownNow();
         super.onDestroy();
+    }
+
+    private int c(int colorRes) {
+        return getColor(colorRes);
+    }
+
+    private boolean canAnimate() {
+        return android.animation.ValueAnimator.areAnimatorsEnabled();
+    }
+
+    private void startStatusPulse() {
+        if (statusDotView == null || !canAnimate()) return;
+        if (statusPulseAnimator == null) statusPulseAnimator = AnimatorInflater.loadAnimator(this, R.animator.pulse);
+        statusPulseAnimator.setTarget(statusDotView);
+        if (!statusPulseAnimator.isStarted()) statusPulseAnimator.start();
+    }
+
+    private void stopStatusPulse() {
+        if (statusPulseAnimator != null) statusPulseAnimator.cancel();
+        if (statusDotView != null) {
+            statusDotView.setScaleX(1f);
+            statusDotView.setScaleY(1f);
+            statusDotView.setAlpha(1f);
+        }
     }
 
     private static final class AppOption {
@@ -243,12 +277,12 @@ public class SimpleModeActivity extends ComponentActivity {
         if (gamingModeBadgeView != null) {
             if (enabled) {
                 gamingModeBadgeView.setText(R.string.gaming_mode_on_compact);
-                gamingModeBadgeView.setTextColor(Color.parseColor("#00FFA3"));
-                gamingModeBadgeView.setShadowLayer(8f, 0f, 0f, Color.parseColor("#6600FFA3"));
+                gamingModeBadgeView.setTextColor(c(R.color.color_gaming));
+                gamingModeBadgeView.setShadowLayer(0f, 0f, 0f, 0);
             } else {
                 gamingModeBadgeView.setText(R.string.gaming_mode_off_compact);
-                gamingModeBadgeView.setTextColor(Color.parseColor("#8B9BB0"));
-                gamingModeBadgeView.setShadowLayer(0f, 0f, 0f, Color.TRANSPARENT);
+                gamingModeBadgeView.setTextColor(c(R.color.color_text_disabled));
+                gamingModeBadgeView.setShadowLayer(0f, 0f, 0f, 0);
             }
         }
         if (gamingDescriptionView != null) {
@@ -256,7 +290,7 @@ public class SimpleModeActivity extends ComponentActivity {
         }
         if (gamingSelectedCountView != null) {
             gamingSelectedCountView.setText(getString(R.string.gaming_selected_count, selected.size()));
-            gamingSelectedCountView.setTextColor(enabled ? Color.parseColor("#E6EDF3") : Color.parseColor("#8B9BB0"));
+            gamingSelectedCountView.setTextColor(enabled ? c(R.color.color_text_primary) : c(R.color.color_text_secondary));
         }
         if (selectGamingAppsBtn != null) {
             selectGamingAppsBtn.setEnabled(enabled);
@@ -274,6 +308,15 @@ public class SimpleModeActivity extends ComponentActivity {
         }
         if (gamingModePanel != null) {
             gamingModePanel.setBackgroundResource(enabled ? R.drawable.strike_panel_gaming : R.drawable.strike_panel_body);
+        }
+        if (gamingBorderView != null) {
+            if (enabled && uiState == UiState.CONNECTED) {
+                gamingBorderView.setVisibility(View.VISIBLE);
+                gamingBorderView.start();
+            } else {
+                gamingBorderView.stop();
+                gamingBorderView.setVisibility(View.GONE);
+            }
         }
         if (connectBtn != null && uiState != UiState.CONNECTED) {
             connectBtn.setText(enabled ? getString(R.string.connect_gaming) : getString(R.string.connect));
@@ -297,7 +340,7 @@ public class SimpleModeActivity extends ComponentActivity {
                 .setPositiveButton("Guardar", (d, which) -> {
                     BtProxy.setGamingSelectedPackages(this, new ArrayList<>(selectedPackages));
                     refreshGamingModeUi();
-                    showGamingApplyFeedback("Aplicando selección de apps...", "Selección aplicada", "#00E0FF");
+                    showGamingApplyFeedback("Aplicando selección de apps...", "Selección aplicada", R.color.color_accent);
                     applyGamingChangesIfRunning();
                 })
                 .create();
@@ -335,7 +378,7 @@ public class SimpleModeActivity extends ComponentActivity {
                 chip.setTextSize(12f);
                 chip.setPadding(20, 10, 20, 10);
                 chip.setBackgroundResource(R.drawable.strike_chip_left);
-                chip.setTextColor(Color.parseColor("#E6EDF3"));
+                chip.setTextColor(c(R.color.color_text_primary));
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
                 lp.setMargins(0, 0, 12, 0);
                 chip.setLayoutParams(lp);
@@ -523,10 +566,10 @@ public class SimpleModeActivity extends ComponentActivity {
         }
     }
 
-    private void showGamingApplyFeedback(String start, String done, String colorHex) {
+    private void showGamingApplyFeedback(String start, String done, int colorRes) {
         if (gamingModeBadgeView == null) return;
         gamingModeBadgeView.setText(start);
-        gamingModeBadgeView.setTextColor(Color.parseColor(colorHex));
+        gamingModeBadgeView.setTextColor(c(colorRes));
         gamingModeBadgeView.animate().cancel();
         gamingModeBadgeView.setAlpha(0.55f);
         gamingModeBadgeView.animate().alpha(1f).setDuration(220).start();
@@ -573,7 +616,8 @@ public class SimpleModeActivity extends ComponentActivity {
             if (BtVpnService.isRunningState()) stopVpn();
             setUiState(UiState.DISCONNECTED);
             statusDetailsView.setText("✖ Usuario no registrado\nComparte tu ID interno para habilitación\nID: " + internalId);
-            statusDetailsView.setTextColor(Color.parseColor("#FF4D4D"));
+            statusDetailsView.setTextColor(c(R.color.color_disconnected));
+            if (connectBtn != null) connectBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
         } else if ("expired".equals(latestAuth)) {
             if ("expired".equals(authState)) return;
             authState = "expired";
@@ -581,7 +625,8 @@ public class SimpleModeActivity extends ComponentActivity {
             if (BtVpnService.isRunningState()) stopVpn();
             setUiState(UiState.DISCONNECTED);
             statusDetailsView.setText("✖ Usuario expirado\nRenueva tu acceso con soporte\nID: " + internalId);
-            statusDetailsView.setTextColor(Color.parseColor("#FFB020"));
+            statusDetailsView.setTextColor(c(R.color.color_connecting));
+            if (connectBtn != null) connectBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
         } else if ("ok".equals(latestAuth)) {
             authState = "";
             setHideInternalId(true);
@@ -666,7 +711,7 @@ public class SimpleModeActivity extends ComponentActivity {
         setHideInternalId(false);
         if (statusDetailsView != null) {
             statusDetailsView.setText("✖ Usuario expirado\nDesconexión automática local\nID: " + internalId);
-            statusDetailsView.setTextColor(Color.parseColor("#FFB020"));
+            statusDetailsView.setTextColor(c(R.color.color_connecting));
         }
     }
 
@@ -678,48 +723,63 @@ public class SimpleModeActivity extends ComponentActivity {
                 connectBtn.setEnabled(false);
                 connectBtn.setActivated(false);
                 connectBtn.setText("Conectando...");
-                connectBtn.setTextColor(Color.parseColor("#101820"));
+                connectBtn.setBackgroundResource(R.drawable.btn_connecting_selector);
+                connectBtn.setTextColor(c(R.color.color_text_primary));
             } else if (newState == UiState.CONNECTED) {
                 connectBtn.setEnabled(true);
                 connectBtn.setActivated(true);
                 connectBtn.setText(R.string.disconnect);
-                connectBtn.setTextColor(Color.WHITE);
+                connectBtn.setBackgroundResource(R.drawable.btn_disconnect_selector);
+                connectBtn.setTextColor(c(R.color.color_text_primary));
             } else {
                 connectBtn.setEnabled(true);
                 connectBtn.setActivated(false);
                 connectBtn.setText(BtProxy.isGamingMode(this) ? getString(R.string.connect_gaming) : getString(R.string.connect));
-                connectBtn.setTextColor(Color.parseColor("#101820"));
+                connectBtn.setBackgroundResource(R.drawable.btn_connect_selector);
+                connectBtn.setTextColor(c(R.color.color_bg));
             }
+        }
+
+        if (statusDotView != null) {
+            int dotColor = newState == UiState.CONNECTED
+                    ? c(R.color.color_connected)
+                    : newState == UiState.CONNECTING
+                    ? c(R.color.color_connecting)
+                    : c(R.color.color_text_disabled);
+            statusDotView.setBackgroundTintList(ColorStateList.valueOf(dotColor));
         }
 
         if (statusBadgeView != null) {
             if (newState == UiState.CONNECTING) {
-                statusBadgeView.setText("● CONECTANDO");
-                statusBadgeView.setTextColor(Color.parseColor("#FFB020"));
-                statusBadgeView.setShadowLayer(8f, 0f, 0f, Color.parseColor("#88FFB020"));
+                statusBadgeView.setText("CONECTANDO...");
+                statusBadgeView.setTextColor(c(R.color.color_connecting));
+                startStatusPulse();
             } else if (newState == UiState.CONNECTED) {
-                statusBadgeView.setText("● CONECTADO");
-                statusBadgeView.setTextColor(Color.parseColor("#00FFA3"));
-                statusBadgeView.setShadowLayer(10f, 0f, 0f, Color.parseColor("#9900FFA3"));
+                statusBadgeView.setText("CONECTADO");
+                statusBadgeView.setTextColor(BtProxy.isGamingMode(this) ? c(R.color.color_gaming) : c(R.color.color_connected));
+                stopStatusPulse();
             } else {
-                statusBadgeView.setText("● DESCONECTADO");
-                statusBadgeView.setTextColor(Color.parseColor("#FF4D4D"));
-                statusBadgeView.setShadowLayer(8f, 0f, 0f, Color.parseColor("#88FF4D4D"));
+                statusBadgeView.setText("DESCONECTADO");
+                statusBadgeView.setTextColor(c(R.color.color_disconnected));
+                stopStatusPulse();
             }
+            statusBadgeView.setShadowLayer(0f, 0f, 0f, 0);
         }
 
         if (statusDetailsView != null) {
             if (newState == UiState.CONNECTING) {
-                statusDetailsView.setText("… Estableciendo conexión");
-                statusDetailsView.setTextColor(Color.parseColor("#E6EDF3"));
+                statusDetailsView.setText("… Aplicando cambios");
+                statusDetailsView.setTextColor(c(R.color.color_text_primary));
             } else if (newState == UiState.CONNECTED) {
                 String eta = autoDisconnectAtMs > 0 ? "Autodesconexión local activa" : "Conexión activa";
                 statusDetailsView.setText("✔ Conectado correctamente\n" + eta);
-                statusDetailsView.setTextColor(Color.parseColor("#E6EDF3"));
+                statusDetailsView.setTextColor(c(R.color.color_text_primary));
+                if (canAnimate()) statusDetailsView.startAnimation(AnimationUtils.loadAnimation(this, R.anim.fade_slide_in));
             } else {
                 statusDetailsView.setText("✖ Servicio desconectado");
-                statusDetailsView.setTextColor(Color.parseColor("#8B9BB0"));
+                statusDetailsView.setTextColor(c(R.color.color_text_secondary));
             }
         }
+        refreshGamingModeUi();
     }
 }
