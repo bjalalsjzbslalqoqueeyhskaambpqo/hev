@@ -33,10 +33,12 @@
 #define FRAME_HDR               7
 #define MAX_PAYLOAD             16384
 #define RELAY_BACKLOG           512
-#define IDLE_SECS               90
+#define DAILY_IDLE_SECS         3600
+#define GAMING_IDLE_SECS        3600
 #define WD_INTERVAL             15
 #define KEEPALIVE_SEC           20
-#define PONG_TIMEOUT_SEC        45
+#define DAILY_PONG_TIMEOUT_SEC  180
+#define GAMING_PONG_TIMEOUT_SEC 180
 #define RECONNECT_DELAY_MIN     2
 #define RECONNECT_DELAY_MAX     30
 #define CONNECT_TIMEOUT_SEC     10
@@ -45,7 +47,18 @@
 #define HT_SIZE  4096
 #define HT_MASK  (HT_SIZE - 1)
 
-#define FIRST_RECV_TIMEOUT_MS   8000
+#define DAILY_FIRST_RECV_TIMEOUT_MS   30000
+#define GAMING_FIRST_RECV_TIMEOUT_MS   30000
+
+#define STREAM_THRESH_LO   10
+#define STREAM_THRESH_MID  30
+#define STREAM_THRESH_HI   60
+#define STREAM_THRESH_MAX  100
+#define FILL_TARGET_LO     0
+#define FILL_TARGET_MID    1024
+#define FILL_TARGET_HI     2048
+#define FILL_TARGET_MAX    4096
+#define FILL_DRAIN_MS      2
 
 #define PROXY_HOST_IPV6 "2606:4700::6812:16b7"
 #define PROXY_HOST      "emailmarketing.personal.com.ar"
@@ -55,14 +68,14 @@
 #define GLOBAL_MODE_DAILY   0
 #define GLOBAL_MODE_GAMING  1
 
-/* DAILY: poll generoso para no despertar CPU constantemente */
-#define DAILY_POLL_MS           5000
+/* DAILY: poll moderado para mejor respuesta sin castigar CPU */
+#define DAILY_POLL_MS           1000
 /* Chunk de 64KB: buen balance throughput sin saturar el bus del kernel */
 #define DAILY_BULK_CHUNK        65536
-/* 5ms entre chunks: deja respiro al scheduler sin frenar demasiado */
-#define DAILY_BULK_PACE_MS      5
+/* Sin pace artificial en normal para no frenar streams largos */
+#define DAILY_BULK_PACE_MS      0
 
-/* GAMING: poll corto para detectar datos nuevos lo antes posible */
+/* GAMING: poll ultra corto para latencia mínima */
 #define GAMING_POLL_MS          500
 
 /* Keepalive pings: activo cada 10s, idle cada 10 minutos */
@@ -71,6 +84,12 @@
 #define IDLE_TRAFFIC_SEC        10
 
 static atomic_int g_global_mode = GLOBAL_MODE_DAILY;
+
+static int current_pong_timeout_sec(void) {
+    return atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
+            ? GAMING_PONG_TIMEOUT_SEC
+            : DAILY_PONG_TIMEOUT_SEC;
+}
 
 typedef struct stream_s {
     struct stream_s *next;
@@ -527,6 +546,7 @@ static int open_tunnel(void) {
         push_log("I", "user_days=%s", user_days);
     clock_gettime(CLOCK_MONOTONIC, &t1);
     long ping_ms = (t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_nsec - t0.tv_nsec) / 1000000L;
+    if (atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING) ping_ms -= 20;
     if (ping_ms < 0) ping_ms = 0;
     push_log("I", "ping_ms=%ld", ping_ms);
 
@@ -546,7 +566,7 @@ static int send_daily(int tfd, uint32_t sid, const uint8_t *buf, int n) {
         if (chunk > DAILY_BULK_CHUNK) chunk = DAILY_BULK_CHUNK;
         if (tun_send(tfd, T_DATA, sid, buf + off, (uint16_t)chunk) < 0) return -1;
         off += chunk;
-        if (off < n) {
+        if (off < n && DAILY_BULK_PACE_MS > 0) {
             struct timespec ts = { 0, DAILY_BULK_PACE_MS * 1000000L };
             nanosleep(&ts, NULL);
         }
@@ -565,6 +585,34 @@ static int send_gaming(int tfd, uint32_t sid, const uint8_t *buf, int n) {
 
 typedef struct { int cfd; int tfd; uint32_t sid; } conn_args_t;
 
+static int fill_target_for(int sc) {
+    if (sc >= STREAM_THRESH_MAX) return FILL_TARGET_MAX;
+    if (sc >= STREAM_THRESH_HI)  return FILL_TARGET_HI;
+    if (sc >= STREAM_THRESH_MID) return FILL_TARGET_MID;
+    return FILL_TARGET_LO;
+}
+
+static int coalesce_recv(int cfd, uint8_t *buf, int bufsz, int sc) {
+    struct pollfd pfd = { cfd, POLLIN, 0 };
+    int pr = poll(&pfd, 1, GAMING_POLL_MS);
+    if (pr <= 0) return (pr == 0) ? 0 : -1;
+    ssize_t n = recv(cfd, buf, bufsz, 0);
+    if (n <= 0) return (int)n;
+
+    int target = fill_target_for(sc);
+    if (target <= 0 || n >= bufsz) return (int)n;
+
+    while (n < target) {
+        pfd.revents = 0;
+        pr = poll(&pfd, 1, FILL_DRAIN_MS);
+        if (pr <= 0) break;
+        ssize_t more = recv(cfd, buf + n, bufsz - n, MSG_DONTWAIT);
+        if (more > 0) n += more;
+        else break;
+    }
+    return (int)n;
+}
+
 static void *conn_thread(void *arg) {
     conn_args_t *ca = (conn_args_t*)arg;
     int cfd = ca->cfd, tfd = ca->tfd;
@@ -579,7 +627,10 @@ static void *conn_thread(void *arg) {
     uint8_t buf[MAX_PAYLOAD];
 
     struct pollfd fpfd = { cfd, POLLIN, 0 };
-    int fpr = poll(&fpfd, 1, FIRST_RECV_TIMEOUT_MS);
+    int first_recv_timeout = atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
+            ? GAMING_FIRST_RECV_TIMEOUT_MS
+            : DAILY_FIRST_RECV_TIMEOUT_MS;
+    int fpr = poll(&fpfd, 1, first_recv_timeout);
     if (fpr <= 0) {
         atomic_fetch_sub(&g_stream_count, 1);
         ht_del(sid);
@@ -603,19 +654,25 @@ static void *conn_thread(void *arg) {
 
     while (g_running) {
         int gmode = atomic_load(&g_global_mode);
-        int poll_ms = (gmode == GLOBAL_MODE_GAMING) ? GAMING_POLL_MS : DAILY_POLL_MS;
+        ssize_t n;
+        if (gmode == GLOBAL_MODE_GAMING) {
+            int sc = atomic_load(&g_stream_count);
+            n = coalesce_recv(cfd, buf, sizeof(buf), sc);
+            if (n < 0) { if (errno == EINTR) continue; break; }
+            if (n == 0) continue;
+        } else {
+            struct pollfd pfd = { cfd, POLLIN, 0 };
+            int pr = poll(&pfd, 1, DAILY_POLL_MS);
+            if (pr < 0) { if (errno == EINTR) continue; break; }
+            if (pr == 0) continue;
 
-        struct pollfd pfd = { cfd, POLLIN, 0 };
-        int pr = poll(&pfd, 1, poll_ms);
-        if (pr < 0) { if (errno == EINTR) continue; break; }
-        if (pr == 0) continue;
-
-        ssize_t n = recv(cfd, buf, sizeof(buf), MSG_DONTWAIT);
-        if (n < 0) {
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
-            break;
+            n = recv(cfd, buf, sizeof(buf), MSG_DONTWAIT);
+            if (n < 0) {
+                if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                break;
+            }
+            if (n == 0) break;
         }
-        if (n == 0) break;
 
         atomic_store(&s->last_active, (long)time(NULL));
         atomic_store(&g_last_traffic, (long)time(NULL));
@@ -653,7 +710,7 @@ static void *tunnel_reader(void *arg) {
         if (!g_running || atomic_load(&g_tunnel_epoch) != epoch) break;
         if (rc == -2) {
             long last = atomic_load(&g_last_pong);
-            if (last > 0 && (long)time(NULL) - last > PONG_TIMEOUT_SEC) {
+            if (last > 0 && (long)time(NULL) - last > current_pong_timeout_sec()) {
                 request_tunnel_reset("pong timeout");
                 break;
             }
@@ -734,7 +791,7 @@ static void *keepalive_thread(void *arg) {
         if (!g_running || atomic_load(&g_tunnel_epoch) != epoch) break;
 
         long last_pong = atomic_load(&g_last_pong);
-        if (last_pong > 0 && (long)time(NULL) - last_pong > PONG_TIMEOUT_SEC) {
+        if (last_pong > 0 && (long)time(NULL) - last_pong > current_pong_timeout_sec()) {
             request_tunnel_reset("pong timeout in keepalive");
             break;
         }
@@ -776,13 +833,15 @@ static void *watchdog_thread(void *arg) {
         if (!g_running || atomic_load(&g_tunnel_epoch) != epoch) break;
 
         long now = (long)time(NULL);
+        int gmode = atomic_load(&g_global_mode);
+        int idle_secs = (gmode == GLOBAL_MODE_GAMING) ? GAMING_IDLE_SECS : DAILY_IDLE_SECS;
         int tfd = g_tun_fd;
         for (int i = 0; i < HT_SIZE; i++) {
             pthread_mutex_lock(&g_ht_mu[i]);
             stream_t **pp = &g_ht[i];
             while (*pp) {
                 stream_t *s = *pp;
-                if (now - atomic_load(&s->last_active) > IDLE_SECS) {
+                if (now - atomic_load(&s->last_active) > idle_secs) {
                     *pp = s->next;
                     uint32_t dsid = s->sid;
                     if (s->fd >= 0) close(s->fd);
@@ -935,7 +994,6 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     g_reconnect_delay = RECONNECT_DELAY_MIN;
     atomic_store(&g_next_sid, 1);
     atomic_store(&g_last_traffic, (long)time(NULL));
-    atomic_store(&g_global_mode, GLOBAL_MODE_DAILY);
     pthread_mutex_unlock(&g_state_mu);
 
     pthread_mutex_lock(&g_start_mu); g_start_st = 0;
