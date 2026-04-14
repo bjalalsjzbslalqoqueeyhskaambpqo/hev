@@ -355,9 +355,9 @@ public class BtVpnService extends VpnService {
         boolean gamingMode = BtProxy.isGamingMode(this);
 
         int mtu = gamingMode ? 1280 : 1420;
-        int tcpBufferSize = gamingMode ? 65536 : 4096;
+        int tcpBufferSize = gamingMode ? 65536 : 16384;
         int taskStackSize = 20480 + tcpBufferSize;
-        int maxSessionCount = gamingMode ? 1024 : 256;
+        int maxSessionCount = gamingMode ? 1024 : 512;
         String socksUdp = "tcp";
         boolean pipeline = true;
 
