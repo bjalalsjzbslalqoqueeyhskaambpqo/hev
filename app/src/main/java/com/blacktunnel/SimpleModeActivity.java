@@ -342,11 +342,13 @@ public class SimpleModeActivity extends ComponentActivity {
         }
         if (gamingBorderView != null) {
             if (enabled && uiState == UiState.CONNECTED) {
-                gamingBorderView.setVisibility(View.VISIBLE);
-                gamingBorderView.start();
+                gamingBorderView.post(() -> {
+                    gamingBorderView.setVisibility(View.VISIBLE);
+                    gamingBorderView.start();
+                });
             } else {
                 gamingBorderView.stop();
-                gamingBorderView.setVisibility(View.GONE);
+                gamingBorderView.post(() -> gamingBorderView.setVisibility(View.GONE));
             }
         }
         if (connectBtn != null && uiState != UiState.CONNECTED) {
