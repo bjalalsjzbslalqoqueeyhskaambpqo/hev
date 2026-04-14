@@ -1,10 +1,14 @@
 package com.blacktunnel;
 
+import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.graphics.drawable.Drawable;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
@@ -15,13 +19,33 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.text.Editable;
+import android.text.TextWatcher;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.BaseAdapter;
 import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.EditText;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.ListView;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
-
 import androidx.activity.ComponentActivity;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
+
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class SimpleModeActivity extends ComponentActivity {
     private enum UiState {
@@ -38,6 +62,11 @@ public class SimpleModeActivity extends ComponentActivity {
     private TextView userValueView;
     private TextView daysValueView;
     private TextView pingValueView;
+    private Switch gamingModeSwitch;
+    private TextView gamingModeBadgeView;
+    private TextView gamingSelectedCountView;
+    private Button selectGamingAppsBtn;
+    private final ExecutorService appLoadExecutor = Executors.newSingleThreadExecutor();
     private String internalId = "";
     private UiState uiState = UiState.DISCONNECTED;
     private long connectingSinceMs = 0L;
@@ -87,7 +116,13 @@ public class SimpleModeActivity extends ComponentActivity {
         userValueView = findViewById(R.id.txtUser);
         daysValueView = findViewById(R.id.txtDays);
         pingValueView = findViewById(R.id.txtPing);
+        gamingModeSwitch = findViewById(R.id.switchGamingMode);
+        gamingModeBadgeView = findViewById(R.id.txtGamingBadge);
+        gamingSelectedCountView = findViewById(R.id.txtGamingSelectedCount);
+        selectGamingAppsBtn = findViewById(R.id.btnSelectGamingApps);
+
         internalId = BtProxy.getOrCreateInternalId(this);
+        BtProxy.applyStoredGamingMode(this);
         if (deviceIdView != null) deviceIdView.setText("ID: " + internalId);
 
         boolean running = BtVpnService.isRunningState();
@@ -104,6 +139,21 @@ public class SimpleModeActivity extends ComponentActivity {
             }
         });
         copyIdBtn.setOnClickListener(v -> copyInternalIdToClipboard());
+
+        if (gamingModeSwitch != null) {
+            gamingModeSwitch.setChecked(BtProxy.isGamingMode(this));
+            gamingModeSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                BtProxy.setGamingMode(this, isChecked);
+                refreshGamingModeUi();
+                if (BtVpnService.isRunningState()) {
+                    Toast.makeText(this, getString(R.string.gaming_apply_notice), Toast.LENGTH_LONG).show();
+                }
+            });
+        }
+        if (selectGamingAppsBtn != null) {
+            selectGamingAppsBtn.setOnClickListener(v -> openGamingAppsDialog());
+        }
+        refreshGamingModeUi();
 
         setupConnectivityMonitor();
         handler.post(stateTicker);
@@ -153,7 +203,229 @@ public class SimpleModeActivity extends ComponentActivity {
         if (connectivityManager != null && networkCallback != null) {
             try { connectivityManager.unregisterNetworkCallback(networkCallback); } catch (Throwable ignored) {}
         }
+        appLoadExecutor.shutdownNow();
         super.onDestroy();
+    }
+
+    private static final class AppOption {
+        final String packageName;
+        final String appName;
+        final Drawable icon;
+
+        AppOption(String packageName, String appName, Drawable icon) {
+            this.packageName = packageName;
+            this.appName = appName;
+            this.icon = icon;
+        }
+    }
+
+    private void refreshGamingModeUi() {
+        boolean enabled = BtProxy.isGamingMode(this);
+        List<String> selected = BtProxy.getGamingSelectedPackages(this);
+
+        if (gamingModeBadgeView != null) {
+            if (enabled) {
+                gamingModeBadgeView.setText(R.string.gaming_mode_on_badge);
+                gamingModeBadgeView.setTextColor(Color.parseColor("#00FFA3"));
+                gamingModeBadgeView.setShadowLayer(8f, 0f, 0f, Color.parseColor("#6600FFA3"));
+            } else {
+                gamingModeBadgeView.setText(R.string.gaming_mode_off_badge);
+                gamingModeBadgeView.setTextColor(Color.parseColor("#8B9BB0"));
+                gamingModeBadgeView.setShadowLayer(0f, 0f, 0f, Color.TRANSPARENT);
+            }
+        }
+        if (gamingSelectedCountView != null) {
+            gamingSelectedCountView.setText(getString(R.string.gaming_selected_count, selected.size()));
+            gamingSelectedCountView.setTextColor(enabled ? Color.parseColor("#E6EDF3") : Color.parseColor("#8B9BB0"));
+        }
+        if (selectGamingAppsBtn != null) {
+            selectGamingAppsBtn.setEnabled(enabled);
+            selectGamingAppsBtn.setAlpha(enabled ? 1f : 0.55f);
+        }
+    }
+
+    private void openGamingAppsDialog() {
+        View dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_gaming_apps, null, false);
+        EditText searchView = dialogView.findViewById(R.id.editSearchApps);
+        TextView counterView = dialogView.findViewById(R.id.txtPickerCounter);
+        LinearLayout selectedLayout = dialogView.findViewById(R.id.layoutSelectedApps);
+        ListView listView = dialogView.findViewById(R.id.listGamingApps);
+
+        counterView.setText(getString(R.string.gaming_loading_apps));
+        Set<String> selectedPackages = new HashSet<>(BtProxy.getGamingSelectedPackages(this));
+        listView.setEnabled(false);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setView(dialogView)
+                .setNegativeButton("Cancelar", null)
+                .setPositiveButton("Guardar", (d, which) -> {
+                    BtProxy.setGamingSelectedPackages(this, new ArrayList<>(selectedPackages));
+                    refreshGamingModeUi();
+                    Toast.makeText(this, getString(R.string.gaming_apply_notice), Toast.LENGTH_LONG).show();
+                })
+                .create();
+
+        appLoadExecutor.execute(() -> {
+            List<AppOption> allApps = loadInstalledUserApps();
+            runOnUiThread(() -> bindGamingDialogContent(searchView, counterView, selectedLayout, listView, selectedPackages, allApps));
+        });
+
+        dialog.show();
+    }
+
+    private void bindGamingDialogContent(
+            EditText searchView,
+            TextView counterView,
+            LinearLayout selectedLayout,
+            ListView listView,
+            Set<String> selectedPackages,
+            List<AppOption> allApps
+    ) {
+        GamingAppsAdapter adapter = new GamingAppsAdapter(allApps, selectedPackages);
+        listView.setAdapter(adapter);
+        listView.setEnabled(true);
+
+        final Runnable[] refreshPinned = new Runnable[1];
+        refreshPinned[0] = () -> {
+            selectedLayout.removeAllViews();
+            int count = selectedPackages.size();
+            counterView.setText(getString(R.string.gaming_selected_count, count));
+            for (AppOption app : allApps) {
+                if (!selectedPackages.contains(app.packageName)) continue;
+                Button chip = new Button(this);
+                chip.setText(app.appName + " ✕");
+                chip.setAllCaps(false);
+                chip.setTextSize(12f);
+                chip.setPadding(20, 10, 20, 10);
+                chip.setBackgroundResource(R.drawable.strike_chip_left);
+                chip.setTextColor(Color.parseColor("#E6EDF3"));
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                lp.setMargins(0, 0, 12, 0);
+                chip.setLayoutParams(lp);
+                chip.setOnClickListener(v -> {
+                    selectedPackages.remove(app.packageName);
+                    adapter.notifyDataSetChanged();
+                    refreshPinned[0].run();
+                });
+                selectedLayout.addView(chip);
+            }
+        };
+
+        adapter.setSelectionListener((app, checked) -> {
+            if (checked && selectedPackages.size() >= 3 && !selectedPackages.contains(app.packageName)) {
+                Toast.makeText(this, "Máximo 3 aplicaciones en modo gaming", Toast.LENGTH_SHORT).show();
+                adapter.notifyDataSetChanged();
+                return;
+            }
+            if (checked) selectedPackages.add(app.packageName);
+            else selectedPackages.remove(app.packageName);
+            adapter.notifyDataSetChanged();
+            refreshPinned[0].run();
+        });
+
+        listView.setOnItemClickListener((parent, view, position, id) -> {
+            AppOption app = adapter.getItem(position);
+            boolean checked = !selectedPackages.contains(app.packageName);
+            if (checked && selectedPackages.size() >= 3 && !selectedPackages.contains(app.packageName)) {
+                Toast.makeText(this, "Máximo 3 aplicaciones en modo gaming", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if (checked) selectedPackages.add(app.packageName);
+            else selectedPackages.remove(app.packageName);
+            adapter.notifyDataSetChanged();
+            refreshPinned[0].run();
+        });
+
+        searchView.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                adapter.filter(s == null ? "" : s.toString());
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+
+        refreshPinned[0].run();
+    }
+
+    private List<AppOption> loadInstalledUserApps() {
+        PackageManager pm = getPackageManager();
+        List<ApplicationInfo> all = pm.getInstalledApplications(PackageManager.GET_META_DATA);
+        List<AppOption> out = new ArrayList<>();
+
+        for (ApplicationInfo app : all) {
+            boolean isSystem = (app.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
+            boolean isUpdatedSystem = (app.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0;
+            boolean isInDataPartition = app.sourceDir != null && app.sourceDir.startsWith("/data/app/");
+
+            if (!isSystem || isUpdatedSystem || isInDataPartition) {
+                String pkg = app.packageName;
+                if (pkg == null || pkg.equals(getPackageName())) continue;
+                CharSequence labelCs = app.loadLabel(pm);
+                String label = labelCs == null ? pkg : labelCs.toString();
+                Drawable icon = app.loadIcon(pm);
+                out.add(new AppOption(pkg, label, icon));
+            }
+        }
+
+        out.sort(Comparator.comparing(o -> o.appName.toLowerCase(Locale.ROOT)));
+        return out;
+    }
+
+    private final class GamingAppsAdapter extends BaseAdapter {
+        interface OnSelectionChanged { void onChange(AppOption app, boolean checked); }
+
+        private final List<AppOption> allApps;
+        private final List<AppOption> filteredApps;
+        private final Set<String> selectedPackages;
+        private OnSelectionChanged selectionListener;
+
+        GamingAppsAdapter(List<AppOption> apps, Set<String> selectedPackages) {
+            this.allApps = new ArrayList<>(apps);
+            this.filteredApps = new ArrayList<>(apps);
+            this.selectedPackages = selectedPackages;
+        }
+
+        void setSelectionListener(OnSelectionChanged l) { this.selectionListener = l; }
+
+        void filter(String query) {
+            filteredApps.clear();
+            String q = query.trim().toLowerCase(Locale.ROOT);
+            for (AppOption app : allApps) {
+                if (q.isEmpty() || app.appName.toLowerCase(Locale.ROOT).contains(q) || app.packageName.toLowerCase(Locale.ROOT).contains(q)) {
+                    filteredApps.add(app);
+                }
+            }
+            notifyDataSetChanged();
+        }
+
+        @Override public int getCount() { return filteredApps.size(); }
+        @Override public AppOption getItem(int position) { return filteredApps.get(position); }
+        @Override public long getItemId(int position) { return position; }
+
+        @Override
+        public View getView(int position, View convertView, ViewGroup parent) {
+            View view = convertView;
+            if (view == null) {
+                view = LayoutInflater.from(SimpleModeActivity.this).inflate(R.layout.item_gaming_app, parent, false);
+            }
+            AppOption app = getItem(position);
+            ImageView icon = view.findViewById(R.id.imgAppIcon);
+            TextView appName = view.findViewById(R.id.txtAppName);
+            TextView pkgName = view.findViewById(R.id.txtPackageName);
+            CheckBox check = view.findViewById(R.id.checkSelected);
+
+            icon.setImageDrawable(app.icon);
+            appName.setText(app.appName);
+            pkgName.setText(app.packageName);
+
+            check.setOnCheckedChangeListener(null);
+            check.setChecked(selectedPackages.contains(app.packageName));
+            check.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                if (selectionListener != null) selectionListener.onChange(app, isChecked);
+            });
+
+            return view;
+        }
     }
 
     private void startVpnWithPermission() {

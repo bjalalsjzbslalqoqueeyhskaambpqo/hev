@@ -8,4 +8,14 @@
     <string name="user_default">Usuario: Gamer123</string>
     <string name="days_default">Días disponibles: 15</string>
     <string name="device_id_default">ID: ABC123XYZ</string>
+    <string name="gaming_mode_title">Modo Gaming</string>
+    <string name="gaming_mode_desc">Prioriza hasta 3 apps y reduce tráfico en el túnel para más FPS.</string>
+    <string name="gaming_mode_on_badge">MODO GAMING ACTIVO</string>
+    <string name="gaming_mode_off_badge">MODO NORMAL</string>
+    <string name="gaming_select_apps">Seleccionar aplicaciones</string>
+    <string name="gaming_selected_count">Seleccionadas: %1$d/3</string>
+    <string name="gaming_apply_notice">Para aplicar cambios, desconecta y vuelve a conectar.</string>
+    <string name="gaming_search_hint">Buscar app o juego…</string>
+    <string name="gaming_picker_title">Aplicaciones priorizadas (máx. 3)</string>
+    <string name="gaming_loading_apps">Cargando aplicaciones instaladas…</string>
 </resources>
