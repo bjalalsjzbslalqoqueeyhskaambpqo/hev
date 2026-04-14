@@ -354,7 +354,7 @@ public class BtVpnService extends VpnService {
     private File writeHevCfg() {
         boolean gamingMode = BtProxy.isGamingMode(this);
 
-        int mtu = gamingMode ? 1280 : 1350;
+        int mtu = gamingMode ? 1280 : 1420;
         String socksUdp = "tcp";
         boolean pipeline = true;
 
