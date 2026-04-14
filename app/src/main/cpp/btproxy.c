@@ -33,9 +33,6 @@
 #define FRAME_HDR               7
 #define MAX_PAYLOAD             16384
 #define RELAY_BACKLOG           512
-#define DAILY_IDLE_SECS         21600
-#define DAILY_WD_INTERVAL       60
-#define GAMING_WD_INTERVAL      15
 #define KEEPALIVE_SEC           20
 #define DAILY_PONG_TIMEOUT_SEC  180
 #define GAMING_PONG_TIMEOUT_SEC 180
@@ -47,10 +44,6 @@
 #define HT_SIZE  4096
 #define HT_MASK  (HT_SIZE - 1)
 
-#define DAILY_FIRST_RECV_TIMEOUT_MS   30000
-#define GAMING_FIRST_RECV_TIMEOUT_MS  180000
-
-
 #define PROXY_HOST_IPV6 "2606:4700::6812:16b7"
 #define PROXY_HOST      "emailmarketing.personal.com.ar"
 #define PROXY_PORT      80
@@ -59,13 +52,6 @@
 #define GLOBAL_MODE_DAILY   0
 #define GLOBAL_MODE_GAMING  1
 
-#define DAILY_POLL_ACTIVE_MS    250
-#define DAILY_POLL_WARM_MS      1000
-#define DAILY_POLL_IDLE_MS      3000
-#define DAILY_POLL_DEEP_MS      5000
-#define DAILY_STAGE_ACTIVE_SEC  5
-#define DAILY_STAGE_WARM_SEC    30
-#define DAILY_STAGE_IDLE_SEC    120
 #define DAILY_BULK_CHUNK        65536
 #define DAILY_BULK_PACE_MS      0
 
@@ -84,29 +70,10 @@ static int current_pong_timeout_sec(void) {
             : DAILY_PONG_TIMEOUT_SEC;
 }
 
-static int current_idle_secs(void) {
-    if (atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING) return -1;
-    return DAILY_IDLE_SECS;
-}
-
-static int current_watchdog_interval_secs(void) {
-    return atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
-            ? GAMING_WD_INTERVAL
-            : DAILY_WD_INTERVAL;
-}
-
 static int current_accept_poll_ms(void) {
     return atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
             ? GAMING_ACCEPT_POLL_MS
             : DAILY_ACCEPT_POLL_MS;
-}
-
-static int current_daily_stream_poll_ms(long now_sec, long last_active_sec) {
-    long idle_sec = now_sec - last_active_sec;
-    if (idle_sec <= DAILY_STAGE_ACTIVE_SEC) return DAILY_POLL_ACTIVE_MS;
-    if (idle_sec <= DAILY_STAGE_WARM_SEC) return DAILY_POLL_WARM_MS;
-    if (idle_sec <= DAILY_STAGE_IDLE_SEC) return DAILY_POLL_IDLE_MS;
-    return DAILY_POLL_DEEP_MS;
 }
 
 typedef struct stream_s {
@@ -575,11 +542,6 @@ static int send_gaming(int tfd, uint32_t sid, const uint8_t *buf, int n) {
 
 typedef struct { int cfd; int tfd; uint32_t sid; } conn_args_t;
 
-static int gaming_recv(int cfd, uint8_t *buf, int bufsz) {
-    ssize_t n = recv(cfd, buf, bufsz, 0);
-    return (int)n;
-}
-
 static void *conn_thread(void *arg) {
     conn_args_t *ca = (conn_args_t*)arg;
     int cfd = ca->cfd, tfd = ca->tfd;
@@ -593,16 +555,6 @@ static void *conn_thread(void *arg) {
 
     uint8_t buf[MAX_PAYLOAD];
 
-    struct pollfd fpfd = { cfd, POLLIN, 0 };
-    int first_recv_timeout = atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
-            ? GAMING_FIRST_RECV_TIMEOUT_MS
-            : DAILY_FIRST_RECV_TIMEOUT_MS;
-    int fpr = poll(&fpfd, 1, first_recv_timeout);
-    if (fpr <= 0) {
-        atomic_fetch_sub(&g_stream_count, 1);
-        ht_del(sid);
-        return NULL;
-    }
     ssize_t first = recv(cfd, buf, sizeof(buf), 0);
     if (first <= 0) {
         atomic_fetch_sub(&g_stream_count, 1);
@@ -621,27 +573,9 @@ static void *conn_thread(void *arg) {
 
     while (g_running) {
         int gmode = atomic_load(&g_global_mode);
-        ssize_t n;
-        if (gmode == GLOBAL_MODE_GAMING) {
-            n = gaming_recv(cfd, buf, sizeof(buf));
-            if (n < 0) { if (errno == EINTR) continue; break; }
-            if (n == 0) continue;
-        } else {
-            struct pollfd pfd = { cfd, POLLIN, 0 };
-            long now_sec = (long)time(NULL);
-            long last_active_sec = atomic_load(&s->last_active);
-            int daily_poll_ms = current_daily_stream_poll_ms(now_sec, last_active_sec);
-            int pr = poll(&pfd, 1, daily_poll_ms);
-            if (pr < 0) { if (errno == EINTR) continue; break; }
-            if (pr == 0) continue;
-
-            n = recv(cfd, buf, sizeof(buf), MSG_DONTWAIT);
-            if (n < 0) {
-                if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
-                break;
-            }
-            if (n == 0) break;
-        }
+        ssize_t n = recv(cfd, buf, sizeof(buf), 0);
+        if (n < 0) { if (errno == EINTR) continue; break; }
+        if (n == 0) break;
 
         atomic_store(&s->last_active, (long)time(NULL));
         atomic_store(&g_last_traffic, (long)time(NULL));
@@ -803,42 +737,6 @@ static void *keepalive_thread(void *arg) {
     return NULL;
 }
 
-static void *watchdog_thread(void *arg) {
-    int epoch = (int)(intptr_t)arg;
-    while (g_running && atomic_load(&g_tunnel_epoch) == epoch) {
-        int wd_interval = current_watchdog_interval_secs();
-        for (int i = 0; i < wd_interval && g_running && atomic_load(&g_tunnel_epoch) == epoch; i++) {
-            sleep(1);
-        }
-        if (!g_running || atomic_load(&g_tunnel_epoch) != epoch) break;
-
-        long now = (long)time(NULL);
-        int idle_secs = current_idle_secs();
-        int tfd = g_tun_fd;
-        if (idle_secs <= 0) continue;
-        if (atomic_load(&g_stream_count) <= 0) continue;
-        for (int i = 0; i < HT_SIZE; i++) {
-            pthread_mutex_lock(&g_ht_mu[i]);
-            stream_t **pp = &g_ht[i];
-            while (*pp) {
-                stream_t *s = *pp;
-                if (now - atomic_load(&s->last_active) > idle_secs) {
-                    *pp = s->next;
-                    uint32_t dsid = s->sid;
-                    if (s->fd >= 0) close(s->fd);
-                    free(s);
-                    pthread_mutex_unlock(&g_ht_mu[i]);
-                    if (tfd >= 0) tun_send(tfd, T_CLOSE, dsid, NULL, 0);
-                    pthread_mutex_lock(&g_ht_mu[i]);
-                } else {
-                    pp = &s->next;
-                }
-            }
-            pthread_mutex_unlock(&g_ht_mu[i]);
-        }
-    }
-    return NULL;
-}
 
 static int g_reconnect_delay = RECONNECT_DELAY_MIN;
 
@@ -900,13 +798,11 @@ static void *main_thread(void *arg) {
         if (ta_rd) { ta_rd->tfd = tfd; ta_rd->epoch = cur_epoch; }
         if (ta_ka) { ta_ka->tfd = tfd; ta_ka->epoch = cur_epoch; }
 
-        pthread_t trd, tka, twd;
+        pthread_t trd, tka;
         if (ta_rd) { pthread_create(&trd, NULL, tunnel_reader, ta_rd); pthread_detach(trd); }
         else free(ta_rd);
         if (ta_ka) { pthread_create(&tka, NULL, keepalive_thread, ta_ka); pthread_detach(tka); }
         else free(ta_ka);
-        pthread_create(&twd, NULL, watchdog_thread, (void*)(intptr_t)cur_epoch);
-        pthread_detach(twd);
 
         while (g_running) {
             struct pollfd pfd = { rfd, POLLIN, 0 };
