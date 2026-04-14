@@ -413,6 +413,14 @@ final class BtProxy {
         return nativeDrainLogs();
     }
 
+    static void setGamingMode(boolean enabled) {
+        nativeSetGamingMode(enabled);
+    }
+
+    static boolean isGamingMode() {
+        return nativeGetGamingMode() == 1;
+    }
+
     static String getOrCreateInternalId(Context ctx) {
         android.content.SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String existing = sp.getString(KEY_INTERNAL_ID, null);
@@ -445,4 +453,6 @@ final class BtProxy {
     private static native int nativeStart(int socks5Port, VpnService svc, String internalId);
     private static native void nativeStop();
     private static native String nativeDrainLogs();
+    public static native void nativeSetGamingMode(boolean enabled);
+    public static native int nativeGetGamingMode();
 }
