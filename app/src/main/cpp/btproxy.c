@@ -33,9 +33,10 @@
 #define FRAME_HDR               7
 #define MAX_PAYLOAD             16384
 #define RELAY_BACKLOG           512
-#define DAILY_IDLE_SECS         3600
+#define DAILY_IDLE_SECS         21600
 #define GAMING_IDLE_SECS        3600
-#define WD_INTERVAL             15
+#define DAILY_WD_INTERVAL       60
+#define GAMING_WD_INTERVAL      15
 #define KEEPALIVE_SEC           20
 #define DAILY_PONG_TIMEOUT_SEC  180
 #define GAMING_PONG_TIMEOUT_SEC 180
@@ -75,6 +76,18 @@ static int current_pong_timeout_sec(void) {
     return atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
             ? GAMING_PONG_TIMEOUT_SEC
             : DAILY_PONG_TIMEOUT_SEC;
+}
+
+static int current_idle_secs(void) {
+    return atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
+            ? GAMING_IDLE_SECS
+            : DAILY_IDLE_SECS;
+}
+
+static int current_watchdog_interval_secs(void) {
+    return atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
+            ? GAMING_WD_INTERVAL
+            : DAILY_WD_INTERVAL;
 }
 
 typedef struct stream_s {
@@ -768,12 +781,14 @@ static void *keepalive_thread(void *arg) {
 static void *watchdog_thread(void *arg) {
     int epoch = (int)(intptr_t)arg;
     while (g_running && atomic_load(&g_tunnel_epoch) == epoch) {
-        sleep(WD_INTERVAL);
+        int wd_interval = current_watchdog_interval_secs();
+        for (int i = 0; i < wd_interval && g_running && atomic_load(&g_tunnel_epoch) == epoch; i++) {
+            sleep(1);
+        }
         if (!g_running || atomic_load(&g_tunnel_epoch) != epoch) break;
 
         long now = (long)time(NULL);
-        int gmode = atomic_load(&g_global_mode);
-        int idle_secs = (gmode == GLOBAL_MODE_GAMING) ? GAMING_IDLE_SECS : DAILY_IDLE_SECS;
+        int idle_secs = current_idle_secs();
         int tfd = g_tun_fd;
         for (int i = 0; i < HT_SIZE; i++) {
             pthread_mutex_lock(&g_ht_mu[i]);
