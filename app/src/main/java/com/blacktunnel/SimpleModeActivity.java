@@ -77,7 +77,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private Button selectGamingAppsBtn;
     private LinearLayout gamingModePanel;
     private LinearLayout gamingControlsLayout;
-    private GamingBorderView gamingBorderView;
+    private View panelConnectionView;
     private Animator statusPulseAnimator;
     private Animator statusHaloAnimator;
     private final ExecutorService appLoadExecutor = Executors.newSingleThreadExecutor();
@@ -142,7 +142,7 @@ public class SimpleModeActivity extends ComponentActivity {
         selectGamingAppsBtn = findViewById(R.id.btnSelectGamingApps);
         gamingModePanel = findViewById(R.id.panelGamingMode);
         gamingControlsLayout = findViewById(R.id.layoutGamingControls);
-        gamingBorderView = findViewById(R.id.viewGamingBorder);
+        panelConnectionView = findViewById(R.id.panelConnection);
 
         internalId = BtProxy.getOrCreateInternalId(this);
         BtProxy.applyStoredGamingMode(this);
@@ -232,7 +232,6 @@ public class SimpleModeActivity extends ComponentActivity {
         handler.removeCallbacks(autoDisconnectRunnable);
         stopStatusPulse();
         stopStatusHaloWave();
-        if (gamingBorderView != null) gamingBorderView.stop();
         if (connectivityManager != null && networkCallback != null) {
             try { connectivityManager.unregisterNetworkCallback(networkCallback); } catch (Throwable ignored) {}
         }
@@ -340,16 +339,12 @@ public class SimpleModeActivity extends ComponentActivity {
         if (gamingModePanel != null) {
             gamingModePanel.setBackgroundResource(enabled ? R.drawable.bg_card_gaming_on : R.drawable.bg_card_gaming_off);
         }
-        if (gamingBorderView != null) {
-            if (enabled && uiState == UiState.CONNECTED) {
-                gamingBorderView.post(() -> {
-                    gamingBorderView.setVisibility(View.VISIBLE);
-                    gamingBorderView.start();
-                });
-            } else {
-                gamingBorderView.stop();
-                gamingBorderView.post(() -> gamingBorderView.setVisibility(View.GONE));
-            }
+        if (panelConnectionView != null) {
+            panelConnectionView.setBackgroundResource(
+                    enabled && uiState == UiState.CONNECTED
+                            ? R.drawable.strike_panel_gaming
+                            : R.drawable.bg_card_header
+            );
         }
         if (connectBtn != null && uiState != UiState.CONNECTED) {
             connectBtn.setText(enabled ? getString(R.string.connect_gaming) : getString(R.string.connect));
