@@ -343,8 +343,8 @@ public class BtVpnService extends VpnService {
         boolean gamingMode = BtProxy.isGamingMode(this);
 
         int mtu = gamingMode ? 1280 : 1350;
-        String socksUdp = gamingMode ? "tcp" : "udp";
-        boolean pipeline = gamingMode;
+        String socksUdp = "udp";
+        boolean pipeline = false;
 
         String yml =
                 "tunnel:\n" +
