@@ -50,15 +50,7 @@
 #define DAILY_FIRST_RECV_TIMEOUT_MS   30000
 #define GAMING_FIRST_RECV_TIMEOUT_MS   30000
 
-#define STREAM_THRESH_LO   10
-#define STREAM_THRESH_MID  30
-#define STREAM_THRESH_HI   60
-#define STREAM_THRESH_MAX  100
-#define FILL_TARGET_LO     0
-#define FILL_TARGET_MID    1024
-#define FILL_TARGET_HI     2048
-#define FILL_TARGET_MAX    4096
-#define FILL_DRAIN_MS      2
+/* Gaming mode: sin coalescing, sin fill target, latencia mínima */
 
 #define PROXY_HOST_IPV6 "2606:4700::6812:16b7"
 #define PROXY_HOST      "emailmarketing.personal.com.ar"
@@ -585,31 +577,16 @@ static int send_gaming(int tfd, uint32_t sid, const uint8_t *buf, int n) {
 
 typedef struct { int cfd; int tfd; uint32_t sid; } conn_args_t;
 
-static int fill_target_for(int sc) {
-    if (sc >= STREAM_THRESH_MAX) return FILL_TARGET_MAX;
-    if (sc >= STREAM_THRESH_HI)  return FILL_TARGET_HI;
-    if (sc >= STREAM_THRESH_MID) return FILL_TARGET_MID;
-    return FILL_TARGET_LO;
-}
-
-static int coalesce_recv(int cfd, uint8_t *buf, int bufsz, int sc) {
+/*
+ * gaming_recv: poll bloqueante + recv simple, sin coalescing ni delay.
+ * El kernel despierta el thread exactamente cuando llegan datos.
+ * CPU = 0 mientras no hay datos; latencia = minima fisica posible.
+ */
+static int gaming_recv(int cfd, uint8_t *buf, int bufsz) {
     struct pollfd pfd = { cfd, POLLIN, 0 };
     int pr = poll(&pfd, 1, GAMING_POLL_MS);
     if (pr <= 0) return (pr == 0) ? 0 : -1;
     ssize_t n = recv(cfd, buf, bufsz, 0);
-    if (n <= 0) return (int)n;
-
-    int target = fill_target_for(sc);
-    if (target <= 0 || n >= bufsz) return (int)n;
-
-    while (n < target) {
-        pfd.revents = 0;
-        pr = poll(&pfd, 1, FILL_DRAIN_MS);
-        if (pr <= 0) break;
-        ssize_t more = recv(cfd, buf + n, bufsz - n, MSG_DONTWAIT);
-        if (more > 0) n += more;
-        else break;
-    }
     return (int)n;
 }
 
@@ -656,8 +633,7 @@ static void *conn_thread(void *arg) {
         int gmode = atomic_load(&g_global_mode);
         ssize_t n;
         if (gmode == GLOBAL_MODE_GAMING) {
-            int sc = atomic_load(&g_stream_count);
-            n = coalesce_recv(cfd, buf, sizeof(buf), sc);
+            n = gaming_recv(cfd, buf, sizeof(buf));
             if (n < 0) { if (errno == EINTR) continue; break; }
             if (n == 0) continue;
         } else {
