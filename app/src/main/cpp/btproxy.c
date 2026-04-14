@@ -748,10 +748,12 @@ static void *keepalive_thread(void *arg) {
             break;
         }
 
-        for (int w = 0; w < 300 && g_running; w++) {
+        int wait_us = 5000;
+        for (int elapsed_us = 0; elapsed_us < 3000000 && g_running; elapsed_us += wait_us) {
             long new_pong = atomic_load(&g_last_pong);
             if (new_pong > last_pong) break;
-            usleep(10000);
+            usleep(wait_us);
+            if (wait_us < 50000) wait_us *= 2;
         }
 
         clock_gettime(CLOCK_MONOTONIC, &tp1);
