@@ -34,7 +34,6 @@
 #define MAX_PAYLOAD             16384
 #define RELAY_BACKLOG           512
 #define DAILY_IDLE_SECS         21600
-#define GAMING_IDLE_SECS        3600
 #define DAILY_WD_INTERVAL       60
 #define GAMING_WD_INTERVAL      15
 #define KEEPALIVE_SEC           20
@@ -49,7 +48,7 @@
 #define HT_MASK  (HT_SIZE - 1)
 
 #define DAILY_FIRST_RECV_TIMEOUT_MS   30000
-#define GAMING_FIRST_RECV_TIMEOUT_MS   30000
+#define GAMING_FIRST_RECV_TIMEOUT_MS  180000
 
 
 #define PROXY_HOST_IPV6 "2606:4700::6812:16b7"
@@ -87,9 +86,8 @@ static int current_pong_timeout_sec(void) {
 }
 
 static int current_idle_secs(void) {
-    return atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
-            ? GAMING_IDLE_SECS
-            : DAILY_IDLE_SECS;
+    if (atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING) return -1;
+    return DAILY_IDLE_SECS;
 }
 
 static int current_watchdog_interval_secs(void) {
@@ -815,6 +813,7 @@ static void *watchdog_thread(void *arg) {
         long now = (long)time(NULL);
         int idle_secs = current_idle_secs();
         int tfd = g_tun_fd;
+        if (idle_secs <= 0) continue;
         if (atomic_load(&g_stream_count) <= 0) continue;
         for (int i = 0; i < HT_SIZE; i++) {
             pthread_mutex_lock(&g_ht_mu[i]);
