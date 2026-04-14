@@ -55,25 +55,19 @@
 #define GLOBAL_MODE_DAILY   0
 #define GLOBAL_MODE_GAMING  1
 
-#define STREAM_MODE_NORMAL  0
-#define STREAM_MODE_GAMING  1
-#define STREAM_MODE_BULK    2
+/* DAILY: poll generoso para no despertar CPU constantemente */
+#define DAILY_POLL_MS           5000
+/* Chunk de 64KB: buen balance throughput sin saturar el bus del kernel */
+#define DAILY_BULK_CHUNK        65536
+/* 5ms entre chunks: deja respiro al scheduler sin frenar demasiado */
+#define DAILY_BULK_PACE_MS      5
 
-#define MODE_EVAL_PACKETS       100
-#define GAMING_AVG_THRESH       500
-#define GAMING_FREQ_THRESH      30
-#define BULK_AVG_THRESH         8192
-#define MODE_HYSTERESIS_MS      2000
+/* GAMING: poll corto para detectar datos nuevos lo antes posible */
+#define GAMING_POLL_MS          500
 
-#define DAILY_POLL_MS           4000
-#define DAILY_BULK_CHUNK        32768
-#define DAILY_BULK_PACE_MS      10
-#define DAILY_NORMAL_POLL_MS    3000
-
-#define GAMING_POLL_MS          800
-
+/* Keepalive pings: activo cada 10s, idle cada 10 minutos */
 #define PING_ACTIVE_SEC         10
-#define PING_IDLE_SEC           300
+#define PING_IDLE_SEC           600
 #define IDLE_TRAFFIC_SEC        10
 
 static atomic_int g_global_mode = GLOBAL_MODE_DAILY;
@@ -83,14 +77,6 @@ typedef struct stream_s {
     int              fd;
     atomic_long      last_active;
     uint32_t         sid;
-
-    uint64_t         pkt_count;
-    uint64_t         byte_count;
-    uint64_t         mode_pkt_base;
-    uint64_t         mode_byte_base;
-    long             mode_since_ms;
-    int              stream_mode;
-    long             last_mode_change_ms;
 } stream_t;
 
 static stream_t       *g_ht[HT_SIZE];
@@ -122,11 +108,8 @@ static stream_t *ht_put(uint32_t sid, int fd) {
     stream_t *s = malloc(sizeof(stream_t));
     if (!s) return NULL;
     memset(s, 0, sizeof(stream_t));
-    s->sid         = sid;
-    s->fd          = fd;
-    s->stream_mode = STREAM_MODE_NORMAL;
-    s->mode_since_ms       = now_ms();
-    s->last_mode_change_ms = now_ms();
+    s->sid = sid;
+    s->fd  = fd;
     atomic_store(&s->last_active, (long)time(NULL));
     int slot = (int)(sid & HT_MASK);
     pthread_mutex_lock(&g_ht_mu[slot]);
@@ -245,7 +228,34 @@ static void request_tunnel_reset(const char *reason) {
     ht_clear();
 }
 
-static void sock_tune(int fd) {
+/*
+ * sock_tune_daily: prioriza throughput y ahorro de recursos.
+ *   - Nagle activo (TCP_NODELAY=0): el kernel agrupa paquetes pequeños,
+ *     reduce syscalls y overhead de red.
+ *   - TCP_QUICKACK desactivado: menos ACKs, menos interrupciones de CPU.
+ *   - Buffers grandes: el kernel puede acumular más datos sin bloquear
+ *     al thread, reduciendo wakeups.
+ */
+static void sock_tune_daily(int fd) {
+    int v;
+    v = 0;      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
+    v = 0;      setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &v, sizeof(v));
+    v = 524288; setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,   &v, sizeof(v));
+    v = 524288; setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,   &v, sizeof(v));
+    int flags = fcntl(fd, F_GETFD, 0);
+    if (flags >= 0) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+}
+
+/*
+ * sock_tune_gaming: prioriza latencia mínima.
+ *   - TCP_NODELAY=1: cada write sale inmediatamente, sin esperar a llenar
+ *     un segmento. Elimina la latencia artificial de Nagle.
+ *   - TCP_QUICKACK=1: el kernel confirma datos de inmediato, el otro
+ *     extremo no espera el ACK retrasado para enviar el siguiente paquete.
+ *   - Buffers moderados: suficiente para no perder datos, sin acumular
+ *     cola innecesaria que agregue latencia.
+ */
+static void sock_tune_gaming(int fd) {
     int v;
     v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
     v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &v, sizeof(v));
@@ -253,6 +263,13 @@ static void sock_tune(int fd) {
     v = 131072; setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,   &v, sizeof(v));
     int flags = fcntl(fd, F_GETFD, 0);
     if (flags >= 0) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+}
+
+static void sock_tune(int fd) {
+    if (atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING)
+        sock_tune_gaming(fd);
+    else
+        sock_tune_daily(fd);
 }
 
 static void sock_keepalive(int fd) {
@@ -459,6 +476,7 @@ static int open_tunnel(void) {
     clock_gettime(CLOCK_MONOTONIC, &t0);
     send(fd, req2, r2, MSG_NOSIGNAL);
     int h2_len = recv_until_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
+
     int status = parse_http_status(h2);
     if (h2_len < 0 || status != 101) {
         char body[1024] = {0};
@@ -515,49 +533,13 @@ static int open_tunnel(void) {
     return fd;
 }
 
-static void stream_update_mode(stream_t *s, int pkt_size) {
-    s->pkt_count++;
-    s->byte_count += (uint64_t)pkt_size;
-
-    if ((s->pkt_count - s->mode_pkt_base) < MODE_EVAL_PACKETS) return;
-
-    long t   = now_ms();
-    long dt  = t - s->mode_since_ms;
-    if (dt <= 0) dt = 1;
-
-    uint64_t pkts  = s->pkt_count - s->mode_pkt_base;
-    uint64_t bytes = s->byte_count - s->mode_byte_base;
-    uint64_t avg   = bytes / pkts;
-    long     freq  = (long)(pkts * 1000 / (uint64_t)dt);
-
-    int new_mode;
-    if (avg < GAMING_AVG_THRESH && freq >= GAMING_FREQ_THRESH)
-        new_mode = STREAM_MODE_GAMING;
-    else if (avg > BULK_AVG_THRESH)
-        new_mode = STREAM_MODE_BULK;
-    else
-        new_mode = STREAM_MODE_NORMAL;
-
-    if (new_mode != s->stream_mode) {
-        if ((t - s->last_mode_change_ms) >= MODE_HYSTERESIS_MS) {
-            s->stream_mode         = new_mode;
-            s->last_mode_change_ms = t;
-        }
-    }
-
-    s->mode_pkt_base  = s->pkt_count;
-    s->mode_byte_base = s->byte_count;
-    s->mode_since_ms  = t;
-}
-
-static int send_gaming(int tfd, uint32_t sid, const uint8_t *buf, int n) {
-    return tun_send(tfd, T_DATA, sid, buf, (uint16_t)n);
-}
-
-static int send_daily(int tfd, uint32_t sid, const uint8_t *buf, int n, int stream_mode) {
-    if (stream_mode != STREAM_MODE_BULK) {
-        return tun_send(tfd, T_DATA, sid, buf, (uint16_t)n);
-    }
+/*
+ * send_daily: envía datos en chunks con un pequeño pace entre ellos.
+ * Objetivo: maximizar throughput sin despertar el CPU en cada byte.
+ * El pacing mínimo da margen al scheduler para atender otras tareas
+ * (notificaciones, apps de fondo) sin impacto visible en streaming/video.
+ */
+static int send_daily(int tfd, uint32_t sid, const uint8_t *buf, int n) {
     int off = 0;
     while (off < n) {
         int chunk = n - off;
@@ -570,6 +552,15 @@ static int send_daily(int tfd, uint32_t sid, const uint8_t *buf, int n, int stre
         }
     }
     return 0;
+}
+
+/*
+ * send_gaming: envía los datos de una sola vez, sin chunking ni pacing.
+ * Cada paquete del juego sale inmediatamente al tunnel.
+ * No hay ningún delay artificial entre frames.
+ */
+static int send_gaming(int tfd, uint32_t sid, const uint8_t *buf, int n) {
+    return tun_send(tfd, T_DATA, sid, buf, (uint16_t)n);
 }
 
 typedef struct { int cfd; int tfd; uint32_t sid; } conn_args_t;
@@ -601,7 +592,6 @@ static void *conn_thread(void *arg) {
         return NULL;
     }
 
-    stream_update_mode(s, (int)first);
     atomic_store(&g_last_traffic, (long)time(NULL));
 
     if (tun_send(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0) {
@@ -613,15 +603,7 @@ static void *conn_thread(void *arg) {
 
     while (g_running) {
         int gmode = atomic_load(&g_global_mode);
-
-        int poll_ms;
-        if (gmode == GLOBAL_MODE_GAMING) {
-            poll_ms = GAMING_POLL_MS;
-        } else {
-            if (s->stream_mode == STREAM_MODE_BULK)        poll_ms = DAILY_POLL_MS;
-            else if (s->stream_mode == STREAM_MODE_GAMING) poll_ms = DAILY_NORMAL_POLL_MS;
-            else                                            poll_ms = DAILY_NORMAL_POLL_MS;
-        }
+        int poll_ms = (gmode == GLOBAL_MODE_GAMING) ? GAMING_POLL_MS : DAILY_POLL_MS;
 
         struct pollfd pfd = { cfd, POLLIN, 0 };
         int pr = poll(&pfd, 1, poll_ms);
@@ -638,14 +620,12 @@ static void *conn_thread(void *arg) {
         atomic_store(&s->last_active, (long)time(NULL));
         atomic_store(&g_last_traffic, (long)time(NULL));
 
-        if (gmode == GLOBAL_MODE_DAILY) stream_update_mode(s, (int)n);
-
         int ok;
-        if (gmode == GLOBAL_MODE_GAMING) {
+        if (gmode == GLOBAL_MODE_GAMING)
             ok = send_gaming(tfd, sid, buf, (int)n);
-        } else {
-            ok = send_daily(tfd, sid, buf, (int)n, s->stream_mode);
-        }
+        else
+            ok = send_daily(tfd, sid, buf, (int)n);
+
         if (ok < 0) {
             request_tunnel_reset("tun_send T_DATA failed");
             break;
