@@ -67,9 +67,11 @@ public class SimpleModeActivity extends ComponentActivity {
     private TextView pingValueView;
     private Switch gamingModeSwitch;
     private TextView gamingModeBadgeView;
+    private TextView gamingDescriptionView;
     private TextView gamingSelectedCountView;
     private Button selectGamingAppsBtn;
     private LinearLayout gamingModePanel;
+    private LinearLayout gamingControlsLayout;
     private final ExecutorService appLoadExecutor = Executors.newSingleThreadExecutor();
     private String internalId = "";
     private UiState uiState = UiState.DISCONNECTED;
@@ -123,9 +125,11 @@ public class SimpleModeActivity extends ComponentActivity {
         pingValueView = findViewById(R.id.txtPing);
         gamingModeSwitch = findViewById(R.id.switchGamingMode);
         gamingModeBadgeView = findViewById(R.id.txtGamingBadge);
+        gamingDescriptionView = findViewById(R.id.txtGamingDescription);
         gamingSelectedCountView = findViewById(R.id.txtGamingSelectedCount);
         selectGamingAppsBtn = findViewById(R.id.btnSelectGamingApps);
         gamingModePanel = findViewById(R.id.panelGamingMode);
+        gamingControlsLayout = findViewById(R.id.layoutGamingControls);
 
         internalId = BtProxy.getOrCreateInternalId(this);
         BtProxy.applyStoredGamingMode(this);
@@ -238,14 +242,17 @@ public class SimpleModeActivity extends ComponentActivity {
 
         if (gamingModeBadgeView != null) {
             if (enabled) {
-                gamingModeBadgeView.setText(R.string.gaming_mode_on_badge);
+                gamingModeBadgeView.setText(R.string.gaming_mode_on_compact);
                 gamingModeBadgeView.setTextColor(Color.parseColor("#00FFA3"));
                 gamingModeBadgeView.setShadowLayer(8f, 0f, 0f, Color.parseColor("#6600FFA3"));
             } else {
-                gamingModeBadgeView.setText(R.string.gaming_mode_off_badge);
+                gamingModeBadgeView.setText(R.string.gaming_mode_off_compact);
                 gamingModeBadgeView.setTextColor(Color.parseColor("#8B9BB0"));
                 gamingModeBadgeView.setShadowLayer(0f, 0f, 0f, Color.TRANSPARENT);
             }
+        }
+        if (gamingDescriptionView != null) {
+            gamingDescriptionView.setVisibility(enabled ? View.VISIBLE : View.GONE);
         }
         if (gamingSelectedCountView != null) {
             gamingSelectedCountView.setText(getString(R.string.gaming_selected_count, selected.size()));
@@ -254,6 +261,16 @@ public class SimpleModeActivity extends ComponentActivity {
         if (selectGamingAppsBtn != null) {
             selectGamingAppsBtn.setEnabled(enabled);
             selectGamingAppsBtn.setAlpha(enabled ? 1f : 0.55f);
+        }
+        if (gamingControlsLayout != null) {
+            if (enabled) {
+                gamingControlsLayout.setVisibility(View.VISIBLE);
+                gamingControlsLayout.setAlpha(0f);
+                gamingControlsLayout.animate().alpha(1f).setDuration(180).start();
+            } else {
+                gamingControlsLayout.animate().cancel();
+                gamingControlsLayout.setVisibility(View.GONE);
+            }
         }
         if (gamingModePanel != null) {
             gamingModePanel.setBackgroundResource(enabled ? R.drawable.strike_panel_gaming : R.drawable.strike_panel_body);

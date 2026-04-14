@@ -12,6 +12,8 @@
     <string name="gaming_mode_desc">Prioriza hasta 3 apps y reduce tráfico en el túnel para más FPS.</string>
     <string name="gaming_mode_on_badge">MODO GAMING ACTIVO</string>
     <string name="gaming_mode_off_badge">MODO NORMAL</string>
+    <string name="gaming_mode_on_compact">MODO GAMING ON</string>
+    <string name="gaming_mode_off_compact">MODO GAMING OFF</string>
     <string name="connect_gaming">Conectar Gaming</string>
     <string name="gaming_select_apps">Seleccionar aplicaciones</string>
     <string name="gaming_selected_count">Seleccionadas: %1$d/3</string>

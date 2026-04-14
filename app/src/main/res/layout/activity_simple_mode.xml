@@ -255,27 +255,34 @@
                     android:textSize="14sp"
                     android:textStyle="bold" />
 
-                <Button
-                    android:id="@+id/btnSelectGamingApps"
-                    android:layout_width="match_parent"
-                    android:layout_height="44dp"
-                    android:layout_marginTop="10dp"
-                    android:background="@drawable/strike_btn_secondary"
-                    android:fontFamily="monospace"
-                    android:text="@string/gaming_select_apps"
-                    android:textAllCaps="false"
-                    android:textColor="#051017"
-                    android:textSize="14sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/txtGamingSelectedCount"
+                <LinearLayout
+                    android:id="@+id/layoutGamingControls"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:fontFamily="monospace"
-                    android:textColor="#8B9BB0"
-                    android:textSize="12sp" />
+                    android:layout_marginTop="10dp"
+                    android:orientation="vertical">
+
+                    <Button
+                        android:id="@+id/btnSelectGamingApps"
+                        android:layout_width="match_parent"
+                        android:layout_height="44dp"
+                        android:background="@drawable/strike_btn_secondary"
+                        android:fontFamily="monospace"
+                        android:text="@string/gaming_select_apps"
+                        android:textAllCaps="false"
+                        android:textColor="#051017"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/txtGamingSelectedCount"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:fontFamily="monospace"
+                        android:textColor="#8B9BB0"
+                        android:textSize="12sp" />
+                </LinearLayout>
             </LinearLayout>
             <LinearLayout
                 android:layout_width="match_parent"
