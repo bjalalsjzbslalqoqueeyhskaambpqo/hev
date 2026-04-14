@@ -979,6 +979,16 @@ Java_com_blacktunnel_BtProxy_nativeSetGamingMode(JNIEnv *env, jclass clazz, jboo
     push_log("I", "global_mode=%s", enabled ? "gaming" : "daily");
 }
 
+JNIEXPORT void JNICALL
+Java_com_blacktunnel_BtProxy_nativeApplyMode(JNIEnv *env, jclass clazz, jboolean enabled) {
+    int mode = enabled ? GLOBAL_MODE_GAMING : GLOBAL_MODE_DAILY;
+    atomic_store(&g_global_mode, mode);
+    connq_clear();
+    atomic_store(&g_stream_count, 0);
+    ht_clear();
+    push_log("I", "apply_mode=%s (queue/session state reset)", enabled ? "gaming" : "daily");
+}
+
 JNIEXPORT jint JNICALL
 Java_com_blacktunnel_BtProxy_nativeGetGamingMode(JNIEnv *env, jclass clazz) {
     return (jint)atomic_load(&g_global_mode);

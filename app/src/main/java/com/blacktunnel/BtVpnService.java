@@ -153,7 +153,7 @@ public class BtVpnService extends VpnService {
 
     private void applyRuntimeChanges() {
         if (!running.get() || stopping.get()) return;
-        BtProxy.applyStoredGamingMode(this);
+        BtProxy.applyRuntimeMode(this);
         hevCfgFile = writeHevCfg();
         rebuildTunnel();
     }
@@ -476,6 +476,10 @@ final class BtProxy {
         nativeSetGamingMode(isGamingMode(ctx));
     }
 
+    static void applyRuntimeMode(Context ctx) {
+        nativeApplyMode(isGamingMode(ctx));
+    }
+
     static List<String> getGamingSelectedPackages(Context ctx) {
         SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         Set<String> set = sp.getStringSet(KEY_GAMING_APPS, new HashSet<>());
@@ -526,5 +530,6 @@ final class BtProxy {
     private static native void nativeStop();
     private static native String nativeDrainLogs();
     public static native void nativeSetGamingMode(boolean enabled);
+    public static native void nativeApplyMode(boolean enabled);
     public static native int nativeGetGamingMode();
 }
