@@ -101,6 +101,8 @@
                     android:id="@+id/viewGamingBorder"
                     android:layout_width="match_parent"
                     android:layout_height="match_parent"
+                    android:clickable="false"
+                    android:focusable="false"
                     android:visibility="gone" />
             </FrameLayout>
 
@@ -275,15 +277,13 @@
 
                 <TextView
                     android:id="@+id/txtGamingBadge"
-                    android:layout_width="match_parent"
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    android:background="@drawable/strike_chip_left"
-                    android:gravity="center"
-                    android:padding="10dp"
+                    android:layout_marginTop="8dp"
+                    android:letterSpacing="0.14"
                     android:text="@string/gaming_mode_off_compact"
-                    android:textColor="@color/color_text_disabled"
-                    android:textSize="12sp"
+                    android:textColor="#2A2A2A"
+                    android:textSize="11sp"
                     android:textStyle="bold" />
 
                 <LinearLayout
@@ -301,7 +301,7 @@
                         android:stateListAnimator="@animator/btn_press"
                         android:text="@string/gaming_select_apps"
                         android:textAllCaps="false"
-                        android:textColor="@color/color_bg"
+                        android:textColor="@color/color_gaming"
                         android:textSize="14sp"
                         android:textStyle="bold" />
 
