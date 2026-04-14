@@ -60,11 +60,13 @@
 #define GLOBAL_MODE_DAILY   0
 #define GLOBAL_MODE_GAMING  1
 
-#define DAILY_POLL_MS           1000
+#define DAILY_POLL_MS           15000
 #define DAILY_BULK_CHUNK        65536
 #define DAILY_BULK_PACE_MS      0
 
 #define GAMING_POLL_MS          500
+#define DAILY_ACCEPT_POLL_MS    15000
+#define GAMING_ACCEPT_POLL_MS   2000
 
 #define PING_ACTIVE_SEC         10
 #define PING_IDLE_SEC           600
@@ -88,6 +90,12 @@ static int current_watchdog_interval_secs(void) {
     return atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
             ? GAMING_WD_INTERVAL
             : DAILY_WD_INTERVAL;
+}
+
+static int current_accept_poll_ms(void) {
+    return atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
+            ? GAMING_ACCEPT_POLL_MS
+            : DAILY_ACCEPT_POLL_MS;
 }
 
 typedef struct stream_s {
@@ -883,7 +891,7 @@ static void *main_thread(void *arg) {
 
         while (g_running) {
             struct pollfd pfd = { rfd, POLLIN, 0 };
-            int pr = poll(&pfd, 1, 2000);
+            int pr = poll(&pfd, 1, current_accept_poll_ms());
             if (!g_running) break;
             if (pr < 0) {
                 if (errno == EINTR) continue;
