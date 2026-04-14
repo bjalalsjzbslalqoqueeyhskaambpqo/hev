@@ -69,7 +69,6 @@
 #define DAILY_BULK_CHUNK        65536
 #define DAILY_BULK_PACE_MS      0
 
-#define GAMING_POLL_MS          120
 #define DAILY_ACCEPT_POLL_MS    2000
 #define GAMING_ACCEPT_POLL_MS   2000
 
@@ -577,9 +576,6 @@ static int send_gaming(int tfd, uint32_t sid, const uint8_t *buf, int n) {
 typedef struct { int cfd; int tfd; uint32_t sid; } conn_args_t;
 
 static int gaming_recv(int cfd, uint8_t *buf, int bufsz) {
-    struct pollfd pfd = { cfd, POLLIN, 0 };
-    int pr = poll(&pfd, 1, GAMING_POLL_MS);
-    if (pr <= 0) return (pr == 0) ? 0 : -1;
     ssize_t n = recv(cfd, buf, bufsz, 0);
     return (int)n;
 }
@@ -718,8 +714,9 @@ static void *tunnel_reader(void *arg) {
                                  MSG_NOSIGNAL | MSG_DONTWAIT);
                 if (n > 0) { off += n; continue; }
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    int wait_ms = atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING ? 30 : 8;
                     struct pollfd spfd = { s->fd, POLLOUT, 0 };
-                    int sp = poll(&spfd, 1, 8);
+                    int sp = poll(&spfd, 1, wait_ms);
                     if (sp > 0 && (spfd.revents & POLLOUT)) continue;
                     stream_ok = 0; break;
                 }
