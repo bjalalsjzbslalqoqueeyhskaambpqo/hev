@@ -140,7 +140,7 @@ public class BtVpnService extends VpnService {
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : null;
         if (ACTION_STOP.equals(action)) {
-            executor.execute(() -> stopAll(true));
+            executor.execute(this::stopAll);
             return START_NOT_STICKY;
         }
         if (ACTION_APPLY.equals(action)) {
@@ -168,7 +168,6 @@ public class BtVpnService extends VpnService {
         proxyStarted.set(false);
 
         String internalId = BtProxy.getOrCreateInternalId(this);
-        BtProxy.applyStoredGamingMode(this);
         if (BtProxy.start(this, internalId) < 0) {
             SystemClock.sleep(250);
             if (BtProxy.start(this, internalId) < 0) {
@@ -315,7 +314,7 @@ public class BtVpnService extends VpnService {
         try { BtProxy.stop(); } catch (Throwable ignored) {}
     }
 
-    private void stopAll(boolean stopProxy) {
+    private void stopAll() {
         if (!stopping.compareAndSet(false, true)) return;
         try {
             running.set(false);
@@ -427,7 +426,7 @@ public class BtVpnService extends VpnService {
 
     @Override
     public void onDestroy() {
-        stopAll(true);
+        stopAll();
         executor.shutdown();
         super.onDestroy();
     }
@@ -531,5 +530,4 @@ final class BtProxy {
     private static native String nativeDrainLogs();
     public static native void nativeSetGamingMode(boolean enabled);
     public static native void nativeApplyMode(boolean enabled);
-    public static native int nativeGetGamingMode();
 }

@@ -693,47 +693,48 @@ public class SimpleModeActivity extends ComponentActivity {
     private void updateUserMetadata(String logs) {
         if (logs == null) return;
         String[] lines = logs.split("\n");
-        for (int i = lines.length - 1; i >= 0; i--) {
-            String line = lines[i].trim();
-            int idxUser = line.indexOf("user_name=");
-            if (idxUser >= 0 && userValueView != null) {
-                String value = line.substring(idxUser + "user_name=".length()).trim();
-                if (!value.isEmpty()) userValueView.setText(value);
-                break;
+        String user = findLatestValue(lines, "user_name=");
+        if (!user.isEmpty() && userValueView != null) userValueView.setText(user);
+
+        String daysValue = findLatestValue(lines, "user_days=");
+        if (!daysValue.isEmpty() && daysValueView != null) {
+            daysValueView.setText(daysValue + " días");
+            int days = parsePositiveInt(daysValue);
+            if (days >= 0) {
+                daysValueView.setTextColor(days < 7 ? c(R.color.color_connecting) : c(R.color.color_connected));
+                scheduleAutoDisconnectFromDays(days);
             }
         }
-        for (int i = lines.length - 1; i >= 0; i--) {
-            String line = lines[i].trim();
-            int idxDays = line.indexOf("user_days=");
-            if (idxDays >= 0 && daysValueView != null) {
-                String value = line.substring(idxDays + "user_days=".length()).trim();
-                if (!value.isEmpty()) {
-                    daysValueView.setText(value + " días");
-                    try {
-                        int days = Integer.parseInt(value.replaceAll("[^0-9]", ""));
-                        daysValueView.setTextColor(days < 7 ? c(R.color.color_connecting) : c(R.color.color_connected));
-                        scheduleAutoDisconnectFromDays(days);
-                    } catch (Exception ignored) {}
-                }
-                break;
+
+        String pingValue = findLatestValue(lines, "ping_ms=");
+        if (!pingValue.isEmpty() && pingValueView != null) {
+            int ping = parsePositiveInt(pingValue);
+            if (ping >= 0) {
+                animatePingTo(ping);
+            } else {
+                pingValueView.setText("--");
+                pingValueView.setTextColor(c(R.color.color_text_disabled));
             }
         }
+    }
+
+    private String findLatestValue(String[] lines, String key) {
         for (int i = lines.length - 1; i >= 0; i--) {
             String line = lines[i].trim();
-            int idxPing = line.indexOf("ping_ms=");
-            if (idxPing >= 0 && pingValueView != null) {
-                String value = line.substring(idxPing + "ping_ms=".length()).trim();
-                if (!value.isEmpty()) {
-                    try {
-                        int ping = Integer.parseInt(value.replaceAll("[^0-9]", ""));
-                        animatePingTo(ping);
-                    } catch (Exception ignored) {
-                        pingValueView.setText("--");
-                        pingValueView.setTextColor(c(R.color.color_text_disabled));
-                    }
-                }
-                break;
+            int idx = line.indexOf(key);
+            if (idx >= 0) {
+                String value = line.substring(idx + key.length()).trim();
+                if (!value.isEmpty()) return value;
             }
+        }
+        return "";
+    }
+
+    private int parsePositiveInt(String value) {
+        try {
+            return Integer.parseInt(value.replaceAll("[^0-9]", ""));
+        } catch (Exception ignored) {
+            return -1;
         }
     }
 
@@ -792,15 +793,17 @@ public class SimpleModeActivity extends ComponentActivity {
 
     private void setUiState(UiState newState) {
         uiState = newState;
+        boolean isConnecting = newState == UiState.CONNECTING;
+        boolean isConnected = newState == UiState.CONNECTED;
 
         if (connectBtn != null) {
-            if (newState == UiState.CONNECTING) {
+            if (isConnecting) {
                 connectBtn.setEnabled(false);
                 connectBtn.setActivated(false);
                 connectBtn.setText("Conectando...");
                 connectBtn.setBackgroundResource(R.drawable.btn_connecting_selector);
                 connectBtn.setTextColor(c(R.color.color_text_primary));
-            } else if (newState == UiState.CONNECTED) {
+            } else if (isConnected) {
                 connectBtn.setEnabled(true);
                 connectBtn.setActivated(true);
                 connectBtn.setText(R.string.disconnect);
@@ -816,29 +819,19 @@ public class SimpleModeActivity extends ComponentActivity {
         }
 
         if (statusDotView != null) {
-            int dotColor = newState == UiState.CONNECTED
-                    ? c(R.color.color_connected)
-                    : newState == UiState.CONNECTING
-                    ? c(R.color.color_connecting)
-                    : c(R.color.color_text_disabled);
-            statusDotView.setBackgroundTintList(ColorStateList.valueOf(dotColor));
+            statusDotView.setBackgroundTintList(ColorStateList.valueOf(getStatusColor(newState)));
         }
         if (statusHaloView != null) {
-            int haloColor = newState == UiState.CONNECTED
-                    ? c(R.color.color_connected)
-                    : newState == UiState.CONNECTING
-                    ? c(R.color.color_connecting)
-                    : c(R.color.color_text_disabled);
-            statusHaloView.setBackgroundTintList(ColorStateList.valueOf(haloColor));
+            statusHaloView.setBackgroundTintList(ColorStateList.valueOf(getStatusColor(newState)));
         }
 
         if (statusBadgeView != null) {
-            if (newState == UiState.CONNECTING) {
+            if (isConnecting) {
                 statusBadgeView.setText("CONECTANDO...");
                 statusBadgeView.setTextColor(c(R.color.color_connecting));
                 startStatusPulse();
                 startStatusHaloWave();
-            } else if (newState == UiState.CONNECTED) {
+            } else if (isConnected) {
                 statusBadgeView.setText("CONECTADO");
                 statusBadgeView.setTextColor(BtProxy.isGamingMode(this) ? c(R.color.color_gaming) : c(R.color.color_connected));
                 stopStatusPulse();
@@ -855,11 +848,11 @@ public class SimpleModeActivity extends ComponentActivity {
         }
 
         if (statusDetailsView != null) {
-            if (newState == UiState.CONNECTING) {
+            if (isConnecting) {
                 statusDetailsView.setVisibility(View.VISIBLE);
                 statusDetailsView.setText("• Estableciendo conexión...");
                 statusDetailsView.setTextColor(c(R.color.color_connecting));
-            } else if (newState == UiState.CONNECTED) {
+            } else if (isConnected) {
                 String eta = autoDisconnectAtMs > 0 ? "Autodesconexión local activa" : "Conexión activa";
                 statusDetailsView.setVisibility(View.VISIBLE);
                 statusDetailsView.setText("✓ " + eta);
@@ -875,5 +868,11 @@ public class SimpleModeActivity extends ComponentActivity {
             }
         }
         refreshGamingModeUi();
+    }
+
+    private int getStatusColor(UiState state) {
+        if (state == UiState.CONNECTED) return c(R.color.color_connected);
+        if (state == UiState.CONNECTING) return c(R.color.color_connecting);
+        return c(R.color.color_text_disabled);
     }
 }
