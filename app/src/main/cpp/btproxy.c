@@ -52,9 +52,12 @@
 #define PROXY_PORT      80
 #define TUNNEL_HOST     "2.brawlpass.com.ar"
 
-#define MODE_NORMAL  0
-#define MODE_GAMING  1
-#define MODE_BULK    2
+#define GLOBAL_MODE_DAILY   0
+#define GLOBAL_MODE_GAMING  1
+
+#define STREAM_MODE_NORMAL  0
+#define STREAM_MODE_GAMING  1
+#define STREAM_MODE_BULK    2
 
 #define MODE_EVAL_PACKETS       100
 #define GAMING_AVG_THRESH       500
@@ -62,15 +65,18 @@
 #define BULK_AVG_THRESH         8192
 #define MODE_HYSTERESIS_MS      2000
 
-#define BULK_PACE_CHUNK         32768
-#define BULK_PACE_INTERVAL_MS   8
-#define NORMAL_PACE_INTERVAL_MS 2
+#define DAILY_POLL_MS           4000
+#define DAILY_BULK_CHUNK        32768
+#define DAILY_BULK_PACE_MS      10
+#define DAILY_NORMAL_POLL_MS    3000
+
+#define GAMING_POLL_MS          800
 
 #define PING_ACTIVE_SEC         10
 #define PING_IDLE_SEC           300
 #define IDLE_TRAFFIC_SEC        10
 
-#define MAX_EPOLL_EVENTS        64
+static atomic_int g_global_mode = GLOBAL_MODE_DAILY;
 
 typedef struct stream_s {
     struct stream_s *next;
@@ -83,7 +89,7 @@ typedef struct stream_s {
     uint64_t         mode_pkt_base;
     uint64_t         mode_byte_base;
     long             mode_since_ms;
-    int              mode;
+    int              stream_mode;
     long             last_mode_change_ms;
 } stream_t;
 
@@ -116,9 +122,9 @@ static stream_t *ht_put(uint32_t sid, int fd) {
     stream_t *s = malloc(sizeof(stream_t));
     if (!s) return NULL;
     memset(s, 0, sizeof(stream_t));
-    s->sid  = sid;
-    s->fd   = fd;
-    s->mode = MODE_NORMAL;
+    s->sid         = sid;
+    s->fd          = fd;
+    s->stream_mode = STREAM_MODE_NORMAL;
     s->mode_since_ms       = now_ms();
     s->last_mode_change_ms = now_ms();
     atomic_store(&s->last_active, (long)time(NULL));
@@ -337,8 +343,6 @@ static int tun_recv_full(int fd, uint8_t *buf, int len, int timeout_ms) {
         ssize_t n = recv(fd, buf + off, len - off, 0);
         if (n > 0) {
             off += (int)n;
-            int qa = 1;
-            setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &qa, sizeof(qa));
         } else if (n == 0) {
             return -1;
         } else if (errno == EINTR || errno == EAGAIN) {
@@ -505,7 +509,6 @@ static int open_tunnel(void) {
         push_log("I", "user_days=%s", user_days);
     clock_gettime(CLOCK_MONOTONIC, &t1);
     long ping_ms = (t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_nsec - t0.tv_nsec) / 1000000L;
-    ping_ms -= 20;
     if (ping_ms < 0) ping_ms = 0;
     push_log("I", "ping_ms=%ld", ping_ms);
 
@@ -518,8 +521,8 @@ static void stream_update_mode(stream_t *s, int pkt_size) {
 
     if ((s->pkt_count - s->mode_pkt_base) < MODE_EVAL_PACKETS) return;
 
-    long t = now_ms();
-    long dt = t - s->mode_since_ms;
+    long t   = now_ms();
+    long dt  = t - s->mode_since_ms;
     if (dt <= 0) dt = 1;
 
     uint64_t pkts  = s->pkt_count - s->mode_pkt_base;
@@ -529,16 +532,15 @@ static void stream_update_mode(stream_t *s, int pkt_size) {
 
     int new_mode;
     if (avg < GAMING_AVG_THRESH && freq >= GAMING_FREQ_THRESH)
-        new_mode = MODE_GAMING;
+        new_mode = STREAM_MODE_GAMING;
     else if (avg > BULK_AVG_THRESH)
-        new_mode = MODE_BULK;
+        new_mode = STREAM_MODE_BULK;
     else
-        new_mode = MODE_NORMAL;
+        new_mode = STREAM_MODE_NORMAL;
 
-    if (new_mode != s->mode) {
-        long since_change = t - s->last_mode_change_ms;
-        if (since_change >= MODE_HYSTERESIS_MS) {
-            s->mode = new_mode;
+    if (new_mode != s->stream_mode) {
+        if ((t - s->last_mode_change_ms) >= MODE_HYSTERESIS_MS) {
+            s->stream_mode         = new_mode;
             s->last_mode_change_ms = t;
         }
     }
@@ -548,31 +550,29 @@ static void stream_update_mode(stream_t *s, int pkt_size) {
     s->mode_since_ms  = t;
 }
 
-static int stream_send_paced(int tfd, uint32_t sid, const uint8_t *buf, int n, int mode) {
-    if (mode == MODE_GAMING || mode == MODE_NORMAL) {
+static int send_gaming(int tfd, uint32_t sid, const uint8_t *buf, int n) {
+    return tun_send(tfd, T_DATA, sid, buf, (uint16_t)n);
+}
+
+static int send_daily(int tfd, uint32_t sid, const uint8_t *buf, int n, int stream_mode) {
+    if (stream_mode != STREAM_MODE_BULK) {
         return tun_send(tfd, T_DATA, sid, buf, (uint16_t)n);
     }
-
     int off = 0;
     while (off < n) {
         int chunk = n - off;
-        if (chunk > BULK_PACE_CHUNK) chunk = BULK_PACE_CHUNK;
-        if (tun_send(tfd, T_DATA, sid, buf + off, (uint16_t)chunk) < 0)
-            return -1;
+        if (chunk > DAILY_BULK_CHUNK) chunk = DAILY_BULK_CHUNK;
+        if (tun_send(tfd, T_DATA, sid, buf + off, (uint16_t)chunk) < 0) return -1;
         off += chunk;
         if (off < n) {
-            struct timespec ts = { 0, BULK_PACE_INTERVAL_MS * 1000000L };
+            struct timespec ts = { 0, DAILY_BULK_PACE_MS * 1000000L };
             nanosleep(&ts, NULL);
         }
     }
     return 0;
 }
 
-typedef struct {
-    int      cfd;
-    int      tfd;
-    uint32_t sid;
-} conn_args_t;
+typedef struct { int cfd; int tfd; uint32_t sid; } conn_args_t;
 
 static void *conn_thread(void *arg) {
     conn_args_t *ca = (conn_args_t*)arg;
@@ -612,10 +612,16 @@ static void *conn_thread(void *arg) {
     }
 
     while (g_running) {
+        int gmode = atomic_load(&g_global_mode);
+
         int poll_ms;
-        if (s->mode == MODE_GAMING)       poll_ms = 1000;
-        else if (s->mode == MODE_BULK)    poll_ms = 5000;
-        else                              poll_ms = 3000;
+        if (gmode == GLOBAL_MODE_GAMING) {
+            poll_ms = GAMING_POLL_MS;
+        } else {
+            if (s->stream_mode == STREAM_MODE_BULK)        poll_ms = DAILY_POLL_MS;
+            else if (s->stream_mode == STREAM_MODE_GAMING) poll_ms = DAILY_NORMAL_POLL_MS;
+            else                                            poll_ms = DAILY_NORMAL_POLL_MS;
+        }
 
         struct pollfd pfd = { cfd, POLLIN, 0 };
         int pr = poll(&pfd, 1, poll_ms);
@@ -632,9 +638,15 @@ static void *conn_thread(void *arg) {
         atomic_store(&s->last_active, (long)time(NULL));
         atomic_store(&g_last_traffic, (long)time(NULL));
 
-        stream_update_mode(s, (int)n);
+        if (gmode == GLOBAL_MODE_DAILY) stream_update_mode(s, (int)n);
 
-        if (stream_send_paced(tfd, sid, buf, (int)n, s->mode) < 0) {
+        int ok;
+        if (gmode == GLOBAL_MODE_GAMING) {
+            ok = send_gaming(tfd, sid, buf, (int)n);
+        } else {
+            ok = send_daily(tfd, sid, buf, (int)n, s->stream_mode);
+        }
+        if (ok < 0) {
             request_tunnel_reset("tun_send T_DATA failed");
             break;
         }
@@ -699,11 +711,9 @@ static void *tunnel_reader(void *arg) {
                     struct pollfd spfd = { s->fd, POLLOUT, 0 };
                     int sp = poll(&spfd, 1, 8);
                     if (sp > 0 && (spfd.revents & POLLOUT)) continue;
-                    stream_ok = 0;
-                    break;
+                    stream_ok = 0; break;
                 }
-                stream_ok = 0;
-                break;
+                stream_ok = 0; break;
             }
             if (!stream_ok) {
                 ht_del(sid);
@@ -749,17 +759,16 @@ static void *keepalive_thread(void *arg) {
             break;
         }
 
-        long last_traffic = atomic_load(&g_last_traffic);
         long now = (long)time(NULL);
-        int is_idle = (now - last_traffic) > IDLE_TRAFFIC_SEC;
+        long last_traffic = atomic_load(&g_last_traffic);
+        int  is_idle      = (now - last_traffic) > IDLE_TRAFFIC_SEC;
+        int  ping_interval = is_idle ? PING_IDLE_SEC : PING_ACTIVE_SEC;
 
-        int ping_interval = is_idle ? PING_IDLE_SEC : PING_ACTIVE_SEC;
-        int should_ping   = (now - last_ping_report) >= ping_interval;
-
-        if (!should_ping) continue;
+        if ((now - last_ping_report) < ping_interval) continue;
 
         struct timespec tp0, tp1;
         clock_gettime(CLOCK_MONOTONIC, &tp0);
+
         if (tun_send(tfd, T_PING, 0, NULL, 0) < 0) {
             request_tunnel_reset("keepalive ping failed");
             break;
@@ -887,9 +896,7 @@ static void *main_thread(void *arg) {
                 if (errno == EINTR) continue;
                 request_tunnel_reset("accept poll failed"); break;
             }
-            if (pr > 0 && (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))) {
-                break;
-            }
+            if (pr > 0 && (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))) break;
             if (pr == 0) {
                 pthread_mutex_lock(&g_state_mu);
                 int still_same = (g_tun_fd == tfd && g_relay_fd == rfd);
@@ -948,6 +955,7 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     g_reconnect_delay = RECONNECT_DELAY_MIN;
     atomic_store(&g_next_sid, 1);
     atomic_store(&g_last_traffic, (long)time(NULL));
+    atomic_store(&g_global_mode, GLOBAL_MODE_DAILY);
     pthread_mutex_unlock(&g_state_mu);
 
     pthread_mutex_lock(&g_start_mu); g_start_st = 0;
@@ -995,6 +1003,18 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     ht_clear();
     if (svc) (*env)->DeleteGlobalRef(env, svc);
     g_started = 0;
+}
+
+JNIEXPORT void JNICALL
+Java_com_blacktunnel_BtProxy_nativeSetGamingMode(JNIEnv *env, jclass clazz, jboolean enabled) {
+    int mode = enabled ? GLOBAL_MODE_GAMING : GLOBAL_MODE_DAILY;
+    atomic_store(&g_global_mode, mode);
+    push_log("I", "global_mode=%s", enabled ? "gaming" : "daily");
+}
+
+JNIEXPORT jint JNICALL
+Java_com_blacktunnel_BtProxy_nativeGetGamingMode(JNIEnv *env, jclass clazz) {
+    return (jint)atomic_load(&g_global_mode);
 }
 
 JNIEXPORT jstring JNICALL
