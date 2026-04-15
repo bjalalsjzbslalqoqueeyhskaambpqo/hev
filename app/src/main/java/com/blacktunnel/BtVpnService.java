@@ -102,7 +102,7 @@ public class BtVpnService extends VpnService {
             try { ParcelFileDescriptor.adoptFd(oldFd).close(); } catch (Exception ignored) {}
         }
 
-        int tunMtu = BtProxy.isGamingMode(this) ? 1280 : 1350;
+        int tunMtu = BtProxy.isGamingMode(this) ? 1300 : 1400;
         Builder builder = new Builder()
                 .setSession("bt-hev")
                 .setMtu(tunMtu)
@@ -179,7 +179,7 @@ public class BtVpnService extends VpnService {
         proxyStarted.set(true);
         BtProxy.applyStoredGamingMode(this);
 
-        int tunMtu = BtProxy.isGamingMode(this) ? 1280 : 1350;
+        int tunMtu = BtProxy.isGamingMode(this) ? 1300 : 1400;
         Builder builder = new Builder()
                 .setSession("bt-hev")
                 .setMtu(tunMtu)
