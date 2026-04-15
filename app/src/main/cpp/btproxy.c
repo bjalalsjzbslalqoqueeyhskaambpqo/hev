@@ -433,8 +433,10 @@ static void *tcp_tunnel_reader(void *arg) {
             atomic_store(&g_last_traffic, (long)time(NULL));
             ssize_t off = 0;
             while (off < len) {
-                ssize_t n = send(s->fd, payload + off, len - off, MSG_NOSIGNAL | MSG_DONTWAIT);
-                if (n > 0) { off += n; continue; } break;
+                ssize_t n = send(s->fd, payload + off, len - off, MSG_NOSIGNAL);
+                if (n > 0) { off += n; continue; }
+                if (n < 0 && errno == EINTR) continue;
+                break;
             }
             break;
         }
