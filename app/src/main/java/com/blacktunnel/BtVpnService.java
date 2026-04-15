@@ -355,12 +355,9 @@ public class BtVpnService extends VpnService {
         boolean gamingMode = BtProxy.isGamingMode(this);
 
         int mtu = gamingMode ? 1280 : 1420;
-        int tcpBufferSize = gamingMode ? 65536 : 32768;
+        int tcpBufferSize = gamingMode ? 65536 : 16384;
         int taskStackSize = 20480 + tcpBufferSize;
         int maxSessionCount = gamingMode ? 1024 : 512;
-        int tcpRwTimeout = gamingMode ? 60000 : 180000;
-        int udpRwTimeout = gamingMode ? 30000 : 60000;
-        String socksUdp = "tcp";
         boolean pipeline = true;
 
         String yml =
@@ -371,7 +368,8 @@ public class BtVpnService extends VpnService {
                 "socks5:\n" +
                 "  address: 127.0.0.1\n" +
                 "  port: " + BtProxy.SOCKS5_PORT + "\n" +
-                "  udp: '" + socksUdp + "'\n" +
+                "  udp: 'udp'\n" +
+                "  udp-address: '127.0.0.1'\n" +
                 "  pipeline: " + pipeline + "\n" +
                 "mapdns:\n" +
                 "  address: 100.64.0.2\n" +
@@ -384,8 +382,8 @@ public class BtVpnService extends VpnService {
                 "  tcp-buffer-size: " + tcpBufferSize + "\n" +
                 "  udp-copy-buffer-nums: 10\n" +
                 "  connect-timeout: 5000\n" +
-                "  tcp-read-write-timeout: " + tcpRwTimeout + "\n" +
-                "  udp-read-write-timeout: " + udpRwTimeout + "\n" +
+                "  tcp-read-write-timeout: 60000\n" +
+                "  udp-read-write-timeout: 30000\n" +
                 "  max-session-count: " + maxSessionCount + "\n" +
                 "  log-level: warn\n" +
                 "  limit-nofile: 65535\n";
@@ -395,7 +393,7 @@ public class BtVpnService extends VpnService {
                 " tcpBuffer=" + tcpBufferSize +
                 " taskStack=" + taskStackSize +
                 " maxSessions=" + maxSessionCount +
-                " udp=" + socksUdp +
+                " udp=udp" +
                 " pipeline=" + pipeline);
 
         File f = new File(getFilesDir(), "hev.yml");
