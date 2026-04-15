@@ -162,6 +162,10 @@ static void tunnel_reset(const char *reason){
     q_clear();ht_clear();
 }
 
+/* recv_headers: reads until \r\n\r\n is found.
+ * Returns total bytes in buf (headers + any extra bytes already read past the
+ * header boundary), or -1 on error/timeout.
+ * The caller can find the header-body split with strstr(buf,"\r\n\r\n")+4. */
 static int recv_headers(int fd,char *buf,int cap,int timeout_sec){
     struct timeval tv={timeout_sec,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&tv,sizeof(tv));
     int used=0;while(used<cap-1){ssize_t n=recv(fd,buf+used,cap-1-used,0);if(n<=0)break;used+=(int)n;buf[used]='\0';if(strstr(buf,"\r\n\r\n")){tv.tv_sec=0;setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&tv,sizeof(tv));return used;}}
@@ -169,6 +173,50 @@ static int recv_headers(int fd,char *buf,int cap,int timeout_sec){
 }
 static int http_status(const char *h){int c=-1;sscanf(h,"HTTP/%*d.%*d %d",&c);return c;}
 static int header_val(const char *h,const char *key,char *out,int cap){const char *p=strstr(h,key);if(!p)return 0;p+=strlen(key);while(*p==' '||*p==':')p++;const char *e=strstr(p,"\r\n");if(!e)return 0;int n=(int)(e-p);if(n<=0||n>=cap)return 0;memcpy(out,p,n);out[n]='\0';return 1;}
+
+/* Drain the body that came with the proxy's first response (h1) so the socket
+ * is clean before we send req2 and read the real 101 response.
+ *
+ * hbuf/hlen: the buffer returned by recv_headers() for the first response.
+ * We already have (hlen - header_end_offset) bytes of body in the buffer;
+ * if Content-Length says there is more, we read and discard it.
+ * If the server uses chunked or closes the connection we just return -1 so
+ * the caller can bail out (those cases shouldn't happen for a simple proxy
+ * bounce, but we handle them gracefully). */
+static int drain_proxy_body(int fd,const char *hbuf,int hlen,int timeout_sec){
+    /* Locate end-of-headers marker */
+    const char *eoh=strstr(hbuf,"\r\n\r\n");
+    if(!eoh)return -1;
+    int hdr_end=(int)(eoh+4-hbuf);   /* first byte of body inside hbuf */
+    int already_read=hlen-hdr_end;   /* body bytes we already have      */
+    if(already_read<0)already_read=0;
+
+    /* Check Transfer-Encoding: chunked — we do not parse chunked bodies */
+    char te[64]={0};
+    if(header_val(hbuf,"Transfer-Encoding",te,sizeof(te))&&strstr(te,"chunked"))
+        return -1; /* can't safely drain without a chunked parser */
+
+    /* Get Content-Length */
+    char cl_str[32]={0};
+    int body_total=0;
+    if(header_val(hbuf,"Content-Length",cl_str,sizeof(cl_str)))
+        body_total=atoi(cl_str);
+
+    int remaining=body_total-already_read;
+    if(remaining<=0)return 0; /* nothing more to read */
+
+    /* Discard remaining body bytes */
+    struct timeval tv={timeout_sec,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&tv,sizeof(tv));
+    uint8_t trash[4096];
+    while(remaining>0){
+        int want=remaining<(int)sizeof(trash)?(int)remaining:(int)sizeof(trash);
+        ssize_t n=recv(fd,trash,want,0);
+        if(n<=0)break;
+        remaining-=(int)n;
+    }
+    tv.tv_sec=0;setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&tv,sizeof(tv));
+    return (remaining==0)?0:-1;
+}
 static int connect_nb(int fd,const struct sockaddr *addr,socklen_t alen){int fl=fcntl(fd,F_GETFL,0);fcntl(fd,F_SETFL,fl|O_NONBLOCK);int r=connect(fd,addr,alen);fcntl(fd,F_SETFL,fl);if(r==0)return 0;if(errno!=EINPROGRESS)return -1;struct pollfd p={fd,POLLOUT,0};if(poll(&p,1,CONNECT_TIMEOUT_SEC*1000)<=0)return -1;int err=0;socklen_t el=sizeof(err);return(getsockopt(fd,SOL_SOCKET,SO_ERROR,&err,&el)==0&&err==0)?0:-1;}
 
 static int open_tunnel(void){
@@ -205,7 +253,10 @@ static int open_tunnel(void){
     char req1[256],h1[2048];
     int r1=snprintf(req1,sizeof(req1),"GET / HTTP/1.1\r\nHost: %s\r\n\r\n",PROXY_HOST);
     send(fd,req1,r1,MSG_NOSIGNAL);
-    if(recv_headers(fd,h1,sizeof(h1),HANDSHAKE_TIMEOUT_SEC)<0){close(fd);return -1;}
+    int h1len=recv_headers(fd,h1,sizeof(h1),HANDSHAKE_TIMEOUT_SEC);
+    if(h1len<0){push_log("E","proxy h1 read failed");close(fd);return -1;}
+    /* Drain any body the proxy attached to h1 so the socket is clean before req2 */
+    drain_proxy_body(fd,h1,h1len,HANDSHAKE_TIMEOUT_SEC);
     char req2[1024],h2[4096];struct timespec t0,t1;
     int r2=snprintf(req2,sizeof(req2),"- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nAction: tunnel\r\nX-Internal-ID: %s\r\n\r\n",TUNNEL_HOST,g_iid[0]?g_iid:"unknown");
     clock_gettime(CLOCK_MONOTONIC,&t0);send(fd,req2,r2,MSG_NOSIGNAL);
