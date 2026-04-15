@@ -354,7 +354,7 @@ public class BtVpnService extends VpnService {
     private File writeHevCfg() {
         boolean gamingMode = BtProxy.isGamingMode(this);
 
-        int mtu = gamingMode ? 1280 : 1420;
+        int mtu = gamingMode ? 1300 : 1400;
         int tcpBufferSize = gamingMode ? 65536 : 16384;
         int taskStackSize = 20480 + tcpBufferSize;
         int maxSessionCount = gamingMode ? 1024 : 512;
