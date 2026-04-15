@@ -192,13 +192,6 @@ static int open_tunnel(const char *action){
     if(strcmp(action,"tunnel-tcp")==0){char uname[128]={0},udays[32]={0};if(header_val(h2,"X-User-Name",uname,sizeof(uname)))push_log("I","user_name=%s",uname);if(header_val(h2,"X-User-Days",udays,sizeof(udays)))push_log("I","user_days=%s",udays);}
     push_log("I","[%s] ping_ms=%ld",action,ping_ms);return fd;
 }
-
-
-    uint8_t reply[10]={0x05,0x00,0x00,0x01,127,0,0,1,(UDP_RELAY_PORT>>8)&0xFF,UDP_RELAY_PORT&0xFF};
-    send(cfd,reply,sizeof(reply),MSG_NOSIGNAL);
-
-
-
 typedef struct{int cfd;}assoc_arg_t;
 static void *udp_associate_thread(void *arg){
     assoc_arg_t *a=(assoc_arg_t*)arg;int cfd=a->cfd;free(a);
