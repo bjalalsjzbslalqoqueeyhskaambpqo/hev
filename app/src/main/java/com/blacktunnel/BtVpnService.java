@@ -104,9 +104,9 @@ public class BtVpnService extends VpnService {
         Builder builder = new Builder()
                 .setSession("bt-hev")
                 .setMtu(gaming ? 1400 : 1300)
-                .addAddress("100.64.0.1", 30)
-                .addAddress("fc00::1", 128)
-                .addDnsServer("100.64.0.2");
+                .addAddress("198.18.0.1", 15)
+                .addAddress("fd40::1", 128)
+                .addDnsServer("198.18.0.2");
 
         addPublicRoutes(builder);
         applyPerAppVpnPolicy(builder);
@@ -180,9 +180,9 @@ public class BtVpnService extends VpnService {
         Builder builder = new Builder()
                 .setSession("bt-hev")
                 .setMtu(gaming ? 1400 : 1300)
-                .addAddress("100.64.0.1", 30)
-                .addAddress("fc00::1", 128)
-                .addDnsServer("100.64.0.2");
+                .addAddress("198.18.0.1", 15)
+                .addAddress("fd40::1", 128)
+                .addDnsServer("198.18.0.2");
 
         addPublicRoutes(builder);
         applyPerAppVpnPolicy(builder);
@@ -255,8 +255,8 @@ public class BtVpnService extends VpnService {
 
         if (current <= universeEnd) addCIDRs(builder, current, universeEnd);
 
-        builder.addRoute("fc00::", 7);
         builder.addRoute("2000::", 3);
+        builder.addRoute("fd40::", 128);
     }
 
     private void addCIDRs(Builder builder, long start, long end) {
@@ -355,18 +355,18 @@ public class BtVpnService extends VpnService {
                 "tunnel:\n" +
                 "  name: bt-hev\n" +
                 "  mtu: " + mtu + "\n" +
-                "  ipv4: 100.64.0.1\n" +
-                "  ipv6: 'fc00::1'\n" +
+                "  ipv4: 198.18.0.1\n" +
+                "  ipv6: 'fd40::1'\n" +
                 "socks5:\n" +
                 "  address: 127.0.0.1\n" +
                 "  port: " + BtProxy.SOCKS5_PORT + "\n" +
                 "  udp: 'tcp'\n" +
                 "  pipeline: true\n" +
                 "mapdns:\n" +
-                "  address: 100.64.0.2\n" +
+                "  address: 198.18.0.2\n" +
                 "  port: 53\n" +
-                "  network: 100.64.0.0\n" +
-                "  netmask: 255.192.0.0\n" +
+                "  network: 198.18.0.0\n" +
+                "  netmask: 255.254.0.0\n" +
                 "  cache-size: 4096\n" +
                 "misc:\n" +
                 "  task-stack-size: " + taskStack + "\n" +
