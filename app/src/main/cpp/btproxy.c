@@ -372,8 +372,10 @@ static void *udp_associate_thread(void *arg) {
 
 static void handle_tcp_conn(int cfd, int tfd, uint32_t sid, int open_already_sent) {
     (void)tfd;
-    stream_t *s = ht_put(sid, cfd);
-    if (!s) { close(cfd); return; }
+    if (!open_already_sent) {
+        stream_t *s = ht_put(sid, cfd);
+        if (!s) { close(cfd); return; }
+    }
     uint8_t buf[MAX_PAYLOAD];
     if (!open_already_sent) {
         ssize_t n = recv(cfd, buf, sizeof(buf), 0);
