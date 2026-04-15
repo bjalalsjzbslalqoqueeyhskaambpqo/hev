@@ -416,6 +416,7 @@ static void *main_thread(void *arg){
                     q_push(cfd,tfd_tcp,sid);
                 }
             }
+        }
         tunnel_reset(NULL);if(g_running){push_log("E","tunnel dropped, reconnecting");sleep(1);}
     }
     pthread_mutex_lock(&g_q_mu);pthread_cond_broadcast(&g_q_cv);pthread_mutex_unlock(&g_q_mu);
