@@ -12,7 +12,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <time.h>
@@ -34,8 +33,7 @@
 #define MAX_PAYLOAD             16384
 #define RELAY_BACKLOG           512
 #define KEEPALIVE_SEC           20
-#define DAILY_PONG_TIMEOUT_SEC  180
-#define GAMING_PONG_TIMEOUT_SEC 180
+#define PONG_TIMEOUT_SEC        180
 #define RECONNECT_DELAY_MIN     2
 #define RECONNECT_DELAY_MAX     30
 #define CONNECT_TIMEOUT_SEC     10
@@ -63,12 +61,6 @@
 
 static atomic_int g_global_mode = GLOBAL_MODE_DAILY;
 
-static int current_pong_timeout_sec(void) {
-    return atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
-            ? GAMING_PONG_TIMEOUT_SEC
-            : DAILY_PONG_TIMEOUT_SEC;
-}
-
 static int current_accept_poll_ms(void) {
     return atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
             ? GAMING_ACCEPT_POLL_MS
@@ -84,12 +76,6 @@ typedef struct stream_s {
 
 static stream_t       *g_ht[HT_SIZE];
 static pthread_mutex_t g_ht_mu[HT_SIZE];
-
-static long now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
-}
 
 static void ht_init(void) {
     for (int i = 0; i < HT_SIZE; i++) {
@@ -172,7 +158,6 @@ static pthread_cond_t  g_start_cv  = PTHREAD_COND_INITIALIZER;
 static int             g_start_st  = 0;
 static atomic_long     g_last_pong = 0;
 static atomic_int      g_tunnel_epoch = 0;
-static atomic_int      g_stream_count = 0;
 static atomic_long     g_last_traffic = 0;
 
 typedef struct conn_task_s {
@@ -243,35 +228,18 @@ static void request_tunnel_reset(const char *reason) {
     if (rfd >= 0) close(rfd);
     if (tfd >= 0) close(tfd);
     connq_clear();
-    atomic_store(&g_stream_count, 0);
     ht_clear();
 }
 
-static void sock_tune_daily(int fd) {
-    int v;
-    v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
-    v = 0;      setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &v, sizeof(v));
-    v = 65536;  setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,   &v, sizeof(v));
-    v = 65536;  setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,   &v, sizeof(v));
-    int flags = fcntl(fd, F_GETFD, 0);
-    if (flags >= 0) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
-}
-
-static void sock_tune_gaming(int fd) {
-    int v;
-    v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
-    v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &v, sizeof(v));
-    v = 131072; setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,   &v, sizeof(v));
-    v = 131072; setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,   &v, sizeof(v));
-    int flags = fcntl(fd, F_GETFD, 0);
-    if (flags >= 0) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
-}
-
 static void sock_tune(int fd) {
-    if (atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING)
-        sock_tune_gaming(fd);
-    else
-        sock_tune_daily(fd);
+    int gaming = (atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING);
+    int v;
+    v = 1;                       setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
+    v = gaming ? 1 : 0;          setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &v, sizeof(v));
+    v = gaming ? 131072 : 65536; setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,   &v, sizeof(v));
+    v = gaming ? 131072 : 65536; setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,   &v, sizeof(v));
+    int flags = fcntl(fd, F_GETFD, 0);
+    if (flags >= 0) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
 
 static void sock_keepalive(int fd) {
@@ -528,28 +496,20 @@ static int open_tunnel(void) {
         push_log("I", "user_days=%s", user_days);
     clock_gettime(CLOCK_MONOTONIC, &t1);
     long ping_ms = (t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_nsec - t0.tv_nsec) / 1000000L;
-    if (atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING) ping_ms -= 20;
     if (ping_ms < 0) ping_ms = 0;
     push_log("I", "ping_ms=%ld", ping_ms);
 
     return fd;
 }
 
-static int stream_send(int tfd, uint32_t sid, const uint8_t *buf, int n) {
-    return tun_send(tfd, T_DATA, sid, buf, (uint16_t)n);
-}
-
 static void conn_handle(int cfd, int tfd, uint32_t sid) {
     stream_t *s = ht_put(sid, cfd);
     if (!s) { close(cfd); return; }
-
-    atomic_fetch_add(&g_stream_count, 1);
 
     uint8_t buf[MAX_PAYLOAD];
 
     ssize_t first = recv(cfd, buf, sizeof(buf), 0);
     if (first <= 0) {
-        atomic_fetch_sub(&g_stream_count, 1);
         ht_del(sid);
         return;
     }
@@ -558,7 +518,6 @@ static void conn_handle(int cfd, int tfd, uint32_t sid) {
 
     if (tun_send(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0) {
         request_tunnel_reset("tun_send T_OPEN failed");
-        atomic_fetch_sub(&g_stream_count, 1);
         ht_del(sid);
         return;
     }
@@ -571,16 +530,13 @@ static void conn_handle(int cfd, int tfd, uint32_t sid) {
         atomic_store(&s->last_active, (long)time(NULL));
         atomic_store(&g_last_traffic, (long)time(NULL));
 
-        int ok = stream_send(tfd, sid, buf, (int)n);
-
-        if (ok < 0) {
+        if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
             request_tunnel_reset("tun_send T_DATA failed");
             break;
         }
     }
 
     tun_send(tfd, T_CLOSE, sid, NULL, 0);
-    atomic_fetch_sub(&g_stream_count, 1);
     ht_del(sid);
 }
 
@@ -639,14 +595,10 @@ static void *conn_worker(void *arg) {
     return NULL;
 }
 
-static int current_conn_workers(void) {
-    return atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
-            ? GAMING_CONN_WORKERS : DAILY_CONN_WORKERS;
-}
-
 static void start_conn_workers(void) {
     if (g_conn_workers_started > 0) return;
-    int n = current_conn_workers();
+    int n = atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
+            ? GAMING_CONN_WORKERS : DAILY_CONN_WORKERS;
     for (int i = 0; i < n; i++) {
         if (pthread_create(&g_conn_workers[i], NULL, conn_worker, NULL) != 0) break;
         g_conn_workers_started++;
@@ -677,7 +629,7 @@ static void *tunnel_reader(void *arg) {
         if (!g_running || atomic_load(&g_tunnel_epoch) != epoch) break;
         if (rc == -2) {
             long last = atomic_load(&g_last_pong);
-            if (last > 0 && (long)time(NULL) - last > current_pong_timeout_sec()) {
+            if (last > 0 && (long)time(NULL) - last > PONG_TIMEOUT_SEC) {
                 request_tunnel_reset("pong timeout");
                 break;
             }
@@ -748,7 +700,7 @@ static void *keepalive_thread(void *arg) {
         if (!g_running || atomic_load(&g_tunnel_epoch) != epoch) break;
 
         long last_pong = atomic_load(&g_last_pong);
-        if (last_pong > 0 && (long)time(NULL) - last_pong > current_pong_timeout_sec()) {
+        if (last_pong > 0 && (long)time(NULL) - last_pong > PONG_TIMEOUT_SEC) {
             request_tunnel_reset("pong timeout in keepalive");
             break;
         }
@@ -784,7 +736,6 @@ static void *keepalive_thread(void *arg) {
     }
     return NULL;
 }
-
 
 static int g_reconnect_delay = RECONNECT_DELAY_MIN;
 
@@ -979,14 +930,8 @@ Java_com_blacktunnel_BtProxy_nativeApplyMode(JNIEnv *env, jclass clazz, jboolean
     int mode = enabled ? GLOBAL_MODE_GAMING : GLOBAL_MODE_DAILY;
     atomic_store(&g_global_mode, mode);
     connq_clear();
-    atomic_store(&g_stream_count, 0);
     ht_clear();
-    push_log("I", "apply_mode=%s (queue/session state reset)", enabled ? "gaming" : "daily");
-}
-
-JNIEXPORT jint JNICALL
-Java_com_blacktunnel_BtProxy_nativeGetGamingMode(JNIEnv *env, jclass clazz) {
-    return (jint)atomic_load(&g_global_mode);
+    push_log("I", "apply_mode=%s", enabled ? "gaming" : "daily");
 }
 
 JNIEXPORT jstring JNICALL
