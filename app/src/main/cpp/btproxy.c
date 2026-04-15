@@ -318,10 +318,11 @@ static int tun_send(int tfd, uint8_t type, uint32_t sid,
     int niov = dlen > 0 ? 2 : 1;
 
     ssize_t total = FRAME_HDR + dlen, sent = 0;
-    pthread_mutex_lock(&g_tun_wmu);
     while (sent < total) {
+        pthread_mutex_lock(&g_tun_wmu);
         ssize_t n = writev(tfd, iov, niov);
         if (n > 0) {
+            pthread_mutex_unlock(&g_tun_wmu);
             sent += n;
             if (sent < total) {
                 size_t skip = (size_t)n;
@@ -335,20 +336,18 @@ static int tun_send(int tfd, uint8_t type, uint32_t sid,
                 }
             }
         } else if (errno == EINTR) {
+            pthread_mutex_unlock(&g_tun_wmu);
             continue;
         } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            pthread_mutex_unlock(&g_tun_wmu);
             struct pollfd wpfd = { tfd, POLLOUT, 0 };
             int wp = poll(&wpfd, 1, 30);
-            if (wp <= 0 || !(wpfd.revents & POLLOUT)) {
-                pthread_mutex_unlock(&g_tun_wmu);
-                return -1;
-            }
+            if (wp <= 0 || !(wpfd.revents & POLLOUT)) return -1;
         } else {
             pthread_mutex_unlock(&g_tun_wmu);
             return -1;
         }
     }
-    pthread_mutex_unlock(&g_tun_wmu);
     return 0;
 }
 
@@ -707,20 +706,12 @@ static void *tunnel_reader(void *arg) {
             atomic_store(&s->last_active, (long)time(NULL));
             atomic_store(&g_last_traffic, (long)time(NULL));
             ssize_t off = 0;
-            int stream_ok = 1;
             while (off < len) {
                 ssize_t n = send(s->fd, payload + off, len - off,
                                  MSG_NOSIGNAL | MSG_DONTWAIT);
                 if (n > 0) { off += n; continue; }
-                if (errno == EAGAIN || errno == EWOULDBLOCK) { stream_ok = 0; break; }
-                stream_ok = 0; break;
-            }
-            if (!stream_ok) {
-                /* Intencional: en modo de baja latencia preferimos cerrar el stream
-                 * antes que encolar/reintentar y acumular backlog cuando el socket
-                 * local se queda atrás (EAGAIN). */
-                ht_del(sid);
-                tun_send(tfd, T_CLOSE, sid, NULL, 0);
+                if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                break;
             }
             break;
         }
@@ -991,6 +982,11 @@ Java_com_blacktunnel_BtProxy_nativeApplyMode(JNIEnv *env, jclass clazz, jboolean
     atomic_store(&g_stream_count, 0);
     ht_clear();
     push_log("I", "apply_mode=%s (queue/session state reset)", enabled ? "gaming" : "daily");
+}
+
+JNIEXPORT jint JNICALL
+Java_com_blacktunnel_BtProxy_nativeGetGamingMode(JNIEnv *env, jclass clazz) {
+    return (jint)atomic_load(&g_global_mode);
 }
 
 JNIEXPORT jstring JNICALL
