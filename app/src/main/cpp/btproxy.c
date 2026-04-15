@@ -50,10 +50,10 @@
 #define GLOBAL_MODE_DAILY   0
 #define GLOBAL_MODE_GAMING  1
 
-#define DAILY_ACCEPT_POLL_MS    2000
-#define GAMING_ACCEPT_POLL_MS   500
+#define DAILY_ACCEPT_POLL_MS    200
+#define GAMING_ACCEPT_POLL_MS   50
 
-#define PING_ACTIVE_SEC         10
+#define PING_ACTIVE_SEC         30
 #define PING_IDLE_SEC           600
 #define IDLE_TRAFFIC_SEC        10
 #define DAILY_CONN_WORKERS      32
