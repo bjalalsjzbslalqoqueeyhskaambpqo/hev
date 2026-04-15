@@ -37,7 +37,7 @@
 #define RECONNECT_DELAY_MIN     2
 #define RECONNECT_DELAY_MAX     30
 #define CONNECT_TIMEOUT_SEC     10
-#define HANDSHAKE_TIMEOUT_SEC   12
+#define HANDSHAKE_TIMEOUT_SEC   1
 #define CONN_WORKERS            64
 
 #define HT_SIZE  4096
