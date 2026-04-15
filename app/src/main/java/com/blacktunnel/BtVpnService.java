@@ -358,8 +358,6 @@ public class BtVpnService extends VpnService {
         int tcpBufferSize = gamingMode ? 65536 : 16384;
         int taskStackSize = 20480 + tcpBufferSize;
         int maxSessionCount = gamingMode ? 1024 : 512;
-        boolean pipeline = false;
-
         String yml =
                 "tunnel:\n" +
                 "  name: bt-hev\n" +
@@ -368,8 +366,8 @@ public class BtVpnService extends VpnService {
                 "socks5:\n" +
                 "  address: 127.0.0.1\n" +
                 "  port: " + BtProxy.SOCKS5_PORT + "\n" +
-                "  udp: 'udp'\n" +
-                "  pipeline: " + pipeline + "\n" +
+                "  udp: 'tcp'\n" +
+                "  pipeline: false\n" +
                 "mapdns:\n" +
                 "  address: 100.64.0.2\n" +
                 "  port: 53\n" +
@@ -388,12 +386,8 @@ public class BtVpnService extends VpnService {
                 "  limit-nofile: 65535\n";
 
         log("hev profile=" + (gamingMode ? "gaming" : "normal") +
-                " mtu=" + mtu +
-                " tcpBuffer=" + tcpBufferSize +
-                " taskStack=" + taskStackSize +
-                " maxSessions=" + maxSessionCount +
-                " udp=udp" +
-                " pipeline=" + pipeline);
+                " mtu=" + mtu + " tcpBuf=" + tcpBufferSize +
+                " sessions=" + maxSessionCount);
 
         File f = new File(getFilesDir(), "hev.yml");
         try {
@@ -530,5 +524,4 @@ final class BtProxy {
     private static native String nativeDrainLogs();
     public static native void nativeSetGamingMode(boolean enabled);
     public static native void nativeApplyMode(boolean enabled);
-    public static native int nativeGetGamingMode();
 }
