@@ -372,49 +372,50 @@ static void *main_thread(void *arg){
             int cf=fcntl(cfd,F_GETFD,0);if(cf>=0)fcntl(cfd,F_SETFD,cf|FD_CLOEXEC);
 
 
-            uint8_t buf[64]={0};
+            uint8_t buf[512]={0};
             ssize_t bn=recv(cfd,buf,sizeof(buf),0);
             if(bn<2||buf[0]!=0x05){close(cfd);continue;}
 
-
             uint8_t no_auth[]={0x05,0x00};send(cfd,no_auth,2,MSG_NOSIGNAL);
 
-
             int nmethods=(int)buf[1];
-            int req_offset=2+nmethods;
-            uint8_t req[32]={0};ssize_t rn;
-            if(bn>req_offset){
-
-                rn=bn-req_offset;if(rn>(ssize_t)sizeof(req))rn=sizeof(req);
-                memcpy(req,buf+req_offset,rn);
+            int req_off=2+nmethods;
+            uint8_t req[512]={0};ssize_t rn;
+            if(bn>req_off){
+                rn=bn-req_off;
+                if(rn>(ssize_t)sizeof(req))rn=sizeof(req);
+                memcpy(req,buf+req_off,rn);
             } else {
-
                 rn=recv(cfd,req,sizeof(req),0);
             }
-            if(rn<3||req[0]!=0x05){close(cfd);continue;}
+            if(rn<4||req[0]!=0x05){close(cfd);continue;}
 
             if(req[1]==0x03){
-
-
-
-                uint8_t reply[10]={0x05,0x00,0x00,0x01,127,0,0,1,(UDP_RELAY_PORT>>8)&0xFF,UDP_RELAY_PORT&0xFF};
-                send(cfd,reply,sizeof(reply),MSG_NOSIGNAL);
+                uint8_t udp_reply[10]={0x05,0x00,0x00,0x01,127,0,0,1,(UDP_RELAY_PORT>>8)&0xFF,UDP_RELAY_PORT&0xFF};
+                send(cfd,udp_reply,sizeof(udp_reply),MSG_NOSIGNAL);
                 assoc_arg_t *aa=malloc(sizeof(assoc_arg_t));
                 if(aa){aa->cfd=cfd;pthread_t at;pthread_create(&at,NULL,udp_associate_thread,aa);pthread_detach(at);}
                 else close(cfd);
             } else {
-
-
-
-
-
-
+                int socks_hdr=4;
+                if(req[3]==0x01) socks_hdr=10;
+                else if(req[3]==0x03&&rn>4) socks_hdr=5+(int)req[4]+2;
+                else if(req[3]==0x04) socks_hdr=22;
                 uint8_t conn_reply[10]={0x05,0x00,0x00,0x01,127,0,0,1,0x00,0x00};
                 send(cfd,conn_reply,sizeof(conn_reply),MSG_NOSIGNAL);
                 uint32_t sid;do{sid=(uint32_t)atomic_fetch_add(&g_next_sid,1)&0x7FFFFFFF;}while(sid==0||ht_get(sid));
-                q_push(cfd,tfd_tcp,sid);
+                int payload_off=socks_hdr;
+                int payload_len=(int)rn-payload_off;
+                if(payload_len>0&&payload_off>0&&payload_off<=(int)rn){
+                    stream_t *s=ht_put(sid,cfd);
+                    if(!s){close(cfd);continue;}
+                    atomic_store(&g_last_traffic,(long)time(NULL));
+                    if(tun_tcp_send(T_OPEN,sid,req+payload_off,(uint16_t)payload_len)<0){tunnel_reset("T_OPEN pipeline failed");ht_del(sid);continue;}
+                    q_push(cfd,tfd_tcp,sid);
+                } else {
+                    q_push(cfd,tfd_tcp,sid);
+                }
             }
-        }
         tunnel_reset(NULL);if(g_running){push_log("E","tunnel dropped, reconnecting");sleep(1);}
     }
     pthread_mutex_lock(&g_q_mu);pthread_cond_broadcast(&g_q_cv);pthread_mutex_unlock(&g_q_mu);
