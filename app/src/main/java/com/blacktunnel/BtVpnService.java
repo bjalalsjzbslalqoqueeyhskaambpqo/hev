@@ -369,7 +369,6 @@ public class BtVpnService extends VpnService {
                 "  address: 127.0.0.1\n" +
                 "  port: " + BtProxy.SOCKS5_PORT + "\n" +
                 "  udp: 'udp'\n" +
-                "  udp-address: '127.0.0.1'\n" +
                 "  pipeline: " + pipeline + "\n" +
                 "mapdns:\n" +
                 "  address: 100.64.0.2\n" +
