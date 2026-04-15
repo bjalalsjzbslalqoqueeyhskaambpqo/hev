@@ -140,7 +140,7 @@ public class BtVpnService extends VpnService {
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : null;
         if (ACTION_STOP.equals(action)) {
-            executor.execute(this::stopAll);
+            executor.execute(() -> stopAll(true));
             return START_NOT_STICKY;
         }
         if (ACTION_APPLY.equals(action)) {
@@ -168,6 +168,7 @@ public class BtVpnService extends VpnService {
         proxyStarted.set(false);
 
         String internalId = BtProxy.getOrCreateInternalId(this);
+        BtProxy.applyStoredGamingMode(this);
         if (BtProxy.start(this, internalId) < 0) {
             SystemClock.sleep(250);
             if (BtProxy.start(this, internalId) < 0) {
@@ -314,7 +315,7 @@ public class BtVpnService extends VpnService {
         try { BtProxy.stop(); } catch (Throwable ignored) {}
     }
 
-    private void stopAll() {
+    private void stopAll(boolean stopProxy) {
         if (!stopping.compareAndSet(false, true)) return;
         try {
             running.set(false);
@@ -354,9 +355,11 @@ public class BtVpnService extends VpnService {
         boolean gamingMode = BtProxy.isGamingMode(this);
 
         int mtu = gamingMode ? 1280 : 1420;
-        int tcpBufferSize = gamingMode ? 65536 : 16384;
+        int tcpBufferSize = gamingMode ? 65536 : 32768;
         int taskStackSize = 20480 + tcpBufferSize;
         int maxSessionCount = gamingMode ? 1024 : 512;
+        int tcpRwTimeout = gamingMode ? 60000 : 180000;
+        int udpRwTimeout = gamingMode ? 30000 : 60000;
         String socksUdp = "tcp";
         boolean pipeline = true;
 
@@ -381,8 +384,8 @@ public class BtVpnService extends VpnService {
                 "  tcp-buffer-size: " + tcpBufferSize + "\n" +
                 "  udp-copy-buffer-nums: 10\n" +
                 "  connect-timeout: 5000\n" +
-                "  tcp-read-write-timeout: 60000\n" +
-                "  udp-read-write-timeout: 30000\n" +
+                "  tcp-read-write-timeout: " + tcpRwTimeout + "\n" +
+                "  udp-read-write-timeout: " + udpRwTimeout + "\n" +
                 "  max-session-count: " + maxSessionCount + "\n" +
                 "  log-level: warn\n" +
                 "  limit-nofile: 65535\n";
@@ -426,7 +429,7 @@ public class BtVpnService extends VpnService {
 
     @Override
     public void onDestroy() {
-        stopAll();
+        stopAll(true);
         executor.shutdown();
         super.onDestroy();
     }
@@ -530,4 +533,5 @@ final class BtProxy {
     private static native String nativeDrainLogs();
     public static native void nativeSetGamingMode(boolean enabled);
     public static native void nativeApplyMode(boolean enabled);
+    public static native int nativeGetGamingMode();
 }
