@@ -93,14 +93,19 @@ static void ht_clear(void) {
     }
 }
 
-typedef struct task_s { struct task_s *next; int cfd, tfd; uint32_t sid; int open_sent; } task_t;
+typedef struct task_s { struct task_s *next; int cfd, tfd; uint32_t sid; int open_sent; uint8_t connect_req[512]; int connect_req_len; } task_t;
 static pthread_mutex_t g_q_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_q_cv = PTHREAD_COND_INITIALIZER;
 static task_t *g_q_head = NULL, *g_q_tail = NULL;
 
-static void q_push(int cfd, int tfd, uint32_t sid, int open_sent) {
+static void q_push(int cfd, int tfd, uint32_t sid, int open_sent, const uint8_t *creq, int creq_len) {
     task_t *t = malloc(sizeof(task_t)); if (!t) { close(cfd); return; }
     t->next = NULL; t->cfd = cfd; t->tfd = tfd; t->sid = sid; t->open_sent = open_sent;
+    t->connect_req_len = 0;
+    if (!open_sent && creq && creq_len > 0 && creq_len <= (int)sizeof(t->connect_req)) {
+        memcpy(t->connect_req, creq, creq_len);
+        t->connect_req_len = creq_len;
+    }
     pthread_mutex_lock(&g_q_mu);
     if (g_q_tail) g_q_tail->next = t; else g_q_head = t;
     g_q_tail = t; pthread_cond_signal(&g_q_cv); pthread_mutex_unlock(&g_q_mu);
@@ -370,18 +375,22 @@ static void *udp_associate_thread(void *arg) {
     close(cfd); return NULL;
 }
 
-static void handle_tcp_conn(int cfd, int tfd, uint32_t sid, int open_already_sent) {
+static void handle_tcp_conn(int cfd, int tfd, uint32_t sid, int open_already_sent, const uint8_t *creq, int creq_len) {
     (void)tfd;
     if (!open_already_sent) {
         stream_t *s = ht_put(sid, cfd);
         if (!s) { close(cfd); return; }
-    }
-    uint8_t buf[MAX_PAYLOAD];
-    if (!open_already_sent) {
-        ssize_t n = recv(cfd, buf, sizeof(buf), 0);
+        uint8_t frame[MAX_PAYLOAD];
+        int frame_len = 0;
+        if (creq && creq_len > 0 && creq_len <= (int)sizeof(frame)) {
+            memcpy(frame, creq, creq_len);
+            frame_len = creq_len;
+        }
+        ssize_t n = recv(cfd, frame + frame_len, sizeof(frame) - frame_len, 0);
         if (n <= 0) { ht_del(sid); return; }
+        frame_len += (int)n;
         atomic_store(&g_last_traffic, (long)time(NULL));
-        if (tun_tcp_send(T_OPEN, sid, buf, (uint16_t)n) < 0) { tunnel_reset("T_OPEN failed"); ht_del(sid); return; }
+        if (tun_tcp_send(T_OPEN, sid, frame, (uint16_t)frame_len) < 0) { tunnel_reset("T_OPEN failed"); ht_del(sid); return; }
     }
     while (g_running) {
         ssize_t n = recv(cfd, buf, sizeof(buf), 0);
@@ -398,7 +407,7 @@ static void *worker(void *arg) {
     (void)arg;
     while (g_running) {
         task_t *t = q_pop(); if (!t) continue;
-        handle_tcp_conn(t->cfd, t->tfd, t->sid, t->open_sent);
+        handle_tcp_conn(t->cfd, t->tfd, t->sid, t->open_sent, t->connect_req, t->connect_req_len);
         free(t);
     }
     return NULL;
@@ -634,7 +643,7 @@ static void *main_thread(void *arg) {
                     }
                     open_sent = 1;
                 }
-                q_push(cfd, tfd_tcp, sid, open_sent);
+                q_push(cfd, tfd_tcp, sid, open_sent, open_sent ? NULL : req, open_sent ? 0 : (int)rn);
             }
         }
         tunnel_reset(NULL);
