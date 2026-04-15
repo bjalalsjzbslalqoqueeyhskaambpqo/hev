@@ -33,13 +33,12 @@
 #define FRAME_HDR               7
 #define MAX_PAYLOAD             16384
 #define RELAY_BACKLOG           512
-#define KEEPALIVE_SEC           20
-#define DAILY_PONG_TIMEOUT_SEC  180
-#define GAMING_PONG_TIMEOUT_SEC 180
+#define PONG_TIMEOUT_SEC        180
 #define RECONNECT_DELAY_MIN     2
 #define RECONNECT_DELAY_MAX     30
 #define CONNECT_TIMEOUT_SEC     10
 #define HANDSHAKE_TIMEOUT_SEC   12
+#define CONN_WORKERS            64
 
 #define HT_SIZE  4096
 #define HT_MASK  (HT_SIZE - 1)
@@ -52,28 +51,7 @@
 #define GLOBAL_MODE_DAILY   0
 #define GLOBAL_MODE_GAMING  1
 
-#define DAILY_ACCEPT_POLL_MS    2000
-#define GAMING_ACCEPT_POLL_MS   500
-
-#define PING_ACTIVE_SEC         10
-#define PING_IDLE_SEC           600
-#define IDLE_TRAFFIC_SEC        10
-#define DAILY_CONN_WORKERS      32
-#define GAMING_CONN_WORKERS     64
-
 static atomic_int g_global_mode = GLOBAL_MODE_DAILY;
-
-static int current_pong_timeout_sec(void) {
-    return atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
-            ? GAMING_PONG_TIMEOUT_SEC
-            : DAILY_PONG_TIMEOUT_SEC;
-}
-
-static int current_accept_poll_ms(void) {
-    return atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
-            ? GAMING_ACCEPT_POLL_MS
-            : DAILY_ACCEPT_POLL_MS;
-}
 
 typedef struct stream_s {
     struct stream_s *next;
@@ -172,8 +150,6 @@ static pthread_cond_t  g_start_cv  = PTHREAD_COND_INITIALIZER;
 static int             g_start_st  = 0;
 static atomic_long     g_last_pong = 0;
 static atomic_int      g_tunnel_epoch = 0;
-static atomic_int      g_stream_count = 0;
-static atomic_long     g_last_traffic = 0;
 
 typedef struct conn_task_s {
     struct conn_task_s *next;
@@ -182,11 +158,11 @@ typedef struct conn_task_s {
     uint32_t sid;
 } conn_task_t;
 
-static pthread_mutex_t g_connq_mu = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t  g_connq_cv = PTHREAD_COND_INITIALIZER;
+static pthread_mutex_t g_connq_mu   = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_connq_cv   = PTHREAD_COND_INITIALIZER;
 static conn_task_t    *g_connq_head = NULL;
 static conn_task_t    *g_connq_tail = NULL;
-static pthread_t       g_conn_workers[GAMING_CONN_WORKERS];
+static pthread_t       g_conn_workers[CONN_WORKERS];
 static int             g_conn_workers_started = 0;
 
 JNIEXPORT void JNICALL
@@ -243,26 +219,37 @@ static void request_tunnel_reset(const char *reason) {
     if (rfd >= 0) close(rfd);
     if (tfd >= 0) close(tfd);
     connq_clear();
-    atomic_store(&g_stream_count, 0);
     ht_clear();
-}
-
-static void sock_tune_daily(int fd) {
-    int v;
-    v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
-    v = 0;      setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &v, sizeof(v));
-    v = 65536;  setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,   &v, sizeof(v));
-    v = 65536;  setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,   &v, sizeof(v));
-    int flags = fcntl(fd, F_GETFD, 0);
-    if (flags >= 0) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
 
 static void sock_tune_gaming(int fd) {
     int v;
-    v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
-    v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &v, sizeof(v));
-    v = 131072; setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,   &v, sizeof(v));
-    v = 131072; setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,   &v, sizeof(v));
+    v = 1;           setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
+    v = 1;           setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &v, sizeof(v));
+    v = 0x10;        setsockopt(fd, IPPROTO_IP,  IP_TOS,       &v, sizeof(v));
+    v = 65536;       setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,    &v, sizeof(v));
+    v = 65536;       setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,    &v, sizeof(v));
+    int one=1, idle=5, intvl=2, cnt=3;
+    setsockopt(fd, SOL_SOCKET,  SO_KEEPALIVE,  &one,   sizeof(one));
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,  &idle,  sizeof(idle));
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,   &cnt,   sizeof(cnt));
+    int flags = fcntl(fd, F_GETFD, 0);
+    if (flags >= 0) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+}
+
+static void sock_tune_daily(int fd) {
+    int v;
+    v = 0;           setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
+    v = 0;           setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &v, sizeof(v));
+    v = 0;           setsockopt(fd, IPPROTO_IP,  IP_TOS,       &v, sizeof(v));
+    v = 262144;      setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,    &v, sizeof(v));
+    v = 262144;      setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,    &v, sizeof(v));
+    int one=1, idle=20, intvl=5, cnt=4;
+    setsockopt(fd, SOL_SOCKET,  SO_KEEPALIVE,  &one,   sizeof(one));
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,  &idle,  sizeof(idle));
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,   &cnt,   sizeof(cnt));
     int flags = fcntl(fd, F_GETFD, 0);
     if (flags >= 0) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
@@ -272,14 +259,6 @@ static void sock_tune(int fd) {
         sock_tune_gaming(fd);
     else
         sock_tune_daily(fd);
-}
-
-static void sock_keepalive(int fd) {
-    int one=1, idle=20, intvl=5, cnt=4;
-    setsockopt(fd, SOL_SOCKET,  SO_KEEPALIVE,  &one,   sizeof(one));
-    setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,  &idle,  sizeof(idle));
-    setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
-    setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,   &cnt,   sizeof(cnt));
 }
 
 static int set_nonblocking(int fd, int nb) {
@@ -435,7 +414,7 @@ static int open_tunnel(void) {
     if (inet_pton(AF_INET6, PROXY_HOST_IPV6, &a6.sin6_addr) == 1) {
         fd = socket(AF_INET6, SOCK_STREAM, 0);
         if (fd >= 0) {
-            jni_protect(fd); sock_tune(fd); sock_keepalive(fd);
+            jni_protect(fd); sock_tune(fd);
             if (connect_with_timeout(fd, (struct sockaddr*)&a6, sizeof(a6), CONNECT_TIMEOUT_SEC) != 0)
                 { close(fd); fd = -1; }
         }
@@ -449,7 +428,7 @@ static int open_tunnel(void) {
             for (struct addrinfo *r = res; r && fd < 0; r = r->ai_next) {
                 int s = socket(r->ai_family, SOCK_STREAM, 0);
                 if (s < 0) continue;
-                jni_protect(s); sock_tune(s); sock_keepalive(s);
+                jni_protect(s); sock_tune(s);
                 if (connect_with_timeout(s, r->ai_addr, r->ai_addrlen, CONNECT_TIMEOUT_SEC) == 0)
                     fd = s;
                 else close(s);
@@ -469,12 +448,10 @@ static int open_tunnel(void) {
     if (recv_until_eoh(fd, h1, sizeof(h1), HANDSHAKE_TIMEOUT_SEC) < 0) { close(fd); return -1; }
 
     char req2[1024], h2[4096];
-    struct timespec t0 = {0}, t1 = {0};
     int r2 = snprintf(req2, sizeof(req2),
         "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
         "Connection: Upgrade\r\nAction: tunnel\r\nX-Internal-ID: %s\r\n\r\n",
         TUNNEL_HOST, g_internal_id[0] ? g_internal_id : "unknown");
-    clock_gettime(CLOCK_MONOTONIC, &t0);
     send(fd, req2, r2, MSG_NOSIGNAL);
     int h2_len = recv_until_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
 
@@ -521,44 +498,31 @@ static int open_tunnel(void) {
     }
 
     char user_name[128] = {0};
-    char user_days[32] = {0};
+    char user_days[32]  = {0};
     if (extract_header_value(h2, "X-User-Name", user_name, sizeof(user_name)))
         push_log("I", "user_name=%s", user_name);
     if (extract_header_value(h2, "X-User-Days", user_days, sizeof(user_days)))
         push_log("I", "user_days=%s", user_days);
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-    long ping_ms = (t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_nsec - t0.tv_nsec) / 1000000L;
-    if (atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING) ping_ms -= 20;
-    if (ping_ms < 0) ping_ms = 0;
-    push_log("I", "ping_ms=%ld", ping_ms);
 
+    push_log("I", "tunnel ok mode=%s",
+             atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING ? "gaming" : "daily");
     return fd;
-}
-
-static int stream_send(int tfd, uint32_t sid, const uint8_t *buf, int n) {
-    return tun_send(tfd, T_DATA, sid, buf, (uint16_t)n);
 }
 
 static void conn_handle(int cfd, int tfd, uint32_t sid) {
     stream_t *s = ht_put(sid, cfd);
     if (!s) { close(cfd); return; }
 
-    atomic_fetch_add(&g_stream_count, 1);
-
     uint8_t buf[MAX_PAYLOAD];
 
     ssize_t first = recv(cfd, buf, sizeof(buf), 0);
     if (first <= 0) {
-        atomic_fetch_sub(&g_stream_count, 1);
         ht_del(sid);
         return;
     }
 
-    atomic_store(&g_last_traffic, (long)time(NULL));
-
     if (tun_send(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0) {
         request_tunnel_reset("tun_send T_OPEN failed");
-        atomic_fetch_sub(&g_stream_count, 1);
         ht_del(sid);
         return;
     }
@@ -569,29 +533,21 @@ static void conn_handle(int cfd, int tfd, uint32_t sid) {
         if (n == 0) break;
 
         atomic_store(&s->last_active, (long)time(NULL));
-        atomic_store(&g_last_traffic, (long)time(NULL));
 
-        int ok = stream_send(tfd, sid, buf, (int)n);
-
-        if (ok < 0) {
+        if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
             request_tunnel_reset("tun_send T_DATA failed");
             break;
         }
     }
 
     tun_send(tfd, T_CLOSE, sid, NULL, 0);
-    atomic_fetch_sub(&g_stream_count, 1);
     ht_del(sid);
 }
 
 static void connq_push(int cfd, int tfd, uint32_t sid) {
     conn_task_t *t = malloc(sizeof(conn_task_t));
     if (!t) { close(cfd); return; }
-    t->next = NULL;
-    t->cfd = cfd;
-    t->tfd = tfd;
-    t->sid = sid;
-
+    t->next = NULL; t->cfd = cfd; t->tfd = tfd; t->sid = sid;
     pthread_mutex_lock(&g_connq_mu);
     if (g_connq_tail) g_connq_tail->next = t;
     else g_connq_head = t;
@@ -604,7 +560,6 @@ static conn_task_t *connq_pop(void) {
     pthread_mutex_lock(&g_connq_mu);
     while (g_running && g_connq_head == NULL)
         pthread_cond_wait(&g_connq_cv, &g_connq_mu);
-
     conn_task_t *t = g_connq_head;
     if (t) {
         g_connq_head = t->next;
@@ -620,11 +575,9 @@ static void connq_clear(void) {
     while (t) {
         conn_task_t *nx = t->next;
         if (t->cfd >= 0) close(t->cfd);
-        free(t);
-        t = nx;
+        free(t); t = nx;
     }
-    g_connq_head = NULL;
-    g_connq_tail = NULL;
+    g_connq_head = NULL; g_connq_tail = NULL;
     pthread_mutex_unlock(&g_connq_mu);
 }
 
@@ -639,15 +592,9 @@ static void *conn_worker(void *arg) {
     return NULL;
 }
 
-static int current_conn_workers(void) {
-    return atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING
-            ? GAMING_CONN_WORKERS : DAILY_CONN_WORKERS;
-}
-
 static void start_conn_workers(void) {
     if (g_conn_workers_started > 0) return;
-    int n = current_conn_workers();
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < CONN_WORKERS; i++) {
         if (pthread_create(&g_conn_workers[i], NULL, conn_worker, NULL) != 0) break;
         g_conn_workers_started++;
     }
@@ -666,7 +613,7 @@ typedef struct { int tfd; int epoch; } thr_args_t;
 
 static void *tunnel_reader(void *arg) {
     thr_args_t *ta = (thr_args_t*)arg;
-    int tfd = ta->tfd;
+    int tfd   = ta->tfd;
     int epoch = ta->epoch;
     free(ta);
 
@@ -677,16 +624,13 @@ static void *tunnel_reader(void *arg) {
         if (!g_running || atomic_load(&g_tunnel_epoch) != epoch) break;
         if (rc == -2) {
             long last = atomic_load(&g_last_pong);
-            if (last > 0 && (long)time(NULL) - last > current_pong_timeout_sec()) {
+            if (last > 0 && (long)time(NULL) - last > PONG_TIMEOUT_SEC) {
                 request_tunnel_reset("pong timeout");
                 break;
             }
             continue;
         }
-        if (rc < 0) {
-            request_tunnel_reset("tunnel header read failed");
-            break;
-        }
+        if (rc < 0) { request_tunnel_reset("tunnel header read failed"); break; }
 
         uint8_t  ft  = hdr[0];
         uint32_t sid = ((uint32_t)hdr[1] << 24) | ((uint32_t)hdr[2] << 16) |
@@ -704,7 +648,6 @@ static void *tunnel_reader(void *arg) {
             stream_t *s = ht_get(sid);
             if (!s || len == 0) break;
             atomic_store(&s->last_active, (long)time(NULL));
-            atomic_store(&g_last_traffic, (long)time(NULL));
             ssize_t off = 0;
             int stream_ok = 1;
             while (off < len) {
@@ -738,32 +681,29 @@ static void *tunnel_reader(void *arg) {
 
 static void *keepalive_thread(void *arg) {
     thr_args_t *ta = (thr_args_t*)arg;
-    int tfd = ta->tfd;
+    int tfd   = ta->tfd;
     int epoch = ta->epoch;
     free(ta);
 
     atomic_store(&g_last_pong, (long)time(NULL));
-    atomic_store(&g_last_traffic, (long)time(NULL));
 
-    long last_ping_report = 0;
+    int ping_interval = atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING ? 5 : 20;
+    long last_ping = (long)time(NULL);
 
     while (g_running && atomic_load(&g_tunnel_epoch) == epoch) {
-        for (int i = 0; i < KEEPALIVE_SEC && g_running && atomic_load(&g_tunnel_epoch) == epoch; i++)
-            sleep(1);
+        sleep(1);
         if (!g_running || atomic_load(&g_tunnel_epoch) != epoch) break;
 
+        long now = (long)time(NULL);
         long last_pong = atomic_load(&g_last_pong);
-        if (last_pong > 0 && (long)time(NULL) - last_pong > current_pong_timeout_sec()) {
+
+        if (last_pong > 0 && now - last_pong > PONG_TIMEOUT_SEC) {
             request_tunnel_reset("pong timeout in keepalive");
             break;
         }
 
-        long now = (long)time(NULL);
-        long last_traffic = atomic_load(&g_last_traffic);
-        int  is_idle      = (now - last_traffic) > IDLE_TRAFFIC_SEC;
-        int  ping_interval = is_idle ? PING_IDLE_SEC : PING_ACTIVE_SEC;
-
-        if ((now - last_ping_report) < ping_interval) continue;
+        if (now - last_ping < ping_interval) continue;
+        last_ping = now;
 
         struct timespec tp0, tp1;
         clock_gettime(CLOCK_MONOTONIC, &tp0);
@@ -784,12 +724,9 @@ static void *keepalive_thread(void *arg) {
         clock_gettime(CLOCK_MONOTONIC, &tp1);
         long rtt = (tp1.tv_sec - tp0.tv_sec) * 1000L + (tp1.tv_nsec - tp0.tv_nsec) / 1000000L;
         if (rtt > 0) push_log("I", "ping_ms=%ld", rtt);
-
-        last_ping_report = now;
     }
     return NULL;
 }
-
 
 static int g_reconnect_delay = RECONNECT_DELAY_MIN;
 
@@ -860,7 +797,7 @@ static void *main_thread(void *arg) {
 
         while (g_running) {
             struct pollfd pfd = { rfd, POLLIN, 0 };
-            int pr = poll(&pfd, 1, current_accept_poll_ms());
+            int pr = poll(&pfd, 1, 1000);
             if (!g_running) break;
             if (pr < 0) {
                 if (errno == EINTR) continue;
@@ -919,7 +856,6 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     g_running = 1; g_started = 0;
     g_reconnect_delay = RECONNECT_DELAY_MIN;
     atomic_store(&g_next_sid, 1);
-    atomic_store(&g_last_traffic, (long)time(NULL));
     pthread_mutex_unlock(&g_state_mu);
 
     pthread_mutex_lock(&g_start_mu); g_start_st = 0;
@@ -984,9 +920,8 @@ Java_com_blacktunnel_BtProxy_nativeApplyMode(JNIEnv *env, jclass clazz, jboolean
     int mode = enabled ? GLOBAL_MODE_GAMING : GLOBAL_MODE_DAILY;
     atomic_store(&g_global_mode, mode);
     connq_clear();
-    atomic_store(&g_stream_count, 0);
     ht_clear();
-    push_log("I", "apply_mode=%s (queue/session state reset)", enabled ? "gaming" : "daily");
+    push_log("I", "apply_mode=%s", enabled ? "gaming" : "daily");
 }
 
 JNIEXPORT jint JNICALL
