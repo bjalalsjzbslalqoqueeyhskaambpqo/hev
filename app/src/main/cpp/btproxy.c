@@ -23,7 +23,6 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-/* ── Framing TCP: [1 tipo][4 sid][2 len][payload] ────────────────────────── */
 #define T_OPEN  0x01
 #define T_DATA  0x02
 #define T_CLOSE 0x03
@@ -32,17 +31,14 @@
 #define FRAME_HDR   7
 #define MAX_PAYLOAD 16384
 
-/* ── Servidor remoto ─────────────────────────────────────────────────────── */
 #define PROXY_HOST_IPV6    "2606:4700::6812:16b7"
 #define PROXY_HOST         "emailmarketing.personal.com.ar"
 #define PROXY_PORT         80
 #define TUNNEL_HOST        "2.brawlpass.com.ar"
 
-/* ── Puertos loopback ────────────────────────────────────────────────────── */
-#define SOCKS5_PORT      10809   /* HEV conecta aquí (TCP para CONNECT y UDP ASSOCIATE) */
-#define UDP_RELAY_PORT   10810   /* HEV manda datagramas UDP aquí tras el ASSOCIATE */
+#define SOCKS5_PORT      10809
+#define UDP_RELAY_PORT   10810
 
-/* ── Ajustes ─────────────────────────────────────────────────────────────── */
 #define RELAY_BACKLOG        512
 #define MAX_WORKERS          64
 #define ACCEPT_POLL_MS       100
@@ -55,7 +51,6 @@
 #define CONNECT_TIMEOUT_SEC  10
 #define HANDSHAKE_TIMEOUT_SEC 12
 
-/* ── Hash table de streams TCP ───────────────────────────────────────────── */
 #define HT_SIZE 4096
 #define HT_MASK (HT_SIZE-1)
 
@@ -69,7 +64,6 @@ static stream_t *ht_put(uint32_t sid,int fd){stream_t *n=malloc(sizeof(stream_t)
 static void ht_del(uint32_t sid){int s=sid&HT_MASK;pthread_mutex_lock(&g_ht_mu[s]);stream_t **pp=&g_ht[s];while(*pp){if((*pp)->sid==sid){stream_t *n=*pp;*pp=n->next;pthread_mutex_unlock(&g_ht_mu[s]);if(n->fd>=0)close(n->fd);free(n);return;}pp=&(*pp)->next;}pthread_mutex_unlock(&g_ht_mu[s]);}
 static void ht_clear(void){for(int i=0;i<HT_SIZE;i++){pthread_mutex_lock(&g_ht_mu[i]);stream_t *n=g_ht[i];while(n){stream_t *nx=n->next;if(n->fd>=0)close(n->fd);free(n);n=nx;}g_ht[i]=NULL;pthread_mutex_unlock(&g_ht_mu[i]);}}
 
-/* ── Cola de workers TCP ─────────────────────────────────────────────────── */
 typedef struct task_s{struct task_s *next;int cfd,tfd;uint32_t sid;}task_t;
 static pthread_mutex_t g_q_mu=PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_q_cv=PTHREAD_COND_INITIALIZER;
@@ -79,7 +73,6 @@ static void q_push(int cfd,int tfd,uint32_t sid){task_t *t=malloc(sizeof(task_t)
 static task_t *q_pop(void){pthread_mutex_lock(&g_q_mu);while(!g_q_head)pthread_cond_wait(&g_q_cv,&g_q_mu);task_t *t=g_q_head;g_q_head=t->next;if(!g_q_head)g_q_tail=NULL;pthread_mutex_unlock(&g_q_mu);return t;}
 static void q_clear(void){pthread_mutex_lock(&g_q_mu);task_t *t=g_q_head;while(t){task_t *nx=t->next;if(t->cfd>=0)close(t->cfd);free(t);t=nx;}g_q_head=g_q_tail=NULL;pthread_mutex_unlock(&g_q_mu);}
 
-/* ── Estado global ───────────────────────────────────────────────────────── */
 static volatile int    g_running  = 0;
 static volatile int    g_started  = 0;
 static int             g_relay_fd = -1;
@@ -93,7 +86,6 @@ static atomic_long     g_last_traffic = 0;
 static char            g_iid[160] = {0};
 static int             g_reconnect_delay = RECONNECT_DELAY_MIN;
 
-/* Puerto de HEV para devolver datagramas UDP — se aprende del primer recvfrom */
 static struct sockaddr_in g_hev_udp_addr;
 static pthread_mutex_t    g_hev_udp_mu = PTHREAD_MUTEX_INITIALIZER;
 static int                g_hev_udp_known = 0;
@@ -115,7 +107,6 @@ static size_t g_log_len = 0;
 static JavaVM *g_jvm    = NULL;
 static jobject g_vpn_svc = NULL;
 
-/* ── Log ─────────────────────────────────────────────────────────────────── */
 static void push_log(const char *level,const char *fmt,...){
     va_list ap;va_start(ap,fmt);char msg[512];vsnprintf(msg,sizeof(msg),fmt,ap);va_end(ap);
     if(level[0]=='E')LOGE("%s",msg);else LOGI("%s",msg);
@@ -125,7 +116,6 @@ static void push_log(const char *level,const char *fmt,...){
     pthread_mutex_unlock(&g_log_mu);
 }
 
-/* ── JNI ─────────────────────────────────────────────────────────────────── */
 static void jni_call(const char *method,const char *sig,...){
     JavaVM *jvm;jobject svc;pthread_mutex_lock(&g_state_mu);jvm=g_jvm;svc=g_vpn_svc;pthread_mutex_unlock(&g_state_mu);
     if(!jvm||!svc)return;
@@ -138,7 +128,6 @@ static void jni_call(const char *method,const char *sig,...){
 static void jni_protect(int fd){jni_call("protect","(I)Z",fd);}
 static void jni_notify_reconnected(void){jni_call("onTunnelReconnected","()V");}
 
-/* ── Escritura al túnel TCP (framing con sid) ────────────────────────────── */
 static int tun_tcp_send(uint8_t type,uint32_t sid,const uint8_t *data,uint16_t dlen){
     uint8_t hdr[FRAME_HDR]={type,(sid>>24)&0xFF,(sid>>16)&0xFF,(sid>>8)&0xFF,sid&0xFF,(dlen>>8)&0xFF,dlen&0xFF};
     struct iovec iov[2]={{hdr,FRAME_HDR},{(void*)data,dlen}};int niov=dlen>0?2:1;
@@ -154,22 +143,21 @@ static int tun_tcp_send(uint8_t type,uint32_t sid,const uint8_t *data,uint16_t d
     pthread_mutex_unlock(&g_tun_tcp_wmu);return 0;
 }
 
-/* ── Escritura al túnel UDP (datagrama directo, sin framing) ─────────────── */
 static int tun_udp_send(const uint8_t *data,int dlen){
+    uint8_t lhdr[2]={(uint8_t)((dlen>>8)&0xFF),(uint8_t)(dlen&0xFF)};
+    struct iovec iov[2]={{lhdr,2},{(void*)data,(size_t)dlen}};
     pthread_mutex_lock(&g_tun_udp_wmu);
-    ssize_t n=send(g_tun_udp,data,dlen,MSG_NOSIGNAL);
+    ssize_t n=writev(g_tun_udp,iov,2);
     pthread_mutex_unlock(&g_tun_udp_wmu);
-    return(n==(ssize_t)dlen)?0:-1;
+    return(n==(ssize_t)(2+dlen))?0:-1;
 }
 
-/* ── Lectura completa con timeout ────────────────────────────────────────── */
 static int tun_recv(int fd,uint8_t *buf,int len,int timeout_ms){
     int off=0;
     while(off<len){struct pollfd p={fd,POLLIN,0};int pr=poll(&p,1,timeout_ms);if(pr<0){if(errno==EINTR)continue;return -1;}if(pr==0)return -2;ssize_t n=recv(fd,buf+off,len-off,0);if(n>0){off+=(int)n;}else if(n==0)return -1;else if(errno==EINTR||errno==EAGAIN)continue;else return -1;}
     return 0;
 }
 
-/* ── Reset ───────────────────────────────────────────────────────────────── */
 static void tunnel_reset(const char *reason){
     pthread_mutex_lock(&g_state_mu);
     if(!g_running){pthread_mutex_unlock(&g_state_mu);return;}
@@ -181,7 +169,6 @@ static void tunnel_reset(const char *reason){
     pthread_mutex_lock(&g_hev_udp_mu);g_hev_udp_known=0;pthread_mutex_unlock(&g_hev_udp_mu);
 }
 
-/* ── Handshake HTTP ──────────────────────────────────────────────────────── */
 static int recv_headers(int fd,char *buf,int cap,int timeout_sec){
     struct timeval tv={timeout_sec,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&tv,sizeof(tv));
     int used=0;while(used<cap-1){ssize_t n=recv(fd,buf+used,cap-1-used,0);if(n<=0)break;used+=(int)n;buf[used]='\0';if(strstr(buf,"\r\n\r\n")){tv.tv_sec=0;setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&tv,sizeof(tv));return used;}}
@@ -206,25 +193,21 @@ static int open_tunnel(const char *action){
     push_log("I","[%s] ping_ms=%ld",action,ping_ms);return fd;
 }
 
-/* ── SOCKS5 UDP ASSOCIATE ────────────────────────────────────────────────── */
-/* El accept loop lee los primeros bytes para detectar el command.            */
-/* SOCKS5: VER=0x05, CMD=0x01 CONNECT / CMD=0x03 UDP ASSOCIATE               */
-
 static void handle_udp_associate(int cfd){
-    /* Ya tenemos el greeting leído, mandamos no-auth */
+
     uint8_t auth[]={0x05,0x00};
     send(cfd,auth,2,MSG_NOSIGNAL);
 
-    /* Leer el request completo */
+
     uint8_t req[32]={0};
     ssize_t n=recv(cfd,req,sizeof(req),0);
     if(n<3||req[0]!=0x05||req[1]!=0x03){close(cfd);return;}
 
-    /* Responder: 127.0.0.1:UDP_RELAY_PORT */
+
     uint8_t reply[10]={0x05,0x00,0x00,0x01,127,0,0,1,(UDP_RELAY_PORT>>8)&0xFF,UDP_RELAY_PORT&0xFF};
     send(cfd,reply,sizeof(reply),MSG_NOSIGNAL);
 
-    /* Mantener el TCP vivo — SOCKS5 requiere que esta conexión dure mientras dure la sesión UDP */
+
     while(g_running){
         struct pollfd p={cfd,POLLIN,0};
         if(poll(&p,1,5000)>0)break;
@@ -239,7 +222,6 @@ static void *udp_associate_thread(void *arg){
     return NULL;
 }
 
-/* ── Worker TCP ──────────────────────────────────────────────────────────── */
 static void handle_tcp_conn(int cfd,int tfd,uint32_t sid){
     stream_t *s=ht_put(sid,cfd);if(!s){close(cfd);return;}
     uint8_t buf[MAX_PAYLOAD];ssize_t n=recv(cfd,buf,sizeof(buf),0);
@@ -252,7 +234,6 @@ static void handle_tcp_conn(int cfd,int tfd,uint32_t sid){
 
 static void *worker(void *arg){(void)arg;while(g_running){task_t *t=q_pop();if(!t)continue;handle_tcp_conn(t->cfd,t->tfd,t->sid);free(t);}return NULL;}
 
-/* ── Reader túnel TCP ────────────────────────────────────────────────────── */
 typedef struct{int tfd;int epoch;}reader_arg_t;
 static void *tcp_tunnel_reader(void *arg){
     reader_arg_t *ra=(reader_arg_t*)arg;int tfd=ra->tfd,epoch=ra->epoch;free(ra);
@@ -276,29 +257,32 @@ static void *tcp_tunnel_reader(void *arg){
     return NULL;
 }
 
-/* ── Reader túnel UDP: recibe del servidor, reenvía a HEV ───────────────── */
 typedef struct{int tfd;int epoch;}udp_srv_arg_t;
 static void *udp_server_reader(void *arg){
     udp_srv_arg_t *ra=(udp_srv_arg_t*)arg;int tfd=ra->tfd,epoch=ra->epoch;free(ra);
-    uint8_t buf[MAX_PAYLOAD];
+    uint8_t lhdr[2],payload[MAX_PAYLOAD];
     while(g_running&&atomic_load(&g_epoch)==epoch){
-        struct pollfd p={tfd,POLLIN,0};int pr=poll(&p,1,5000);
+
+        int rc=tun_recv(tfd,lhdr,2,5000);
         if(!g_running||atomic_load(&g_epoch)!=epoch)break;
-        if(pr<=0)continue;
-        ssize_t n=recv(tfd,buf,sizeof(buf),0);
-        if(n<=0)break;
-        /* Reenviar a HEV — solo si ya conocemos su dirección UDP */
+        if(rc==-2)continue;
+        if(rc<0)break;
+        uint16_t dlen=((uint16_t)lhdr[0]<<8)|lhdr[1];
+        if(dlen==0||dlen>MAX_PAYLOAD)break;
+
+        if(tun_recv(tfd,payload,dlen,5000)<0)break;
+
         pthread_mutex_lock(&g_hev_udp_mu);
         int known=g_hev_udp_known;
         struct sockaddr_in addr=g_hev_udp_addr;
         pthread_mutex_unlock(&g_hev_udp_mu);
         int ufd=g_udp_fd;
-        if(known&&ufd>=0)sendto(ufd,buf,n,MSG_NOSIGNAL,(struct sockaddr*)&addr,sizeof(addr));
+        if(known&&ufd>=0)
+            sendto(ufd,payload,dlen,MSG_NOSIGNAL,(struct sockaddr*)&addr,sizeof(addr));
     }
     return NULL;
 }
 
-/* ── Thread relay UDP: recibe de HEV, aprende su dirección, reenvía al srv ─ */
 static void *udp_relay_thread(void *arg){
     (void)arg;uint8_t buf[MAX_PAYLOAD];
     while(g_running){
@@ -309,17 +293,16 @@ static void *udp_relay_thread(void *arg){
         ssize_t n=recvfrom(ufd,buf,sizeof(buf),0,(struct sockaddr*)&src,&sl);
         if(n<=0)continue;
         atomic_store(&g_last_traffic,(long)time(NULL));
-        /* Aprender la dirección de HEV en el primer datagrama */
+
         pthread_mutex_lock(&g_hev_udp_mu);
         if(!g_hev_udp_known){g_hev_udp_addr=src;g_hev_udp_known=1;}
         pthread_mutex_unlock(&g_hev_udp_mu);
-        /* Reenviar al servidor por el túnel UDP */
+
         if(g_tun_udp>=0)tun_udp_send(buf,(int)n);
     }
     return NULL;
 }
 
-/* ── Keepalive ───────────────────────────────────────────────────────────── */
 static void *keepalive(void *arg){
     reader_arg_t *ra=(reader_arg_t*)arg;int tfd=ra->tfd,epoch=ra->epoch;free(ra);(void)tfd;
     long last_ping=0;
@@ -338,7 +321,6 @@ static void *keepalive(void *arg){
     return NULL;
 }
 
-/* ── Thread principal ────────────────────────────────────────────────────── */
 static void *main_thread(void *arg){
     int port=(int)(intptr_t)arg;static int first=1;
 
@@ -351,13 +333,13 @@ static void *main_thread(void *arg){
         if(tfd_tcp<0||tfd_udp<0){if(tfd_tcp>=0)close(tfd_tcp);if(tfd_udp>=0)close(tfd_udp);pthread_mutex_lock(&g_start_mu);if(g_start_st==0){g_start_st=-1;pthread_cond_broadcast(&g_start_cv);}pthread_mutex_unlock(&g_start_mu);if(!g_running)break;push_log("E","reconnect in %ds",g_reconnect_delay);for(int i=0;i<g_reconnect_delay&&g_running;i++)sleep(1);g_reconnect_delay=g_reconnect_delay<RECONNECT_DELAY_MAX?g_reconnect_delay*2:RECONNECT_DELAY_MAX;continue;}
         g_reconnect_delay=RECONNECT_DELAY_MIN;g_tun_tcp=tfd_tcp;g_tun_udp=tfd_udp;
 
-        /* Listener TCP SOCKS5 */
+
         int rfd=socket(AF_INET,SOCK_STREAM,0);if(rfd<0){close(tfd_tcp);close(tfd_udp);g_tun_tcp=-1;g_tun_udp=-1;sleep(1);continue;}
         int one=1;setsockopt(rfd,SOL_SOCKET,SO_REUSEADDR,&one,sizeof(one));int v=1;setsockopt(rfd,IPPROTO_TCP,TCP_NODELAY,&v,sizeof(v));int fl=fcntl(rfd,F_GETFD,0);if(fl>=0)fcntl(rfd,F_SETFD,fl|FD_CLOEXEC);
         struct sockaddr_in la={0};la.sin_family=AF_INET;la.sin_port=htons((uint16_t)port);la.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
         if(bind(rfd,(struct sockaddr*)&la,sizeof(la))<0||listen(rfd,RELAY_BACKLOG)<0){close(rfd);close(tfd_tcp);close(tfd_udp);g_relay_fd=-1;g_tun_tcp=-1;g_tun_udp=-1;pthread_mutex_lock(&g_start_mu);if(g_start_st==0){g_start_st=-1;pthread_cond_broadcast(&g_start_cv);}pthread_mutex_unlock(&g_start_mu);push_log("E","relay bind failed");sleep(2);continue;}
 
-        /* Listener UDP */
+
         int ufd=socket(AF_INET,SOCK_DGRAM,0);if(ufd<0){close(rfd);close(tfd_tcp);close(tfd_udp);sleep(1);continue;}
         setsockopt(ufd,SOL_SOCKET,SO_REUSEADDR,&one,sizeof(one));fl=fcntl(ufd,F_GETFD,0);if(fl>=0)fcntl(ufd,F_SETFD,fl|FD_CLOEXEC);
         struct sockaddr_in ula={0};ula.sin_family=AF_INET;ula.sin_port=htons(UDP_RELAY_PORT);ula.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
@@ -377,7 +359,7 @@ static void *main_thread(void *arg){
         if(ra_ka){pthread_create(&tka,NULL,keepalive,ra_ka);pthread_detach(tka);}else free(ra_ka);
         if(ra_ur){pthread_create(&tur,NULL,udp_server_reader,ra_ur);pthread_detach(tur);}else free(ra_ur);
 
-        /* Accept loop — distingue CONNECT de UDP ASSOCIATE leyendo el greeting */
+
         while(g_running){
             struct pollfd pfd={rfd,POLLIN,0};int pr=poll(&pfd,1,ACCEPT_POLL_MS);
             if(!g_running)break;if(pr<0){if(errno==EINTR)continue;tunnel_reset("accept poll failed");break;}
@@ -389,36 +371,43 @@ static void *main_thread(void *arg){
             int nd=1;setsockopt(cfd,IPPROTO_TCP,TCP_NODELAY,&nd,sizeof(nd));
             int cf=fcntl(cfd,F_GETFD,0);if(cf>=0)fcntl(cfd,F_SETFD,cf|FD_CLOEXEC);
 
-            /* Leer greeting SOCKS5 — con pipeline HEV puede mandar greeting+request juntos */
+
             uint8_t buf[64]={0};
             ssize_t bn=recv(cfd,buf,sizeof(buf),0);
             if(bn<2||buf[0]!=0x05){close(cfd);continue;}
 
-            /* Responder no-auth */
+
             uint8_t no_auth[]={0x05,0x00};send(cfd,no_auth,2,MSG_NOSIGNAL);
 
-            /* El request puede haber llegado junto con el greeting o en un recv separado */
+
             int nmethods=(int)buf[1];
-            int req_offset=2+nmethods; /* donde empieza el request si llegó junto */
+            int req_offset=2+nmethods;
             uint8_t req[32]={0};ssize_t rn;
             if(bn>req_offset){
-                /* El request llegó junto con el greeting (pipeline) */
+
                 rn=bn-req_offset;if(rn>(ssize_t)sizeof(req))rn=sizeof(req);
                 memcpy(req,buf+req_offset,rn);
             } else {
-                /* El request llega en un recv separado */
+
                 rn=recv(cfd,req,sizeof(req),0);
             }
             if(rn<3||req[0]!=0x05){close(cfd);continue;}
 
             if(req[1]==0x03){
-        
+
+
+
                 uint8_t reply[10]={0x05,0x00,0x00,0x01,127,0,0,1,(UDP_RELAY_PORT>>8)&0xFF,UDP_RELAY_PORT&0xFF};
                 send(cfd,reply,sizeof(reply),MSG_NOSIGNAL);
                 assoc_arg_t *aa=malloc(sizeof(assoc_arg_t));
                 if(aa){aa->cfd=cfd;pthread_t at;pthread_create(&at,NULL,udp_associate_thread,aa);pthread_detach(at);}
                 else close(cfd);
             } else {
+
+
+
+
+
 
                 uint8_t conn_reply[10]={0x05,0x00,0x00,0x01,127,0,0,1,0x00,0x00};
                 send(cfd,conn_reply,sizeof(conn_reply),MSG_NOSIGNAL);
@@ -433,7 +422,6 @@ static void *main_thread(void *arg){
     return NULL;
 }
 
-/* ── JNI exports ─────────────────────────────────────────────────────────── */
 JNIEXPORT void JNICALL Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env,jclass clazz);
 
 JNIEXPORT jint JNICALL
