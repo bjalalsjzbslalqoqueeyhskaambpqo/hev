@@ -358,7 +358,7 @@ public class BtVpnService extends VpnService {
         int tcpBufferSize = gamingMode ? 65536 : 16384;
         int taskStackSize = 20480 + tcpBufferSize;
         int maxSessionCount = gamingMode ? 1024 : 512;
-        boolean pipeline = true;
+        boolean pipeline = false;
 
         String yml =
                 "tunnel:\n" +
