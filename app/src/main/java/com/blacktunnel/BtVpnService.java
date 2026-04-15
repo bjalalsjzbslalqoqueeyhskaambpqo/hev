@@ -103,7 +103,7 @@ public class BtVpnService extends VpnService {
         boolean gaming = BtProxy.isGamingMode(this);
         Builder builder = new Builder()
                 .setSession("bt-hev")
-                .setMtu(gaming ? 1400 : 1300)
+                .setMtu(gaming ? 1500 : 1480)
                 .addAddress("198.18.0.1", 15)
                 .addAddress("fd40::1", 128)
                 .addDnsServer("198.18.0.2");
@@ -179,7 +179,7 @@ public class BtVpnService extends VpnService {
 
         Builder builder = new Builder()
                 .setSession("bt-hev")
-                .setMtu(gaming ? 1400 : 1300)
+                .setMtu(gaming ? 1500 : 1480)
                 .addAddress("198.18.0.1", 15)
                 .addAddress("fd40::1", 128)
                 .addDnsServer("198.18.0.2");
@@ -343,13 +343,13 @@ public class BtVpnService extends VpnService {
     }
 
     private File writeHevCfg(boolean gaming) {
-        int mtu           = gaming ? 1400  : 1300;
-        int tcpBuf        = gaming ? 16384 : 32768;
-        int taskStack     = 20480 + tcpBuf;
-        int maxSessions   = gaming ? 384   : 768;
-        int udpBufNums    = gaming ? 32    : 10;
-        int tcpRwTimeout  = gaming ? 30000 : 60000;
-        int udpRwTimeout  = gaming ? 15000 : 30000;
+        int mtu          = gaming ? 1500  : 1480;
+        int tcpBuf       = gaming ? 65536 : 65536;
+        int taskStack    = 20480 + tcpBuf;
+        int maxSessions  = gaming ? 512   : 1024;
+        int udpBufNums   = gaming ? 64    : 32;
+        int tcpRwTimeout = gaming ? 45000 : 90000;
+        int udpRwTimeout = gaming ? 20000 : 45000;
 
         String yml =
                 "tunnel:\n" +
@@ -367,12 +367,12 @@ public class BtVpnService extends VpnService {
                 "  port: 53\n" +
                 "  network: 198.18.0.0\n" +
                 "  netmask: 255.254.0.0\n" +
-                "  cache-size: 4096\n" +
+                "  cache-size: 8192\n" +
                 "misc:\n" +
                 "  task-stack-size: " + taskStack + "\n" +
                 "  tcp-buffer-size: " + tcpBuf + "\n" +
                 "  udp-copy-buffer-nums: " + udpBufNums + "\n" +
-                "  connect-timeout: 5000\n" +
+                "  connect-timeout: 4000\n" +
                 "  tcp-read-write-timeout: " + tcpRwTimeout + "\n" +
                 "  udp-read-write-timeout: " + udpRwTimeout + "\n" +
                 "  max-session-count: " + maxSessions + "\n" +
@@ -425,10 +425,10 @@ public class BtVpnService extends VpnService {
 
 final class BtProxy {
     static final int SOCKS5_PORT = 10809;
-    private static final String PREFS            = "strike_prefs";
-    private static final String KEY_INTERNAL_ID  = "internal_id";
-    private static final String KEY_GAMING_MODE  = "gaming_mode";
-    private static final String KEY_GAMING_APPS  = "gaming_apps";
+    private static final String PREFS           = "strike_prefs";
+    private static final String KEY_INTERNAL_ID = "internal_id";
+    private static final String KEY_GAMING_MODE = "gaming_mode";
+    private static final String KEY_GAMING_APPS = "gaming_apps";
 
     static { System.loadLibrary("btproxy"); }
 
