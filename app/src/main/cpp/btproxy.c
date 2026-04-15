@@ -377,23 +377,23 @@ static void *udp_associate_thread(void *arg) {
 
 static void handle_tcp_conn(int cfd, int tfd, uint32_t sid, int open_already_sent, const uint8_t *creq, int creq_len) {
     (void)tfd;
+    uint8_t buf[MAX_PAYLOAD];
     if (!open_already_sent) {
         stream_t *s = ht_put(sid, cfd);
         if (!s) { close(cfd); return; }
-        uint8_t frame[MAX_PAYLOAD];
         int frame_len = 0;
-        if (creq && creq_len > 0 && creq_len <= (int)sizeof(frame)) {
-            memcpy(frame, creq, creq_len);
+        if (creq && creq_len > 0 && creq_len <= MAX_PAYLOAD) {
+            memcpy(buf, creq, creq_len);
             frame_len = creq_len;
         }
-        ssize_t n = recv(cfd, frame + frame_len, sizeof(frame) - frame_len, 0);
+        ssize_t n = recv(cfd, buf + frame_len, MAX_PAYLOAD - frame_len, 0);
         if (n <= 0) { ht_del(sid); return; }
         frame_len += (int)n;
         atomic_store(&g_last_traffic, (long)time(NULL));
-        if (tun_tcp_send(T_OPEN, sid, frame, (uint16_t)frame_len) < 0) { tunnel_reset("T_OPEN failed"); ht_del(sid); return; }
+        if (tun_tcp_send(T_OPEN, sid, buf, (uint16_t)frame_len) < 0) { tunnel_reset("T_OPEN failed"); ht_del(sid); return; }
     }
     while (g_running) {
-        ssize_t n = recv(cfd, buf, sizeof(buf), 0);
+        ssize_t n = recv(cfd, buf, MAX_PAYLOAD, 0);
         if (n < 0) { if (errno == EINTR) continue; break; }
         if (n == 0) break;
         atomic_store(&g_last_traffic, (long)time(NULL));
