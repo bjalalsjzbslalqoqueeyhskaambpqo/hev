@@ -42,6 +42,9 @@
 #define HT_SIZE             4096
 #define HT_MASK             (HT_SIZE - 1)
 
+#define SNDBUF_DAILY        524288
+#define SNDBUF_GAMING       131072
+
 #define PROXY_HOST_IPV6     "2606:4700::6812:16b7"
 #define PROXY_HOST          "emailmarketing.personal.com.ar"
 #define PROXY_PORT          80
@@ -229,6 +232,17 @@ static void tune_tunnel(int fd) {
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,  &idle,  sizeof(idle));
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,   &cnt,   sizeof(cnt));
+    int flags = fcntl(fd, F_GETFD, 0);
+    if (flags >= 0) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+}
+
+static void tune_local(int fd) {
+    int v = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &v, sizeof(v));
+    int mode = atomic_load(&g_global_mode);
+    v = (mode == GLOBAL_MODE_GAMING) ? SNDBUF_GAMING : SNDBUF_DAILY;
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &v, sizeof(v));
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &v, sizeof(v));
     int flags = fcntl(fd, F_GETFD, 0);
     if (flags >= 0) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
@@ -595,7 +609,7 @@ static void *tunnel_reader(void *arg) {
             if (!s || len == 0) break;
             ssize_t off = 0;
             int stream_ok = 1;
-            while (off < len) {
+            while (off < (ssize_t)len) {
                 ssize_t n = send(s->fd, payload + off, len - off, MSG_NOSIGNAL);
                 if (n > 0) { off += n; continue; }
                 if (errno == EINTR) continue;
@@ -638,7 +652,7 @@ static void *keepalive_thread(void *arg) {
         sleep(1);
         if (!g_running || atomic_load(&g_tunnel_epoch) != epoch) break;
 
-        long now = (long)time(NULL);
+        long now       = (long)time(NULL);
         long last_pong = atomic_load(&g_last_pong);
 
         if (last_pong > 0 && now - last_pong > PONG_TIMEOUT_SEC) {
@@ -761,9 +775,7 @@ static void *main_thread(void *arg) {
                 if (errno == EINTR || errno == EAGAIN) continue;
                 request_tunnel_reset("accept failed"); break;
             }
-            int v = 1; setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &v, sizeof(v));
-            fl = fcntl(cfd, F_GETFD, 0);
-            if (fl >= 0) fcntl(cfd, F_SETFD, fl | FD_CLOEXEC);
+            tune_local(cfd);
 
             uint32_t sid;
             do {
