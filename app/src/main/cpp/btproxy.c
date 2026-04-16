@@ -127,7 +127,7 @@ static int ht_del(uint32_t sid) {
         if ((*pp)->sid == sid) {
             stream_t *s = *pp; *pp = s->next;
             pthread_mutex_unlock(&g_ht_mu[slot]);
-            if (s->fd   >= 0) close(s->fd);
+            if (s->fd     >= 0) close(s->fd);
             if (s->pfd[0] >= 0) close(s->pfd[0]);
             if (s->pfd[1] >= 0) close(s->pfd[1]);
             free(s);
@@ -175,6 +175,10 @@ static pthread_cond_t  g_start_cv  = PTHREAD_COND_INITIALIZER;
 static int             g_start_st  = 0;
 static atomic_long     g_last_pong = 0;
 static atomic_int      g_tunnel_epoch = 0;
+
+static pthread_mutex_t g_hev_ready_mu  = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_hev_ready_cv  = PTHREAD_COND_INITIALIZER;
+static volatile int    g_hev_ready     = 0;
 
 typedef struct conn_task_s {
     struct conn_task_s *next;
@@ -225,11 +229,24 @@ static void notify_tunnel_reconnected(void) {
     if ((*jvm)->GetEnv(jvm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) {
         (*jvm)->AttachCurrentThread(jvm, &env, NULL); att = 1;
     }
+
+    pthread_mutex_lock(&g_hev_ready_mu);
+    g_hev_ready = 0;
+    pthread_mutex_unlock(&g_hev_ready_mu);
+
     jclass cls = (*env)->GetObjectClass(env, svc);
     jmethodID m = (*env)->GetMethodID(env, cls, "onTunnelReconnected", "()V");
     if (m) (*env)->CallVoidMethod(env, svc, m);
     (*env)->DeleteLocalRef(env, cls);
     if (att) (*jvm)->DetachCurrentThread(jvm);
+
+    pthread_mutex_lock(&g_hev_ready_mu);
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += 3;
+    while (!g_hev_ready && g_running)
+        if (pthread_cond_timedwait(&g_hev_ready_cv, &g_hev_ready_mu, &ts) != 0) break;
+    pthread_mutex_unlock(&g_hev_ready_mu);
 }
 
 static void request_tunnel_reset(const char *reason) {
@@ -336,8 +353,9 @@ static int tun_send(int tfd, uint8_t type, uint32_t sid,
             continue;
         } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
             pthread_mutex_unlock(&g_tun_wmu);
+            int poll_ms = (atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING) ? 5 : 30;
             struct pollfd wpfd = { tfd, POLLOUT, 0 };
-            int wp = poll(&wpfd, 1, 30);
+            int wp = poll(&wpfd, 1, poll_ms);
             if (wp <= 0 || !(wpfd.revents & POLLOUT)) return -1;
         } else {
             pthread_mutex_unlock(&g_tun_wmu);
@@ -531,7 +549,7 @@ static void conn_handle(int cfd, int tfd, uint32_t sid) {
     pfds[1].events = POLLIN;
 
     while (g_running) {
-        int pr = poll(pfds, 2, -1);
+        int pr = poll(pfds, 2, gaming ? 100 : -1);
         if (pr < 0) { if (errno == EINTR) continue; break; }
 
         if (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) break;
@@ -700,6 +718,7 @@ static void *tunnel_reader(void *arg) {
             while (off < (ssize_t)len) {
                 ssize_t n = write(s->pfd[1], payload + off, len - off);
                 if (n > 0) { off += n; continue; }
+                if (errno == EAGAIN || errno == EWOULDBLOCK) break;
                 if (errno == EINTR) continue;
                 break;
             }
@@ -945,6 +964,10 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     pthread_mutex_lock(&g_start_mu);
     if (g_start_st == 0) { g_start_st = -1; pthread_cond_broadcast(&g_start_cv); }
     pthread_mutex_unlock(&g_start_mu);
+    pthread_mutex_lock(&g_hev_ready_mu);
+    g_hev_ready = 1;
+    pthread_cond_broadcast(&g_hev_ready_cv);
+    pthread_mutex_unlock(&g_hev_ready_mu);
     for (int i = 0; i < 20 && g_started; i++) usleep(10000);
     ht_clear();
     if (svc) (*env)->DeleteGlobalRef(env, svc);
@@ -970,6 +993,15 @@ Java_com_blacktunnel_BtProxy_nativeApplyMode(JNIEnv *env, jclass clazz, jboolean
 JNIEXPORT jint JNICALL
 Java_com_blacktunnel_BtProxy_nativeGetGamingMode(JNIEnv *env, jclass clazz) {
     return (jint)atomic_load(&g_global_mode);
+}
+
+JNIEXPORT void JNICALL
+Java_com_blacktunnel_BtProxy_nativeHevReady(JNIEnv *env, jclass clazz) {
+    pthread_mutex_lock(&g_hev_ready_mu);
+    g_hev_ready = 1;
+    pthread_cond_broadcast(&g_hev_ready_cv);
+    pthread_mutex_unlock(&g_hev_ready_mu);
+    push_log("I", "hev ready after reconnect");
 }
 
 JNIEXPORT jstring JNICALL
