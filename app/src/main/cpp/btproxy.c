@@ -176,9 +176,6 @@ static int             g_start_st  = 0;
 static atomic_long     g_last_pong = 0;
 static atomic_int      g_tunnel_epoch = 0;
 
-static pthread_mutex_t g_hev_ready_mu  = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t  g_hev_ready_cv  = PTHREAD_COND_INITIALIZER;
-static volatile int    g_hev_ready     = 0;
 
 typedef struct conn_task_s {
     struct conn_task_s *next;
@@ -230,23 +227,11 @@ static void notify_tunnel_reconnected(void) {
         (*jvm)->AttachCurrentThread(jvm, &env, NULL); att = 1;
     }
 
-    pthread_mutex_lock(&g_hev_ready_mu);
-    g_hev_ready = 0;
-    pthread_mutex_unlock(&g_hev_ready_mu);
-
     jclass cls = (*env)->GetObjectClass(env, svc);
     jmethodID m = (*env)->GetMethodID(env, cls, "onTunnelReconnected", "()V");
     if (m) (*env)->CallVoidMethod(env, svc, m);
     (*env)->DeleteLocalRef(env, cls);
     if (att) (*jvm)->DetachCurrentThread(jvm);
-
-    pthread_mutex_lock(&g_hev_ready_mu);
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    ts.tv_sec += 3;
-    while (!g_hev_ready && g_running)
-        if (pthread_cond_timedwait(&g_hev_ready_cv, &g_hev_ready_mu, &ts) != 0) break;
-    pthread_mutex_unlock(&g_hev_ready_mu);
 }
 
 static void request_tunnel_reset(const char *reason) {
@@ -982,10 +967,6 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     pthread_mutex_lock(&g_start_mu);
     if (g_start_st == 0) { g_start_st = -1; pthread_cond_broadcast(&g_start_cv); }
     pthread_mutex_unlock(&g_start_mu);
-    pthread_mutex_lock(&g_hev_ready_mu);
-    g_hev_ready = 1;
-    pthread_cond_broadcast(&g_hev_ready_cv);
-    pthread_mutex_unlock(&g_hev_ready_mu);
     for (int i = 0; i < 20 && g_started; i++) usleep(10000);
     ht_clear();
     if (svc) (*env)->DeleteGlobalRef(env, svc);
@@ -1013,14 +994,6 @@ Java_com_blacktunnel_BtProxy_nativeGetGamingMode(JNIEnv *env, jclass clazz) {
     return (jint)atomic_load(&g_global_mode);
 }
 
-JNIEXPORT void JNICALL
-Java_com_blacktunnel_BtProxy_nativeHevReady(JNIEnv *env, jclass clazz) {
-    pthread_mutex_lock(&g_hev_ready_mu);
-    g_hev_ready = 1;
-    pthread_cond_broadcast(&g_hev_ready_cv);
-    pthread_mutex_unlock(&g_hev_ready_mu);
-    push_log("I", "hev ready after reconnect");
-}
 
 JNIEXPORT jstring JNICALL
 Java_com_blacktunnel_BtProxy_nativeDrainLogs(JNIEnv *env, jclass clazz) {
