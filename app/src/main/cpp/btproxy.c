@@ -38,6 +38,7 @@
 #define CONNECT_TIMEOUT_SEC 10
 #define HANDSHAKE_TIMEOUT_SEC 1
 #define CONN_WORKERS        64
+#define STREAM_QUEUE_CAP    32
 
 #define HT_SIZE             4096
 #define HT_MASK             (HT_SIZE - 1)
@@ -55,10 +56,22 @@
 
 static atomic_int g_global_mode = GLOBAL_MODE_DAILY;
 
+typedef struct {
+    uint8_t *data;
+    uint16_t len;
+} sq_entry_t;
+
 typedef struct stream_s {
     struct stream_s *next;
     int              fd;
     uint32_t         sid;
+    pthread_mutex_t  mu;
+    pthread_cond_t   cv;
+    sq_entry_t       q[STREAM_QUEUE_CAP];
+    int              qhead;
+    int              qtail;
+    int              qcount;
+    atomic_int       closed;
 } stream_t;
 
 static stream_t       *g_ht[HT_SIZE];
@@ -83,14 +96,30 @@ static stream_t *ht_get(uint32_t sid) {
 static stream_t *ht_put(uint32_t sid, int fd) {
     stream_t *s = malloc(sizeof(stream_t));
     if (!s) return NULL;
-    s->sid  = sid;
-    s->fd   = fd;
-    s->next = NULL;
+    s->sid    = sid;
+    s->fd     = fd;
+    s->next   = NULL;
+    s->qhead  = 0;
+    s->qtail  = 0;
+    s->qcount = 0;
+    atomic_store(&s->closed, 0);
+    pthread_mutex_init(&s->mu, NULL);
+    pthread_cond_init(&s->cv, NULL);
     int slot = (int)(sid & HT_MASK);
     pthread_mutex_lock(&g_ht_mu[slot]);
     s->next = g_ht[slot]; g_ht[slot] = s;
     pthread_mutex_unlock(&g_ht_mu[slot]);
     return s;
+}
+
+static void stream_drain_queue(stream_t *s) {
+    pthread_mutex_lock(&s->mu);
+    while (s->qcount > 0) {
+        free(s->q[s->qhead].data);
+        s->qhead = (s->qhead + 1) % STREAM_QUEUE_CAP;
+        s->qcount--;
+    }
+    pthread_mutex_unlock(&s->mu);
 }
 
 static int ht_del(uint32_t sid) {
@@ -101,7 +130,14 @@ static int ht_del(uint32_t sid) {
         if ((*pp)->sid == sid) {
             stream_t *s = *pp; *pp = s->next;
             pthread_mutex_unlock(&g_ht_mu[slot]);
+            atomic_store(&s->closed, 1);
+            pthread_mutex_lock(&s->mu);
+            pthread_cond_broadcast(&s->cv);
+            pthread_mutex_unlock(&s->mu);
             if (s->fd >= 0) close(s->fd);
+            stream_drain_queue(s);
+            pthread_mutex_destroy(&s->mu);
+            pthread_cond_destroy(&s->cv);
             free(s);
             return 1;
         }
@@ -117,12 +153,39 @@ static void ht_clear(void) {
         stream_t *s = g_ht[i];
         while (s) {
             stream_t *nx = s->next;
+            atomic_store(&s->closed, 1);
+            pthread_mutex_lock(&s->mu);
+            pthread_cond_broadcast(&s->cv);
+            pthread_mutex_unlock(&s->mu);
             if (s->fd >= 0) close(s->fd);
-            free(s); s = nx;
+            stream_drain_queue(s);
+            pthread_mutex_destroy(&s->mu);
+            pthread_cond_destroy(&s->cv);
+            free(s);
+            s = nx;
         }
         g_ht[i] = NULL;
         pthread_mutex_unlock(&g_ht_mu[i]);
     }
+}
+
+static int stream_enqueue(stream_t *s, const uint8_t *data, uint16_t len) {
+    uint8_t *copy = malloc(len);
+    if (!copy) return -1;
+    memcpy(copy, data, len);
+    pthread_mutex_lock(&s->mu);
+    if (s->qcount >= STREAM_QUEUE_CAP || atomic_load(&s->closed)) {
+        pthread_mutex_unlock(&s->mu);
+        free(copy);
+        return -1;
+    }
+    s->q[s->qtail].data = copy;
+    s->q[s->qtail].len  = len;
+    s->qtail = (s->qtail + 1) % STREAM_QUEUE_CAP;
+    s->qcount++;
+    pthread_cond_signal(&s->cv);
+    pthread_mutex_unlock(&s->mu);
+    return 0;
 }
 
 static volatile int    g_running   = 0;
@@ -472,9 +535,40 @@ static int open_tunnel(void) {
     return fd;
 }
 
+static void *stream_deliver(void *arg) {
+    stream_t *s = (stream_t*)arg;
+    while (1) {
+        pthread_mutex_lock(&s->mu);
+        while (s->qcount == 0 && !atomic_load(&s->closed))
+            pthread_cond_wait(&s->cv, &s->mu);
+        if (s->qcount == 0 && atomic_load(&s->closed)) {
+            pthread_mutex_unlock(&s->mu);
+            break;
+        }
+        sq_entry_t e = s->q[s->qhead];
+        s->qhead = (s->qhead + 1) % STREAM_QUEUE_CAP;
+        s->qcount--;
+        pthread_mutex_unlock(&s->mu);
+
+        ssize_t off = 0;
+        while (off < (ssize_t)e.len) {
+            ssize_t n = send(s->fd, e.data + off, e.len - off, MSG_NOSIGNAL);
+            if (n > 0) { off += n; continue; }
+            if (errno == EINTR) continue;
+            break;
+        }
+        free(e.data);
+    }
+    return NULL;
+}
+
 static void conn_handle(int cfd, int tfd, uint32_t sid) {
     stream_t *s = ht_put(sid, cfd);
     if (!s) { close(cfd); return; }
+
+    pthread_t deliver_thr;
+    pthread_create(&deliver_thr, NULL, stream_deliver, s);
+    pthread_detach(deliver_thr);
 
     uint8_t buf[MAX_PAYLOAD];
 
@@ -607,18 +701,7 @@ static void *tunnel_reader(void *arg) {
         case T_DATA: {
             stream_t *s = ht_get(sid);
             if (!s || len == 0) break;
-            ssize_t off = 0;
-            int stream_ok = 1;
-            while (off < (ssize_t)len) {
-                ssize_t n = send(s->fd, payload + off, len - off, MSG_NOSIGNAL);
-                if (n > 0) { off += n; continue; }
-                if (errno == EINTR) continue;
-                stream_ok = 0; break;
-            }
-            if (!stream_ok) {
-                ht_del(sid);
-                tun_send(tfd, T_CLOSE, sid, NULL, 0);
-            }
+            stream_enqueue(s, payload, len);
             break;
         }
         case T_CLOSE:
