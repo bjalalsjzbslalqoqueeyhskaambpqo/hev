@@ -38,7 +38,6 @@
 #define CONNECT_TIMEOUT_SEC 10
 #define HANDSHAKE_TIMEOUT_SEC 1
 #define CONN_WORKERS        64
-#define STREAM_QUEUE_CAP    32
 
 #define HT_SIZE             4096
 #define HT_MASK             (HT_SIZE - 1)
@@ -56,22 +55,11 @@
 
 static atomic_int g_global_mode = GLOBAL_MODE_DAILY;
 
-typedef struct {
-    uint8_t *data;
-    uint16_t len;
-} sq_entry_t;
-
 typedef struct stream_s {
     struct stream_s *next;
     int              fd;
+    int              pfd[2];
     uint32_t         sid;
-    pthread_mutex_t  mu;
-    pthread_cond_t   cv;
-    sq_entry_t       q[STREAM_QUEUE_CAP];
-    int              qhead;
-    int              qtail;
-    int              qcount;
-    atomic_int       closed;
 } stream_t;
 
 static stream_t       *g_ht[HT_SIZE];
@@ -96,30 +84,16 @@ static stream_t *ht_get(uint32_t sid) {
 static stream_t *ht_put(uint32_t sid, int fd) {
     stream_t *s = malloc(sizeof(stream_t));
     if (!s) return NULL;
-    s->sid    = sid;
-    s->fd     = fd;
-    s->next   = NULL;
-    s->qhead  = 0;
-    s->qtail  = 0;
-    s->qcount = 0;
-    atomic_store(&s->closed, 0);
-    pthread_mutex_init(&s->mu, NULL);
-    pthread_cond_init(&s->cv, NULL);
+    if (pipe(s->pfd) < 0) { free(s); return NULL; }
+    fcntl(s->pfd[1], F_SETFL, O_NONBLOCK);
+    s->sid  = sid;
+    s->fd   = fd;
+    s->next = NULL;
     int slot = (int)(sid & HT_MASK);
     pthread_mutex_lock(&g_ht_mu[slot]);
     s->next = g_ht[slot]; g_ht[slot] = s;
     pthread_mutex_unlock(&g_ht_mu[slot]);
     return s;
-}
-
-static void stream_drain_queue(stream_t *s) {
-    pthread_mutex_lock(&s->mu);
-    while (s->qcount > 0) {
-        free(s->q[s->qhead].data);
-        s->qhead = (s->qhead + 1) % STREAM_QUEUE_CAP;
-        s->qcount--;
-    }
-    pthread_mutex_unlock(&s->mu);
 }
 
 static int ht_del(uint32_t sid) {
@@ -130,14 +104,9 @@ static int ht_del(uint32_t sid) {
         if ((*pp)->sid == sid) {
             stream_t *s = *pp; *pp = s->next;
             pthread_mutex_unlock(&g_ht_mu[slot]);
-            atomic_store(&s->closed, 1);
-            pthread_mutex_lock(&s->mu);
-            pthread_cond_broadcast(&s->cv);
-            pthread_mutex_unlock(&s->mu);
-            if (s->fd >= 0) close(s->fd);
-            stream_drain_queue(s);
-            pthread_mutex_destroy(&s->mu);
-            pthread_cond_destroy(&s->cv);
+            if (s->fd   >= 0) close(s->fd);
+            if (s->pfd[0] >= 0) close(s->pfd[0]);
+            if (s->pfd[1] >= 0) close(s->pfd[1]);
             free(s);
             return 1;
         }
@@ -153,39 +122,15 @@ static void ht_clear(void) {
         stream_t *s = g_ht[i];
         while (s) {
             stream_t *nx = s->next;
-            atomic_store(&s->closed, 1);
-            pthread_mutex_lock(&s->mu);
-            pthread_cond_broadcast(&s->cv);
-            pthread_mutex_unlock(&s->mu);
-            if (s->fd >= 0) close(s->fd);
-            stream_drain_queue(s);
-            pthread_mutex_destroy(&s->mu);
-            pthread_cond_destroy(&s->cv);
+            if (s->fd   >= 0) close(s->fd);
+            if (s->pfd[0] >= 0) close(s->pfd[0]);
+            if (s->pfd[1] >= 0) close(s->pfd[1]);
             free(s);
             s = nx;
         }
         g_ht[i] = NULL;
         pthread_mutex_unlock(&g_ht_mu[i]);
     }
-}
-
-static int stream_enqueue(stream_t *s, const uint8_t *data, uint16_t len) {
-    uint8_t *copy = malloc(len);
-    if (!copy) return -1;
-    memcpy(copy, data, len);
-    pthread_mutex_lock(&s->mu);
-    if (s->qcount >= STREAM_QUEUE_CAP || atomic_load(&s->closed)) {
-        pthread_mutex_unlock(&s->mu);
-        free(copy);
-        return -1;
-    }
-    s->q[s->qtail].data = copy;
-    s->q[s->qtail].len  = len;
-    s->qtail = (s->qtail + 1) % STREAM_QUEUE_CAP;
-    s->qcount++;
-    pthread_cond_signal(&s->cv);
-    pthread_mutex_unlock(&s->mu);
-    return 0;
 }
 
 static volatile int    g_running   = 0;
@@ -535,40 +480,9 @@ static int open_tunnel(void) {
     return fd;
 }
 
-static void *stream_deliver(void *arg) {
-    stream_t *s = (stream_t*)arg;
-    while (1) {
-        pthread_mutex_lock(&s->mu);
-        while (s->qcount == 0 && !atomic_load(&s->closed))
-            pthread_cond_wait(&s->cv, &s->mu);
-        if (s->qcount == 0 && atomic_load(&s->closed)) {
-            pthread_mutex_unlock(&s->mu);
-            break;
-        }
-        sq_entry_t e = s->q[s->qhead];
-        s->qhead = (s->qhead + 1) % STREAM_QUEUE_CAP;
-        s->qcount--;
-        pthread_mutex_unlock(&s->mu);
-
-        ssize_t off = 0;
-        while (off < (ssize_t)e.len) {
-            ssize_t n = send(s->fd, e.data + off, e.len - off, MSG_NOSIGNAL);
-            if (n > 0) { off += n; continue; }
-            if (errno == EINTR) continue;
-            break;
-        }
-        free(e.data);
-    }
-    return NULL;
-}
-
 static void conn_handle(int cfd, int tfd, uint32_t sid) {
     stream_t *s = ht_put(sid, cfd);
     if (!s) { close(cfd); return; }
-
-    pthread_t deliver_thr;
-    pthread_create(&deliver_thr, NULL, stream_deliver, s);
-    pthread_detach(deliver_thr);
 
     uint8_t buf[MAX_PAYLOAD];
 
@@ -584,16 +498,46 @@ static void conn_handle(int cfd, int tfd, uint32_t sid) {
         return;
     }
 
+    struct pollfd pfds[2];
+    pfds[0].fd     = cfd;
+    pfds[0].events = POLLIN;
+    pfds[1].fd     = s->pfd[0];
+    pfds[1].events = POLLIN;
+
     while (g_running) {
-        ssize_t n = recv(cfd, buf, sizeof(buf), 0);
-        if (n < 0) { if (errno == EINTR) continue; break; }
-        if (n == 0) break;
-        if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
-            request_tunnel_reset("tun_send T_DATA failed");
-            break;
+        int pr = poll(pfds, 2, -1);
+        if (pr < 0) { if (errno == EINTR) continue; break; }
+
+        if (pfds[1].revents & POLLIN) {
+            ssize_t n = read(s->pfd[0], buf, sizeof(buf));
+            if (n > 0) {
+                ssize_t off = 0;
+                while (off < n) {
+                    ssize_t w = send(cfd, buf + off, n - off, MSG_NOSIGNAL);
+                    if (w > 0) { off += w; continue; }
+                    if (errno == EINTR) continue;
+                    goto done;
+                }
+            } else if (n == 0 || (errno != EAGAIN && errno != EINTR)) {
+                break;
+            }
         }
+
+        if (pfds[0].revents & POLLIN) {
+            ssize_t n = recv(cfd, buf, sizeof(buf), 0);
+            if (n < 0) { if (errno == EINTR) continue; break; }
+            if (n == 0) break;
+            if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
+                request_tunnel_reset("tun_send T_DATA failed");
+                break;
+            }
+        }
+
+        if (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) break;
+        if (pfds[1].revents & (POLLERR | POLLHUP | POLLNVAL)) break;
     }
 
+done:
     tun_send(tfd, T_CLOSE, sid, NULL, 0);
     ht_del(sid);
 }
@@ -701,7 +645,13 @@ static void *tunnel_reader(void *arg) {
         case T_DATA: {
             stream_t *s = ht_get(sid);
             if (!s || len == 0) break;
-            stream_enqueue(s, payload, len);
+            ssize_t off = 0;
+            while (off < (ssize_t)len) {
+                ssize_t n = write(s->pfd[1], payload + off, len - off);
+                if (n > 0) { off += n; continue; }
+                if (errno == EINTR) continue;
+                break;
+            }
             break;
         }
         case T_CLOSE:
