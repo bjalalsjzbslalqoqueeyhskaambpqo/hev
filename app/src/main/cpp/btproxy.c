@@ -42,8 +42,7 @@
 #define HT_SIZE             4096
 #define HT_MASK             (HT_SIZE - 1)
 
-#define SNDBUF_DAILY        800000
-#define SNDBUF_GAMING       131072
+#define SNDBUF_GAMING       32768
 
 #define PROXY_HOST_IPV6     "2606:4700::6812:16b7"
 #define PROXY_HOST          "emailmarketing.personal.com.ar"
@@ -54,6 +53,25 @@
 #define GLOBAL_MODE_GAMING  1
 
 static atomic_int g_global_mode = GLOBAL_MODE_DAILY;
+static int        g_sndbuf_daily = 262144;
+
+static int detect_sndbuf_daily(void) {
+    FILE *f = fopen("/proc/meminfo", "r");
+    if (!f) return 262144;
+    char line[128];
+    long kb = 0;
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "MemTotal:", 9) == 0) {
+            sscanf(line + 9, " %ld", &kb);
+            break;
+        }
+    }
+    fclose(f);
+    long gb_x10 = (kb * 10L) / (1024L * 1024L);
+    if (gb_x10 <= 35)  return  65536;
+    if (gb_x10 <= 55)  return 131072;
+    return 262144;
+}
 
 typedef struct stream_s {
     struct stream_s *next;
@@ -87,7 +105,9 @@ static stream_t *ht_put(uint32_t sid, int fd) {
     if (pipe(s->pfd) < 0) { free(s); return NULL; }
     fcntl(s->pfd[1], F_SETFL, O_NONBLOCK);
 #ifdef F_SETPIPE_SZ
-    fcntl(s->pfd[0], F_SETPIPE_SZ, (atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING) ? 262144 : 1048576);
+    int mode = atomic_load(&g_global_mode);
+    int pipe_sz = (mode == GLOBAL_MODE_GAMING) ? 65536 : g_sndbuf_daily;
+    fcntl(s->pfd[0], F_SETPIPE_SZ, pipe_sz);
 #endif
     s->sid  = sid;
     s->fd   = fd;
@@ -125,7 +145,7 @@ static void ht_clear(void) {
         stream_t *s = g_ht[i];
         while (s) {
             stream_t *nx = s->next;
-            if (s->fd   >= 0) close(s->fd);
+            if (s->fd     >= 0) close(s->fd);
             if (s->pfd[0] >= 0) close(s->pfd[0]);
             if (s->pfd[1] >= 0) close(s->pfd[1]);
             free(s);
@@ -251,7 +271,7 @@ static void tune_local(int fd) {
     int v = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &v, sizeof(v));
     int mode = atomic_load(&g_global_mode);
-    v = (mode == GLOBAL_MODE_GAMING) ? SNDBUF_GAMING : SNDBUF_DAILY;
+    v = (mode == GLOBAL_MODE_GAMING) ? SNDBUF_GAMING : g_sndbuf_daily;
     setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &v, sizeof(v));
     setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &v, sizeof(v));
     int flags = fcntl(fd, F_GETFD, 0);
@@ -478,8 +498,9 @@ static int open_tunnel(void) {
     if (extract_header_value(h2, "X-User-Days", user_days, sizeof(user_days)))
         push_log("I", "user_days=%s", user_days);
 
-    push_log("I", "tunnel ok mode=%s",
-             atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING ? "gaming" : "daily");
+    push_log("I", "tunnel ok mode=%s sndbuf_daily=%d",
+             atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING ? "gaming" : "daily",
+             g_sndbuf_daily);
     return fd;
 }
 
@@ -501,13 +522,13 @@ static void conn_handle(int cfd, int tfd, uint32_t sid) {
         return;
     }
 
+    int gaming = (atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING);
+
     struct pollfd pfds[2];
     pfds[0].fd     = cfd;
     pfds[0].events = POLLIN;
     pfds[1].fd     = s->pfd[0];
     pfds[1].events = POLLIN;
-
-    int gaming = (atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING);
 
     while (g_running) {
         int pr = poll(pfds, 2, -1);
@@ -872,6 +893,8 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
             (*env)->ReleaseStringUTFChars(env, internal_id, iid);
         }
     }
+    g_sndbuf_daily = detect_sndbuf_daily();
+    push_log("I", "sndbuf_daily=%d", g_sndbuf_daily);
     ht_init();
     g_running = 1; g_started = 0;
     g_reconnect_delay = RECONNECT_DELAY_MIN;
