@@ -12,7 +12,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <time.h>
@@ -24,29 +23,29 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-#define T_DATA  0x02
-#define T_CLOSE 0x03
-#define T_PING  0x04
-#define T_PONG  0x05
-#define T_OPEN  0x01
+#define T_DATA              0x02
+#define T_CLOSE             0x03
+#define T_PING              0x04
+#define T_PONG              0x05
+#define T_OPEN              0x01
 
-#define FRAME_HDR               7
-#define MAX_PAYLOAD             16384
-#define RELAY_BACKLOG           512
-#define PONG_TIMEOUT_SEC        180
-#define RECONNECT_DELAY_MIN     2
-#define RECONNECT_DELAY_MAX     30
-#define CONNECT_TIMEOUT_SEC     10
-#define HANDSHAKE_TIMEOUT_SEC   1
-#define CONN_WORKERS            64
+#define FRAME_HDR           7
+#define MAX_PAYLOAD         16384
+#define RELAY_BACKLOG       512
+#define PONG_TIMEOUT_SEC    180
+#define RECONNECT_DELAY_MIN 2
+#define RECONNECT_DELAY_MAX 30
+#define CONNECT_TIMEOUT_SEC 10
+#define HANDSHAKE_TIMEOUT_SEC 1
+#define CONN_WORKERS        64
 
-#define HT_SIZE  4096
-#define HT_MASK  (HT_SIZE - 1)
+#define HT_SIZE             4096
+#define HT_MASK             (HT_SIZE - 1)
 
-#define PROXY_HOST_IPV6 "2606:4700::6812:16b7"
-#define PROXY_HOST      "emailmarketing.personal.com.ar"
-#define PROXY_PORT      80
-#define TUNNEL_HOST     "2.brawlpass.com.ar"
+#define PROXY_HOST_IPV6     "2606:4700::6812:16b7"
+#define PROXY_HOST          "emailmarketing.personal.com.ar"
+#define PROXY_PORT          80
+#define TUNNEL_HOST         "2.brawlpass.com.ar"
 
 #define GLOBAL_MODE_DAILY   0
 #define GLOBAL_MODE_GAMING  1
@@ -56,18 +55,11 @@ static atomic_int g_global_mode = GLOBAL_MODE_DAILY;
 typedef struct stream_s {
     struct stream_s *next;
     int              fd;
-    atomic_long      last_active;
     uint32_t         sid;
 } stream_t;
 
 static stream_t       *g_ht[HT_SIZE];
 static pthread_mutex_t g_ht_mu[HT_SIZE];
-
-static long now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
-}
 
 static void ht_init(void) {
     for (int i = 0; i < HT_SIZE; i++) {
@@ -88,10 +80,9 @@ static stream_t *ht_get(uint32_t sid) {
 static stream_t *ht_put(uint32_t sid, int fd) {
     stream_t *s = malloc(sizeof(stream_t));
     if (!s) return NULL;
-    memset(s, 0, sizeof(stream_t));
-    s->sid = sid;
-    s->fd  = fd;
-    atomic_store(&s->last_active, (long)time(NULL));
+    s->sid  = sid;
+    s->fd   = fd;
+    s->next = NULL;
     int slot = (int)(sid & HT_MASK);
     pthread_mutex_lock(&g_ht_mu[slot]);
     s->next = g_ht[slot]; g_ht[slot] = s;
@@ -222,43 +213,22 @@ static void request_tunnel_reset(const char *reason) {
     ht_clear();
 }
 
-static void sock_tune_gaming(int fd) {
+static void tune_tunnel(int fd) {
     int v;
-    v = 1;           setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
-    v = 1;           setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &v, sizeof(v));
-    v = 0x10;        setsockopt(fd, IPPROTO_IP,  IP_TOS,       &v, sizeof(v));
-    v = 65536;       setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,    &v, sizeof(v));
-    v = 65536;       setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,    &v, sizeof(v));
-    int one=1, idle=5, intvl=2, cnt=3;
-    setsockopt(fd, SOL_SOCKET,  SO_KEEPALIVE,  &one,   sizeof(one));
+    v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,   &v, sizeof(v));
+    v = 262144; setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,     &v, sizeof(v));
+    v = 262144; setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,     &v, sizeof(v));
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
+    int mode = atomic_load(&g_global_mode);
+    int idle  = (mode == GLOBAL_MODE_GAMING) ? 10 : 30;
+    int intvl = (mode == GLOBAL_MODE_GAMING) ?  3 :  5;
+    int cnt   = 3;
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,  &idle,  sizeof(idle));
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,   &cnt,   sizeof(cnt));
     int flags = fcntl(fd, F_GETFD, 0);
     if (flags >= 0) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
-}
-
-static void sock_tune_daily(int fd) {
-    int v;
-    v = 0;           setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &v, sizeof(v));
-    v = 0;           setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &v, sizeof(v));
-    v = 0;           setsockopt(fd, IPPROTO_IP,  IP_TOS,       &v, sizeof(v));
-    v = 262144;      setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,    &v, sizeof(v));
-    v = 262144;      setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,    &v, sizeof(v));
-    int one=1, idle=20, intvl=5, cnt=4;
-    setsockopt(fd, SOL_SOCKET,  SO_KEEPALIVE,  &one,   sizeof(one));
-    setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,  &idle,  sizeof(idle));
-    setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
-    setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,   &cnt,   sizeof(cnt));
-    int flags = fcntl(fd, F_GETFD, 0);
-    if (flags >= 0) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
-}
-
-static void sock_tune(int fd) {
-    if (atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING)
-        sock_tune_gaming(fd);
-    else
-        sock_tune_daily(fd);
 }
 
 static int set_nonblocking(int fd, int nb) {
@@ -414,7 +384,8 @@ static int open_tunnel(void) {
     if (inet_pton(AF_INET6, PROXY_HOST_IPV6, &a6.sin6_addr) == 1) {
         fd = socket(AF_INET6, SOCK_STREAM, 0);
         if (fd >= 0) {
-            jni_protect(fd); sock_tune(fd);
+            jni_protect(fd);
+            tune_tunnel(fd);
             if (connect_with_timeout(fd, (struct sockaddr*)&a6, sizeof(a6), CONNECT_TIMEOUT_SEC) != 0)
                 { close(fd); fd = -1; }
         }
@@ -428,7 +399,8 @@ static int open_tunnel(void) {
             for (struct addrinfo *r = res; r && fd < 0; r = r->ai_next) {
                 int s = socket(r->ai_family, SOCK_STREAM, 0);
                 if (s < 0) continue;
-                jni_protect(s); sock_tune(s);
+                jni_protect(s);
+                tune_tunnel(s);
                 if (connect_with_timeout(s, r->ai_addr, r->ai_addrlen, CONNECT_TIMEOUT_SEC) == 0)
                     fd = s;
                 else close(s);
@@ -457,40 +429,15 @@ static int open_tunnel(void) {
 
     int status = parse_http_status(h2);
     if (h2_len < 0 || status != 101) {
-        char body[1024] = {0};
-        const char *eoh = strstr(h2, "\r\n\r\n");
-        int body_len = 0;
-        if (eoh) {
-            const char *body_start = eoh + 4;
-            body_len = h2_len - (int)(body_start - h2);
-            if (body_len > 0) {
-                int c = body_len >= (int)sizeof(body) ? (int)sizeof(body) - 1 : body_len;
-                memcpy(body, body_start, c);
-                body[c] = '\0';
-            }
-        }
-        char clbuf[32] = {0};
-        if (extract_header_value(h2, "Content-Length", clbuf, sizeof(clbuf))) {
-            int want = atoi(clbuf);
-            if (want > body_len && want < (int)sizeof(body)) {
-                int remaining = want - body_len;
-                if (remaining > 0) {
-                    ssize_t rn = recv(fd, body + body_len, remaining, 0);
-                    if (rn > 0) { body_len += (int)rn; body[body_len] = '\0'; }
-                }
-            }
-        }
-
-        if (strstr(h2, "not_registered") || strstr(body, "not_registered")
-            || strstr(h2, "no_registrado") || strstr(body, "no_registrado")
-            || strstr(h2, "usuario_no_registrado") || strstr(body, "usuario_no_registrado")) {
-            push_log("E", "usuario no registrado");
-        } else if (strstr(h2, "expired") || strstr(body, "expired")
-                   || strstr(h2, "expirado") || strstr(body, "expirado")
-                   || strstr(h2, "usuario_expirado") || strstr(body, "usuario_expirado")) {
-            push_log("E", "usuario expirado");
-        } else if (status == 403) {
-            push_log("E", "error de autenticacion 403");
+        if (status == 403) {
+            char body[256] = {0};
+            recv(fd, body, sizeof(body)-1, MSG_DONTWAIT);
+            if (strstr(h2, "not_registered") || strstr(body, "not_registered"))
+                push_log("E", "usuario no registrado");
+            else if (strstr(h2, "expired") || strstr(body, "expired"))
+                push_log("E", "usuario expirado");
+            else
+                push_log("E", "error de autenticacion 403");
         } else {
             push_log("E", "error de autenticacion");
         }
@@ -531,9 +478,6 @@ static void conn_handle(int cfd, int tfd, uint32_t sid) {
         ssize_t n = recv(cfd, buf, sizeof(buf), 0);
         if (n < 0) { if (errno == EINTR) continue; break; }
         if (n == 0) break;
-
-        atomic_store(&s->last_active, (long)time(NULL));
-
         if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
             request_tunnel_reset("tun_send T_DATA failed");
             break;
@@ -645,23 +589,21 @@ static void *tunnel_reader(void *arg) {
 
         switch (ft) {
         case T_DATA: {
-    stream_t *s = ht_get(sid);
-    if (!s || len == 0) break;
-    atomic_store(&s->last_active, (long)time(NULL));
-    ssize_t off = 0;
-    int stream_ok = 1;
-    while (off < (ssize_t)len) {
-        ssize_t n = send(s->fd, payload + off, len - off, MSG_NOSIGNAL);
-        // ← sin MSG_DONTWAIT, send bloqueante local es microsegundos
-        if (n > 0) { off += n; continue; }
-        if (errno == EINTR) continue;
-        stream_ok = 0; break;
-    }
-    if (!stream_ok) {
-        ht_del(sid);
-        tun_send(tfd, T_CLOSE, sid, NULL, 0);
-    }
-    break;
+            stream_t *s = ht_get(sid);
+            if (!s || len == 0) break;
+            ssize_t off = 0;
+            int stream_ok = 1;
+            while (off < len) {
+                ssize_t n = send(s->fd, payload + off, len - off, MSG_NOSIGNAL);
+                if (n > 0) { off += n; continue; }
+                if (errno == EINTR) continue;
+                stream_ok = 0; break;
+            }
+            if (!stream_ok) {
+                ht_del(sid);
+                tun_send(tfd, T_CLOSE, sid, NULL, 0);
+            }
+            break;
         }
         case T_CLOSE:
             ht_del(sid);
@@ -754,7 +696,6 @@ static void *main_thread(void *arg) {
         int rfd = socket(AF_INET, SOCK_STREAM, 0);
         if (rfd < 0) { close(tfd); g_tun_fd = -1; sleep(1); continue; }
         int one = 1; setsockopt(rfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-        int v = 1;   setsockopt(rfd, IPPROTO_TCP, TCP_NODELAY,  &v,   sizeof(v));
         int fl = fcntl(rfd, F_GETFD, 0);
         if (fl >= 0) fcntl(rfd, F_SETFD, fl | FD_CLOEXEC);
         struct sockaddr_in la = {0};
@@ -818,7 +759,9 @@ static void *main_thread(void *arg) {
                 if (errno == EINTR || errno == EAGAIN) continue;
                 request_tunnel_reset("accept failed"); break;
             }
-            sock_tune(cfd);
+            int v = 1; setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &v, sizeof(v));
+            fl = fcntl(cfd, F_GETFD, 0);
+            if (fl >= 0) fcntl(cfd, F_SETFD, fl | FD_CLOEXEC);
 
             uint32_t sid;
             do {
