@@ -216,6 +216,8 @@ static void request_tunnel_reset(const char *reason) {
 static void tune_tunnel(int fd) {
     int v;
     v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,   &v, sizeof(v));
+    v = 1;      setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK,  &v, sizeof(v));
+    v = 0x10;   setsockopt(fd, IPPROTO_IP,  IP_TOS,        &v, sizeof(v));
     v = 262144; setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,     &v, sizeof(v));
     v = 262144; setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,     &v, sizeof(v));
     int one = 1;
