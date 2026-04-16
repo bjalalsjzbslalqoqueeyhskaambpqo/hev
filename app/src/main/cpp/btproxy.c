@@ -42,7 +42,7 @@
 #define HT_SIZE             4096
 #define HT_MASK             (HT_SIZE - 1)
 
-#define SNDBUF_DAILY        524288
+#define SNDBUF_DAILY        150000
 #define SNDBUF_GAMING       131072
 
 #define PROXY_HOST_IPV6     "2606:4700::6812:16b7"
