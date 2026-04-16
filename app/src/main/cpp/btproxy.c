@@ -504,37 +504,64 @@ static void conn_handle(int cfd, int tfd, uint32_t sid) {
     pfds[1].fd     = s->pfd[0];
     pfds[1].events = POLLIN;
 
+    int gaming = (atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING);
+
     while (g_running) {
         int pr = poll(pfds, 2, -1);
         if (pr < 0) { if (errno == EINTR) continue; break; }
 
-        if (pfds[1].revents & POLLIN) {
-            ssize_t n = read(s->pfd[0], buf, sizeof(buf));
-            if (n > 0) {
-                ssize_t off = 0;
-                while (off < n) {
-                    ssize_t w = send(cfd, buf + off, n - off, MSG_NOSIGNAL);
-                    if (w > 0) { off += w; continue; }
-                    if (errno == EINTR) continue;
-                    goto done;
-                }
-            } else if (n == 0 || (errno != EAGAIN && errno != EINTR)) {
-                break;
-            }
-        }
-
-        if (pfds[0].revents & POLLIN) {
-            ssize_t n = recv(cfd, buf, sizeof(buf), 0);
-            if (n < 0) { if (errno == EINTR) continue; break; }
-            if (n == 0) break;
-            if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
-                request_tunnel_reset("tun_send T_DATA failed");
-                break;
-            }
-        }
-
         if (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) break;
         if (pfds[1].revents & (POLLERR | POLLHUP | POLLNVAL)) break;
+
+        if (gaming) {
+            if (pfds[1].revents & POLLIN) {
+                ssize_t n = read(s->pfd[0], buf, sizeof(buf));
+                if (n > 0) {
+                    ssize_t off = 0;
+                    while (off < n) {
+                        ssize_t w = send(cfd, buf + off, n - off, MSG_NOSIGNAL);
+                        if (w > 0) { off += w; continue; }
+                        if (errno == EINTR) continue;
+                        goto done;
+                    }
+                } else if (n == 0 || (errno != EAGAIN && errno != EINTR)) {
+                    break;
+                }
+            }
+            if (pfds[0].revents & POLLIN) {
+                ssize_t n = recv(cfd, buf, sizeof(buf), 0);
+                if (n < 0) { if (errno == EINTR) continue; break; }
+                if (n == 0) break;
+                if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
+                    request_tunnel_reset("tun_send T_DATA failed");
+                    break;
+                }
+            }
+        } else {
+            if (pfds[0].revents & POLLIN) {
+                ssize_t n = recv(cfd, buf, sizeof(buf), 0);
+                if (n < 0) { if (errno == EINTR) continue; break; }
+                if (n == 0) break;
+                if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
+                    request_tunnel_reset("tun_send T_DATA failed");
+                    break;
+                }
+            }
+            if (pfds[1].revents & POLLIN) {
+                ssize_t n = read(s->pfd[0], buf, sizeof(buf));
+                if (n > 0) {
+                    ssize_t off = 0;
+                    while (off < n) {
+                        ssize_t w = send(cfd, buf + off, n - off, MSG_NOSIGNAL);
+                        if (w > 0) { off += w; continue; }
+                        if (errno == EINTR) continue;
+                        goto done;
+                    }
+                } else if (n == 0 || (errno != EAGAIN && errno != EINTR)) {
+                    break;
+                }
+            }
+        }
     }
 
 done:
