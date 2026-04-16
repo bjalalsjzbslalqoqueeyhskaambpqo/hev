@@ -76,7 +76,7 @@ public class BtVpnService extends VpnService {
 
     public void onTunnelReconnected() {
         if (!running.get() || stopping.get()) return;
-        log("tunnel reconnected - hev stays alive");
+        executor.execute(this::rebuildTunnel);
     }
 
     private void rebuildTunnel() {
@@ -85,7 +85,7 @@ public class BtVpnService extends VpnService {
         Thread old = hevThread;
         hevThread  = null;
         if (old != null) {
-            try { old.join(4000); } catch (InterruptedException ignored) {}
+            try { old.join(1500); } catch (InterruptedException ignored) {}
         }
 
         ParcelFileDescriptor oldTun = tunPfd;
@@ -132,7 +132,6 @@ public class BtVpnService extends VpnService {
             if (hevTunFd == fd) hevTunFd = -1;
         }, "hev");
         hevThread.start();
-        SystemClock.sleep(300);
     }
 
     @Override
@@ -320,7 +319,7 @@ public class BtVpnService extends VpnService {
             Thread ht = hevThread;
             hevThread = null;
             if (ht != null) {
-                try { ht.join(4000); } catch (InterruptedException ignored) {}
+                try { ht.join(2000); } catch (InterruptedException ignored) {}
             }
 
             if (proxyStarted.compareAndSet(true, false)) BtProxy.stop();
@@ -344,11 +343,11 @@ public class BtVpnService extends VpnService {
     }
 
     private File writeHevCfg(boolean gaming) {
-        int mtu          = gaming ? 1500  : 1480;
-        int tcpBuf       = 65536;
+        int mtu          = gaming ? 1350  : 1400;
+        int tcpBuf       = gaming ? 65536 : 65536;
         int taskStack    = 20480 + tcpBuf;
         int maxSessions  = gaming ? 512   : 1024;
-        int udpBufNums   = gaming ? 64    : 48;
+        int udpBufNums   = gaming ? 64    : 32;
         int tcpRwTimeout = gaming ? 45000 : 90000;
         int udpRwTimeout = gaming ? 20000 : 45000;
 
@@ -373,7 +372,7 @@ public class BtVpnService extends VpnService {
                 "  task-stack-size: " + taskStack + "\n" +
                 "  tcp-buffer-size: " + tcpBuf + "\n" +
                 "  udp-copy-buffer-nums: " + udpBufNums + "\n" +
-                "  connect-timeout: 1000\n" +
+                "  connect-timeout: 700\n" +
                 "  tcp-read-write-timeout: " + tcpRwTimeout + "\n" +
                 "  udp-read-write-timeout: " + udpRwTimeout + "\n" +
                 "  max-session-count: " + maxSessions + "\n" +
@@ -382,7 +381,7 @@ public class BtVpnService extends VpnService {
 
         log("hev profile=" + (gaming ? "gaming" : "normal") +
                 " mtu=" + mtu + " tcpBuf=" + tcpBuf +
-                " maxSessions=" + maxSessions);
+                " taskStack=" + taskStack + " maxSessions=" + maxSessions);
 
         File f = new File(getFilesDir(), "hev.yml");
         try (FileOutputStream o = new FileOutputStream(f, false)) {
