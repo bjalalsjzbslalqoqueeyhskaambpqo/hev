@@ -343,7 +343,7 @@ public class BtVpnService extends VpnService {
     }
 
     private File writeHevCfg(boolean gaming) {
-        int mtu          = gaming ? 1500  : 1480;
+        int mtu          = gaming ? 1350  : 1400;
         int tcpBuf       = gaming ? 65536 : 65536;
         int taskStack    = 20480 + tcpBuf;
         int maxSessions  = gaming ? 512   : 1024;
@@ -372,7 +372,7 @@ public class BtVpnService extends VpnService {
                 "  task-stack-size: " + taskStack + "\n" +
                 "  tcp-buffer-size: " + tcpBuf + "\n" +
                 "  udp-copy-buffer-nums: " + udpBufNums + "\n" +
-                "  connect-timeout: 7000\n" +
+                "  connect-timeout: 700\n" +
                 "  tcp-read-write-timeout: " + tcpRwTimeout + "\n" +
                 "  udp-read-write-timeout: " + udpRwTimeout + "\n" +
                 "  max-session-count: " + maxSessions + "\n" +
