@@ -86,6 +86,9 @@ static stream_t *ht_put(uint32_t sid, int fd) {
     if (!s) return NULL;
     if (pipe(s->pfd) < 0) { free(s); return NULL; }
     fcntl(s->pfd[1], F_SETFL, O_NONBLOCK);
+#ifdef F_SETPIPE_SZ
+    fcntl(s->pfd[0], F_SETPIPE_SZ, (atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING) ? 262144 : 1048576);
+#endif
     s->sid  = sid;
     s->fd   = fd;
     s->next = NULL;
