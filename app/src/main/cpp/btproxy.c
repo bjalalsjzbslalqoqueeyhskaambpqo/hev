@@ -540,8 +540,7 @@ static void conn_handle(int cfd, int tfd, uint32_t sid) {
         return;
     }
 
-    int gaming   = (atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING);
-    int hev_done = 0;
+    int gaming = (atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING);
 
     struct pollfd pfds[2];
     pfds[0].fd     = cfd;
@@ -550,7 +549,7 @@ static void conn_handle(int cfd, int tfd, uint32_t sid) {
     pfds[1].events = POLLIN;
 
     while (g_running) {
-        int pr = poll(pfds, 2, gaming ? 100 : 500);
+        int pr = poll(pfds, 2, gaming ? 100 : -1);
         if (pr < 0) { if (errno == EINTR) continue; break; }
 
         if (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) break;
@@ -571,32 +570,20 @@ static void conn_handle(int cfd, int tfd, uint32_t sid) {
                     break;
                 }
             }
-            if (!hev_done && (pfds[0].revents & POLLIN)) {
+            if (pfds[0].revents & POLLIN) {
                 ssize_t n = recv(cfd, buf, sizeof(buf), 0);
                 if (n < 0) { if (errno == EINTR) continue; break; }
-                if (n == 0) {
-                    shutdown(cfd, SHUT_RD);
-                    tun_send(tfd, T_CLOSE, sid, NULL, 0);
-                    hev_done = 1;
-                    pfds[0].events = 0;
-                    continue;
-                }
+                if (n == 0) break;
                 if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
                     request_tunnel_reset("tun_send T_DATA failed");
                     break;
                 }
             }
         } else {
-            if (!hev_done && (pfds[0].revents & POLLIN)) {
+            if (pfds[0].revents & POLLIN) {
                 ssize_t n = recv(cfd, buf, sizeof(buf), 0);
                 if (n < 0) { if (errno == EINTR) continue; break; }
-                if (n == 0) {
-                    shutdown(cfd, SHUT_RD);
-                    tun_send(tfd, T_CLOSE, sid, NULL, 0);
-                    hev_done = 1;
-                    pfds[0].events = 0;
-                    continue;
-                }
+                if (n == 0) break;
                 if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
                     request_tunnel_reset("tun_send T_DATA failed");
                     break;
@@ -617,15 +604,10 @@ static void conn_handle(int cfd, int tfd, uint32_t sid) {
                 }
             }
         }
-
-        if (hev_done) {
-            struct pollfd wp = { s->pfd[0], POLLIN, 0 };
-            int wr = poll(&wp, 1, 0);
-            if (wr == 0) break;
-        }
     }
 
 done:
+    tun_send(tfd, T_CLOSE, sid, NULL, 0);
     ht_del(sid);
 }
 
