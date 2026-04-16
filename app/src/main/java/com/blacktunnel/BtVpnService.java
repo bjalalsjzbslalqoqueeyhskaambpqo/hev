@@ -85,7 +85,7 @@ public class BtVpnService extends VpnService {
         Thread old = hevThread;
         hevThread  = null;
         if (old != null) {
-            try { old.join(4000); } catch (InterruptedException ignored) {}
+            try { old.join(2000); } catch (InterruptedException ignored) {}
         }
 
         ParcelFileDescriptor oldTun = tunPfd;
@@ -319,7 +319,7 @@ public class BtVpnService extends VpnService {
             Thread ht = hevThread;
             hevThread = null;
             if (ht != null) {
-                try { ht.join(4000); } catch (InterruptedException ignored) {}
+                try { ht.join(2000); } catch (InterruptedException ignored) {}
             }
 
             if (proxyStarted.compareAndSet(true, false)) BtProxy.stop();
