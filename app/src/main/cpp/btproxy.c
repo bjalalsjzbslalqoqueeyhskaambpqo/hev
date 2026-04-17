@@ -85,11 +85,13 @@ typedef struct stream_s {
 static stream_t       *g_ht[HT_SIZE];
 static pthread_mutex_t g_ht_mu[HT_SIZE];
 
+static int g_ht_inited = 0;
 static void ht_init(void) {
     for (int i = 0; i < HT_SIZE; i++) {
         g_ht[i] = NULL;
-        pthread_mutex_init(&g_ht_mu[i], NULL);
+        if (!g_ht_inited) pthread_mutex_init(&g_ht_mu[i], NULL);
     }
+    g_ht_inited = 1;
 }
 
 static stream_t *ht_get(uint32_t sid) {
@@ -520,69 +522,6 @@ static int open_tunnel(void) {
     return fd;
 }
 
-static int socks5_server_handshake(int cfd, uint8_t *out, int *out_len) {
-    uint8_t buf[512];
-    struct timeval tv = {5, 0};
-    setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-    ssize_t n = recv(cfd, buf, sizeof(buf), 0);
-    if (n < 3 || buf[0] != 0x05) return -1;
-    uint8_t auth_resp[2] = {0x05, 0x00};
-    send(cfd, auth_resp, 2, MSG_NOSIGNAL);
-
-    n = recv(cfd, buf, sizeof(buf), 0);
-    if (n < 7 || buf[0] != 0x05 || buf[1] != 0x01) return -1;
-
-    uint8_t atyp = buf[3];
-    char host[256] = {0};
-    uint16_t port = 0;
-    int hdr_len = 0;
-
-    if (atyp == 0x01) {
-        if (n < 10) return -1;
-        snprintf(host, sizeof(host), "%d.%d.%d.%d", buf[4], buf[5], buf[6], buf[7]);
-        port = ((uint16_t)buf[8] << 8) | buf[9];
-        hdr_len = 10;
-    } else if (atyp == 0x03) {
-        int dlen = buf[4];
-        if (n < 5 + dlen + 2) return -1;
-        memcpy(host, buf + 5, dlen); host[dlen] = 0;
-        port = ((uint16_t)buf[5+dlen] << 8) | buf[5+dlen+1];
-        hdr_len = 5 + dlen + 2;
-    } else if (atyp == 0x04) {
-        if (n < 22) return -1;
-        snprintf(host, sizeof(host),
-            "%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
-            buf[4],buf[5],buf[6],buf[7],buf[8],buf[9],buf[10],buf[11],
-            buf[12],buf[13],buf[14],buf[15],buf[16],buf[17],buf[18],buf[19]);
-        port = ((uint16_t)buf[20] << 8) | buf[21];
-        hdr_len = 22;
-    } else return -1;
-
-    uint8_t ok[10] = {0x05,0x00,0x00,0x01, 0,0,0,0, 0,0};
-    send(cfd, ok, 10, MSG_NOSIGNAL);
-
-    tv.tv_sec = 0;
-    setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-    int dname_len = strlen(host);
-    int total = 5 + 1 + dname_len + 2;
-    if (total > MAX_PAYLOAD) return -1;
-    out[0] = 0x05; out[1] = 0x01; out[2] = 0x00; out[3] = 0x03;
-    out[4] = (uint8_t)dname_len;
-    memcpy(out + 5, host, dname_len);
-    out[5 + dname_len]     = (uint8_t)(port >> 8);
-    out[5 + dname_len + 1] = (uint8_t)(port & 0xFF);
-    *out_len = total;
-
-    int extra = (int)n - hdr_len;
-    if (extra > 0 && total + extra <= MAX_PAYLOAD) {
-        memcpy(out + total, buf + hdr_len, extra);
-        *out_len = total + extra;
-    }
-    return 0;
-}
-
 static int flush_pipe_to_cfd(stream_t *s, int cfd, uint8_t *buf) {
     ssize_t n = read(s->pfd[0], buf, MAX_PAYLOAD);
     if (n > 0) {
@@ -914,7 +853,9 @@ static void *main_thread(void *arg) {
         else free(ta_ka);
 
         while (g_running) {
-            
+            pthread_mutex_lock(&g_state_mu);
+            hfd = g_hotspot_fd;
+            pthread_mutex_unlock(&g_state_mu);
             struct pollfd pfds[2];
             pfds[0].fd = rfd; pfds[0].events = POLLIN;
             pfds[1].fd = hfd >= 0 ? hfd : -1; pfds[1].events = POLLIN;
@@ -949,33 +890,7 @@ static void *main_thread(void *arg) {
                     continue;
                 }
                 tune_local(cfd);
-                if (i == 1) {
-                    uint8_t socks_hdr[MAX_PAYLOAD];
-                    int socks_len = 0;
-                    if (socks5_server_handshake(cfd, socks_hdr, &socks_len) < 0) {
-                        close(cfd); continue;
-                    }
-                    uint32_t sid;
-                    do {
-                        sid = (uint32_t)atomic_fetch_add(&g_next_sid, 1) & 0x7FFFFFFF;
-                    } while (sid == 0 || ht_get(sid) != NULL);
-                    stream_t *s = ht_put(sid, cfd);
-                    if (!s) { close(cfd); continue; }
-                    if (tun_send(tfd, T_OPEN, sid, socks_hdr, (uint16_t)socks_len) < 0) {
-                        request_tunnel_reset("hotspot T_OPEN failed");
-                        ht_del(sid);
-                        continue;
-                    }
-                    conn_task_t *t = malloc(sizeof(conn_task_t));
-                    if (!t) { ht_del(sid); continue; }
-                    t->next = NULL; t->cfd = cfd; t->tfd = tfd; t->sid = sid;
-                    pthread_mutex_lock(&g_connq_mu);
-                    if (g_connq_tail) g_connq_tail->next = t;
-                    else g_connq_head = t;
-                    g_connq_tail = t;
-                    pthread_cond_signal(&g_connq_cv);
-                    pthread_mutex_unlock(&g_connq_mu);
-                } else {
+                {
                     uint32_t sid;
                     do {
                         sid = (uint32_t)atomic_fetch_add(&g_next_sid, 1) & 0x7FFFFFFF;
@@ -1016,6 +931,8 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     g_running = 1; g_started = 0;
     g_reconnect_delay = RECONNECT_DELAY_MIN;
     atomic_store(&g_next_sid, 1);
+    if (g_hotspot_fd >= 0) { close(g_hotspot_fd); g_hotspot_fd = -1; }
+    g_hotspot_ip = 0;
     pthread_mutex_unlock(&g_state_mu);
 
     pthread_mutex_lock(&g_start_mu); g_start_st = 0;
