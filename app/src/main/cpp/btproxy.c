@@ -826,27 +826,23 @@ static void *main_thread(void *arg) {
             sleep(2); continue;
         }
 
-        
-        int hfd = -1;
-        if (atomic_load(&g_hotspot_enabled)) {
-            hfd = socket(AF_INET, SOCK_STREAM, 0);
-            if (hfd >= 0) {
-                int one = 1;
-                setsockopt(hfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-                int fl = fcntl(hfd, F_GETFD, 0);
-                if (fl >= 0) fcntl(hfd, F_SETFD, fl | FD_CLOEXEC);
-                struct sockaddr_in ha = {0};
-                ha.sin_family = AF_INET;
-                ha.sin_port   = htons(HOTSPOT_PORT);
-                ha.sin_addr.s_addr = g_hotspot_ip ? g_hotspot_ip : htonl(INADDR_ANY);
-                if (bind(hfd, (struct sockaddr*)&ha, sizeof(ha)) < 0 ||
-                    listen(hfd, RELAY_BACKLOG) < 0) {
-                    close(hfd); hfd = -1;
-                    push_log("E", "hotspot relay bind failed");
-                } else {
-                    g_hotspot_fd = hfd;
-                    push_log("I", "hotspot relay listening on port %d", HOTSPOT_PORT);
-                }
+        int hfd = socket(AF_INET, SOCK_STREAM, 0);
+        if (hfd >= 0) {
+            int hone = 1;
+            setsockopt(hfd, SOL_SOCKET, SO_REUSEADDR, &hone, sizeof(hone));
+            int fl2 = fcntl(hfd, F_GETFD, 0);
+            if (fl2 >= 0) fcntl(hfd, F_SETFD, fl2 | FD_CLOEXEC);
+            struct sockaddr_in ha = {0};
+            ha.sin_family      = AF_INET;
+            ha.sin_port        = htons(HOTSPOT_PORT);
+            ha.sin_addr.s_addr = htonl(INADDR_ANY);
+            if (bind(hfd, (struct sockaddr*)&ha, sizeof(ha)) < 0 ||
+                listen(hfd, RELAY_BACKLOG) < 0) {
+                close(hfd); hfd = -1;
+                push_log("E", "hotspot relay bind failed");
+            } else {
+                g_hotspot_fd = hfd;
+                push_log("I", "hotspot relay port=%d", HOTSPOT_PORT);
             }
         }
 
@@ -1046,26 +1042,12 @@ Java_com_blacktunnel_BtProxy_nativeDrainLogs(JNIEnv *env, jclass clazz) {
 JNIEXPORT void JNICALL
 Java_com_blacktunnel_BtProxy_nativeSetHotspot(JNIEnv *env, jclass clazz,
                                                jboolean enabled, jint ip_int) {
-    int was = atomic_exchange(&g_hotspot_enabled, enabled ? 1 : 0);
     pthread_mutex_lock(&g_state_mu);
     g_hotspot_ip = enabled ? (uint32_t)ip_int : 0;
-    int hfd = g_hotspot_fd;
     pthread_mutex_unlock(&g_state_mu);
-
-    if (!enabled && hfd >= 0) {
-        pthread_mutex_lock(&g_state_mu);
-        g_hotspot_fd = -1;
-        pthread_mutex_unlock(&g_state_mu);
-        shutdown(hfd, SHUT_RDWR);
-        close(hfd);
-        push_log("I", "hotspot relay stopped");
-    } else if (enabled && !was) {
-        push_log("I", "hotspot enabled ip=%u port=%d", (uint32_t)ip_int, HOTSPOT_PORT);
-        
-        request_tunnel_reset("hotspot enabled");
-    }
+    atomic_store(&g_hotspot_enabled, enabled ? 1 : 0);
+    push_log("I", "hotspot %s", enabled ? "enabled" : "disabled");
 }
-
 JNIEXPORT void JNICALL
 Java_com_blacktunnel_BtProxy_nativeSetNetwork(JNIEnv *env, jclass clazz, jlong network_handle) {
     pthread_mutex_lock(&g_state_mu);
