@@ -162,7 +162,7 @@ static pthread_mutex_t g_ready_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_ready_cv = PTHREAD_COND_INITIALIZER;
 static int             g_ready_st = 0;
 
-typedef struct { int cfd, tfd; uint32_t sid; struct conn_task_s *next; } conn_task_t;
+typedef struct conn_task_s { int cfd, tfd; uint32_t sid; struct conn_task_s *next; } conn_task_t;
 static pthread_mutex_t g_qmu  = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_qcv  = PTHREAD_COND_INITIALIZER;
 static conn_task_t    *g_qhead = NULL, *g_qtail = NULL;
@@ -645,6 +645,8 @@ static void *main_thread(void *arg) {
     push_log("I","main_thread done");
     return NULL;
 }
+
+JNIEXPORT void JNICALL Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz);
 
 JNIEXPORT jint JNICALL
 Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
