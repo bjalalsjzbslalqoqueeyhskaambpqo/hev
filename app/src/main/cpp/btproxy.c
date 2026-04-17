@@ -934,7 +934,7 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     pthread_mutex_lock(&g_start_mu);
     if (g_start_st == 0) { g_start_st = -1; pthread_cond_broadcast(&g_start_cv); }
     pthread_mutex_unlock(&g_start_mu);
-    for (int i = 0; i < 20 && g_started; i++) usleep(10000);
+    for (int i = 0; i < 200 && (g_started || g_conn_workers_started > 0); i++) usleep(10000);
     ht_clear();
     if (svc) (*env)->DeleteGlobalRef(env, svc);
     g_started = 0;
