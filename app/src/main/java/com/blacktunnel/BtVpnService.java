@@ -372,7 +372,7 @@ public class BtVpnService extends VpnService {
                 "  task-stack-size: " + taskStack + "\n" +
                 "  tcp-buffer-size: " + tcpBuf + "\n" +
                 "  udp-copy-buffer-nums: " + udpBufNums + "\n" +
-                "  connect-timeout: 2000\n" +
+                "  connect-timeout: 700\n" +
                 "  tcp-read-write-timeout: " + tcpRwTimeout + "\n" +
                 "  udp-read-write-timeout: " + udpRwTimeout + "\n" +
                 "  max-session-count: " + maxSessions + "\n" +
