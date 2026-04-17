@@ -388,6 +388,7 @@ public class BtVpnService extends VpnService {
     }
 
     private void unregisterHotspotReceiver() {
+        BtProxy.nativeSetHotspot(false, 0);
         getSharedPreferences("bt_ui", Context.MODE_PRIVATE)
             .edit().remove("hotspot_ip").apply();
     }
@@ -396,9 +397,11 @@ public class BtVpnService extends VpnService {
         if (!running.get()) return;
         int ip = getHotspotIpInt();
         if (ip != 0) {
+            BtProxy.nativeSetHotspot(true, ip);
             getSharedPreferences("bt_ui", Context.MODE_PRIVATE)
                 .edit().putString("hotspot_ip", intToIp(ip)).apply();
         } else {
+            BtProxy.nativeSetHotspot(false, 0);
             getSharedPreferences("bt_ui", Context.MODE_PRIVATE)
                 .edit().remove("hotspot_ip").apply();
         }
@@ -582,4 +585,5 @@ final class BtProxy {
     public  static native void   nativeApplyMode(boolean enabled);
     public  static native int    nativeGetGamingMode();
     public  static native void   nativeSetNetwork(long networkHandle);
+    public  static native void   nativeSetHotspot(boolean enabled, int ipInt);
 }
