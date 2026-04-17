@@ -6,14 +6,11 @@ import android.app.NotificationManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.content.BroadcastReceiver;
-import android.content.IntentFilter;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 import android.net.VpnService;
-import android.net.wifi.WifiManager;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
@@ -62,7 +59,6 @@ public class BtVpnService extends VpnService {
     private volatile int                  hevTunFd  = -1;
     private volatile File                 hevCfgFile;
     private volatile ConnectivityManager.NetworkCallback networkCallback;
-    private volatile BroadcastReceiver hotspotReceiver;
 
     public static boolean isRunningState() { return runningState.get(); }
 
@@ -385,87 +381,27 @@ public class BtVpnService extends VpnService {
 
     
 
-    public static final int    HOTSPOT_PORT    = 10810;
-    private static final String PREF_HOTSPOT_IP = "hotspot_ip";
-    private static final String PREFS_UI        = "bt_ui";
-
-    private volatile Thread  hotspotPoller;
-    private volatile boolean broadcastSupported = false;
+    public static final int HOTSPOT_PORT = 10810;
 
     private void registerHotspotReceiver() {
-        broadcastSupported = false;
-        try {
-            hotspotReceiver = new BroadcastReceiver() {
-                @Override public void onReceive(Context ctx, Intent intent) {
-                    broadcastSupported = true;
-                    int state = intent.getIntExtra("wifi_state", -1);
-                    if (state == 13)      updateHotspotIp();
-                    else if (state == 11) clearHotspotIp();
-                }
-            };
-            registerReceiver(hotspotReceiver, new IntentFilter("android.net.wifi.WIFI_AP_STATE_CHANGED"));
-        } catch (Exception ignored) {}
-        updateHotspotIp();
-        startHotspotPoller();
-    }
-
-    private void startHotspotPoller() {
-        hotspotPoller = new Thread(() -> {
-            long delay = 5000;
-            boolean wasActive = getHotspotIpInt() != 0;
-            while (running.get()) {
-                try { Thread.sleep(delay); } catch (InterruptedException e) { break; }
-                if (!running.get()) break;
-                if (broadcastSupported) {
-                    delay = 15000;
-                    continue;
-                }
-                boolean isActive = getHotspotIpInt() != 0;
-                if (isActive != wasActive) {
-                    if (isActive) updateHotspotIp();
-                    else          clearHotspotIp();
-                    wasActive = isActive;
-                    delay = 5000;
-                } else {
-                    delay = Math.min(delay + 5000, 30000);
-                }
-            }
-        }, "hotspot-poller");
-        hotspotPoller.setDaemon(true);
-        hotspotPoller.start();
+        refreshHotspotState();
     }
 
     private void unregisterHotspotReceiver() {
-        Thread p = hotspotPoller;
-        hotspotPoller = null;
-        if (p != null) p.interrupt();
-        BroadcastReceiver r = hotspotReceiver;
-        hotspotReceiver = null;
-        if (r != null) try { unregisterReceiver(r); } catch (Exception ignored) {}
-        clearHotspotIp();
-    }
-
-    private void updateHotspotIp() {
-        int ip = getHotspotIpInt();
-        if (ip == 0) { clearHotspotIp(); return; }
-        String ipStr = intToIp(ip);
-        BtProxy.nativeSetHotspot(true, ip);
-        getSharedPreferences(PREFS_UI, Context.MODE_PRIVATE)
-            .edit().putString(PREF_HOTSPOT_IP, ipStr).apply();
-        log("I hotspot ip=" + ipStr);
-    }
-
-    private void clearHotspotIp() {
-        BtProxy.nativeSetHotspot(false, 0);
-        getSharedPreferences(PREFS_UI, Context.MODE_PRIVATE)
-            .edit().remove(PREF_HOTSPOT_IP).apply();
-        log("I hotspot off");
+        getSharedPreferences("bt_ui", Context.MODE_PRIVATE)
+            .edit().remove("hotspot_ip").apply();
     }
 
     public void refreshHotspotState() {
         if (!running.get()) return;
-        if (getHotspotIpInt() != 0) updateHotspotIp();
-        else                         clearHotspotIp();
+        int ip = getHotspotIpInt();
+        if (ip != 0) {
+            getSharedPreferences("bt_ui", Context.MODE_PRIVATE)
+                .edit().putString("hotspot_ip", intToIp(ip)).apply();
+        } else {
+            getSharedPreferences("bt_ui", Context.MODE_PRIVATE)
+                .edit().remove("hotspot_ip").apply();
+        }
     }
 
     public static int getHotspotIpInt() {
@@ -646,5 +582,4 @@ final class BtProxy {
     public  static native void   nativeApplyMode(boolean enabled);
     public  static native int    nativeGetGamingMode();
     public  static native void   nativeSetNetwork(long networkHandle);
-    public  static native void   nativeSetHotspot(boolean enabled, int ipInt);
 }
