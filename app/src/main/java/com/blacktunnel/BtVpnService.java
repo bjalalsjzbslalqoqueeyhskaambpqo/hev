@@ -6,6 +6,10 @@ import android.app.NotificationManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
@@ -50,6 +54,7 @@ public class BtVpnService extends VpnService {
     private volatile Thread               hevThread;
     private volatile int                  hevTunFd  = -1;
     private volatile File                 hevCfgFile;
+    private volatile ConnectivityManager.NetworkCallback networkCallback;
 
     public static boolean isRunningState() { return runningState.get(); }
 
@@ -102,12 +107,22 @@ public class BtVpnService extends VpnService {
 
     public void onTunnelReconnected() {
         if (!running.get() || stopping.get()) return;
+        // Prioridad alta: limpiar el executor y encolar inmediatamente
         executor.execute(this::rebuildHev);
     }
 
+    // ─── Núcleo: arrancar hev sobre un TUN nuevo ──────────────────────────────
+    // Único lugar donde se crea el TUN y se arranca hev.
+    // Devuelve true si todo quedó listo, false si falló.
+
     private boolean startHev() {
+        // 1. Parar hev anterior si estaba corriendo
         stopHev();
+
+        // 2. Cerrar TUN anterior
         closeTun();
+
+        // 3. Crear nuevo TUN
         boolean gaming = BtProxy.isGamingMode(this);
         Builder builder = new Builder()
                 .setSession("bt-hev")
@@ -131,6 +146,8 @@ public class BtVpnService extends VpnService {
             log("E startHev: dup fd falló");
             return false;
         }
+
+        // 4. Escribir config y arrancar hev
         hevCfgFile = writeHevCfg(gaming);
         final int  fd  = hevTunFd;
         final File cfg = hevCfgFile;
@@ -157,6 +174,8 @@ public class BtVpnService extends VpnService {
         }
     }
 
+    // ─── Cerrar TUN ──────────────────────────────────────────────────────────
+
     private void closeTun() {
         ParcelFileDescriptor pfd = tunPfd;
         tunPfd = null;
@@ -166,6 +185,8 @@ public class BtVpnService extends VpnService {
         hevTunFd = -1;
         if (fd >= 0) try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
     }
+
+    // ─── Arranque completo ────────────────────────────────────────────────────
 
     private void startAll() {
         if (running.get() || stopping.get()) return;
@@ -190,6 +211,7 @@ public class BtVpnService extends VpnService {
         }
         proxyStarted.set(true);
         BtProxy.applyStoredGamingMode(this);
+        registerActiveNetwork();
 
         // Arrancar hev con TUN nuevo
         if (!startHev()) {
@@ -211,6 +233,10 @@ public class BtVpnService extends VpnService {
         try {
             running.set(false);
             runningState.set(false);
+
+            unregisterActiveNetwork();
+            // Orden correcto: primero btproxy (libera streams),
+            // luego hev (deja de leer TUN), luego cerrar TUN.
             if (proxyStarted.compareAndSet(true, false)) BtProxy.stop();
             stopHev();
             closeTun();
@@ -220,6 +246,10 @@ public class BtVpnService extends VpnService {
             stopping.set(false);
         }
     }
+
+    // ─── Reconstruir hev tras reconexión del túnel ────────────────────────────
+    // btproxy ya reconectó al servidor — solo necesitamos un TUN y hev nuevos.
+
     private void rebuildHev() {
         if (!running.get() || stopping.get()) return;
         log("I rebuildHev inicio");
@@ -229,11 +259,15 @@ public class BtVpnService extends VpnService {
         }
     }
 
+    // ─── Cambio de modo gaming en caliente ───────────────────────────────────
+
     private void applyRuntimeChanges() {
         if (!running.get() || stopping.get()) return;
         BtProxy.applyRuntimeMode(this);
         rebuildHev();
     }
+
+    // ─── Rutas VPN ───────────────────────────────────────────────────────────
 
     private void addPublicRoutes(Builder builder) {
         String[] excludes = {
@@ -302,6 +336,41 @@ public class BtVpnService extends VpnService {
         } else {
             try { builder.addDisallowedApplication(getPackageName()); } catch (Exception ignored) {}
         }
+    }
+
+    // ─── Red activa ──────────────────────────────────────────────────────────
+
+    private void registerActiveNetwork() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            if (cm == null) return;
+            Network active = cm.getActiveNetwork();
+            if (active != null) {
+                BtProxy.nativeSetNetwork(active.getNetworkHandle());
+            }
+            NetworkRequest req = new NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .build();
+            networkCallback = new ConnectivityManager.NetworkCallback() {
+                @Override public void onAvailable(Network net) {
+                    BtProxy.nativeSetNetwork(net.getNetworkHandle());
+                }
+                @Override public void onLost(Network net) {
+                    BtProxy.nativeSetNetwork(0L);
+                }
+            };
+            cm.registerNetworkCallback(req, networkCallback);
+        } catch (Exception ignored) {}
+    }
+
+    private void unregisterActiveNetwork() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            ConnectivityManager.NetworkCallback cb = networkCallback;
+            networkCallback = null;
+            if (cm != null && cb != null) cm.unregisterNetworkCallback(cb);
+            BtProxy.nativeSetNetwork(0L);
+        } catch (Exception ignored) {}
     }
 
     // ─── Config hev ──────────────────────────────────────────────────────────
@@ -452,4 +521,5 @@ final class BtProxy {
     public  static native void   nativeSetGamingMode(boolean enabled);
     public  static native void   nativeApplyMode(boolean enabled);
     public  static native int    nativeGetGamingMode();
+    public  static native void   nativeSetNetwork(long networkHandle);
 }
