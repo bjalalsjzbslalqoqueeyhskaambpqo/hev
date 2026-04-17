@@ -385,43 +385,87 @@ public class BtVpnService extends VpnService {
 
     
 
-    public static final int HOTSPOT_PORT = 10810;
+    public static final int    HOTSPOT_PORT    = 10810;
+    private static final String PREF_HOTSPOT_IP = "hotspot_ip";
+    private static final String PREFS_UI        = "bt_ui";
+
+    private volatile Thread  hotspotPoller;
+    private volatile boolean broadcastSupported = false;
 
     private void registerHotspotReceiver() {
-        hotspotReceiver = new BroadcastReceiver() {
-            @Override public void onReceive(Context ctx, Intent intent) {
-                int state = intent.getIntExtra(
-                    "wifi_state", WifiManager.WIFI_STATE_UNKNOWN);
-                
-                if (state == 13) {
-                    int ip = getHotspotIpInt();
-                    if (ip != 0) {
-                        BtProxy.nativeSetHotspot(true, ip);
-                        log("I hotspot activo ip=" + intToIp(ip) + " port=" + HOTSPOT_PORT);
-                    }
-                } else if (state == 11) {
-                    BtProxy.nativeSetHotspot(false, 0);
-                    log("I hotspot desactivado");
+        broadcastSupported = false;
+        try {
+            hotspotReceiver = new BroadcastReceiver() {
+                @Override public void onReceive(Context ctx, Intent intent) {
+                    broadcastSupported = true;
+                    int state = intent.getIntExtra("wifi_state", -1);
+                    if (state == 13)      updateHotspotIp();
+                    else if (state == 11) clearHotspotIp();
+                }
+            };
+            registerReceiver(hotspotReceiver, new IntentFilter("android.net.wifi.WIFI_AP_STATE_CHANGED"));
+        } catch (Exception ignored) {}
+        updateHotspotIp();
+        startHotspotPoller();
+    }
+
+    private void startHotspotPoller() {
+        hotspotPoller = new Thread(() -> {
+            long delay = 5000;
+            boolean wasActive = getHotspotIpInt() != 0;
+            while (running.get()) {
+                try { Thread.sleep(delay); } catch (InterruptedException e) { break; }
+                if (!running.get()) break;
+                if (broadcastSupported) {
+                    delay = 15000;
+                    continue;
+                }
+                boolean isActive = getHotspotIpInt() != 0;
+                if (isActive != wasActive) {
+                    if (isActive) updateHotspotIp();
+                    else          clearHotspotIp();
+                    wasActive = isActive;
+                    delay = 5000;
+                } else {
+                    delay = Math.min(delay + 5000, 30000);
                 }
             }
-        };
-        try {
-            IntentFilter f = new IntentFilter("android.net.wifi.WIFI_AP_STATE_CHANGED");
-            registerReceiver(hotspotReceiver, f);
-            
-            int ip = getHotspotIpInt();
-            if (ip != 0) {
-                BtProxy.nativeSetHotspot(true, ip);
-                log("I hotspot ya activo ip=" + intToIp(ip) + " port=" + HOTSPOT_PORT);
-            }
-        } catch (Exception ignored) {}
+        }, "hotspot-poller");
+        hotspotPoller.setDaemon(true);
+        hotspotPoller.start();
     }
 
     private void unregisterHotspotReceiver() {
+        Thread p = hotspotPoller;
+        hotspotPoller = null;
+        if (p != null) p.interrupt();
         BroadcastReceiver r = hotspotReceiver;
         hotspotReceiver = null;
         if (r != null) try { unregisterReceiver(r); } catch (Exception ignored) {}
+        clearHotspotIp();
+    }
+
+    private void updateHotspotIp() {
+        int ip = getHotspotIpInt();
+        if (ip == 0) { clearHotspotIp(); return; }
+        String ipStr = intToIp(ip);
+        BtProxy.nativeSetHotspot(true, ip);
+        getSharedPreferences(PREFS_UI, Context.MODE_PRIVATE)
+            .edit().putString(PREF_HOTSPOT_IP, ipStr).apply();
+        log("I hotspot ip=" + ipStr);
+    }
+
+    private void clearHotspotIp() {
         BtProxy.nativeSetHotspot(false, 0);
+        getSharedPreferences(PREFS_UI, Context.MODE_PRIVATE)
+            .edit().remove(PREF_HOTSPOT_IP).apply();
+        log("I hotspot off");
+    }
+
+    public void refreshHotspotState() {
+        if (!running.get()) return;
+        if (getHotspotIpInt() != 0) updateHotspotIp();
+        else                         clearHotspotIp();
     }
 
     public static int getHotspotIpInt() {
@@ -430,7 +474,6 @@ public class BtVpnService extends VpnService {
             while (ifaces.hasMoreElements()) {
                 NetworkInterface iface = ifaces.nextElement();
                 String name = iface.getName();
-                
                 if (!name.startsWith("wlan") && !name.startsWith("ap")
                         && !name.startsWith("swlan")) continue;
                 Enumeration<InetAddress> addrs = iface.getInetAddresses();
@@ -438,8 +481,7 @@ public class BtVpnService extends VpnService {
                     InetAddress addr = addrs.nextElement();
                     if (addr instanceof Inet4Address && !addr.isLoopbackAddress()) {
                         byte[] b = addr.getAddress();
-                        return ((b[0] & 0xFF) << 24) | ((b[1] & 0xFF) << 16)
-                             | ((b[2] & 0xFF) << 8)  |  (b[3] & 0xFF);
+                        return ((b[0]&0xFF)<<24)|((b[1]&0xFF)<<16)|((b[2]&0xFF)<<8)|(b[3]&0xFF);
                     }
                 }
             }
@@ -447,14 +489,13 @@ public class BtVpnService extends VpnService {
         return 0;
     }
 
-    public static String getHotspotIp() {
-        int ip = getHotspotIpInt();
-        return ip != 0 ? intToIp(ip) : null;
+    public static String getHotspotIp(Context ctx) {
+        return ctx.getSharedPreferences("bt_ui", Context.MODE_PRIVATE)
+                  .getString("hotspot_ip", null);
     }
 
     private static String intToIp(int ip) {
-        return ((ip >> 24) & 0xFF) + "." + ((ip >> 16) & 0xFF) + "."
-             + ((ip >> 8)  & 0xFF) + "." + (ip & 0xFF);
+        return ((ip>>24)&0xFF)+"."+((ip>>16)&0xFF)+"."+((ip>>8)&0xFF)+"."+(ip&0xFF);
     }
 
     
