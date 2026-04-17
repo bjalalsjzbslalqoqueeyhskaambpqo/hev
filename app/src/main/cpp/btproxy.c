@@ -156,11 +156,12 @@ static pthread_mutex_t g_log_mu = PTHREAD_MUTEX_INITIALIZER;
 static char            g_logbuf[32768];
 static size_t          g_loglen = 0;
 
-static volatile int    g_running  = 0;
-static volatile int    g_ready    = 0;
-static pthread_mutex_t g_ready_mu = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t  g_ready_cv = PTHREAD_COND_INITIALIZER;
-static int             g_ready_st = 0;
+static volatile int    g_running   = 0;
+static volatile int    g_ready     = 0;
+static volatile int    g_main_done = 1;
+static pthread_mutex_t g_ready_mu  = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_ready_cv  = PTHREAD_COND_INITIALIZER;
+static int             g_ready_st  = 0;
 
 typedef struct conn_task_s { int cfd, tfd; uint32_t sid; struct conn_task_s *next; } conn_task_t;
 static pthread_mutex_t g_qmu  = PTHREAD_MUTEX_INITIALIZER;
@@ -551,6 +552,7 @@ static void *main_thread(void *arg) {
     int port=(int)(intptr_t)arg;
     int reconnect_delay=RECONNECT_DELAY_MIN;
     int is_first=1;
+    g_main_done=0;
 
     for (int i=0;i<CONN_WORKERS;i++) pthread_create(&g_workers[i],NULL,worker,NULL);
     g_nworkers=CONN_WORKERS;
@@ -643,6 +645,7 @@ static void *main_thread(void *arg) {
     g_nworkers=0;
     ht_clear();
     push_log("I","main_thread done");
+    g_main_done=1;
     return NULL;
 }
 
@@ -663,7 +666,7 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     }
     g_sndbuf=detect_sndbuf();
     ht_init();
-    g_running=1; g_ready=0; g_nworkers=0;
+    g_running=1; g_ready=0;
     atomic_store(&g_next_sid,1);
     pthread_mutex_unlock(&g_mu);
 
@@ -713,7 +716,7 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     if (g_ready_st==0) { g_ready_st=-1; pthread_cond_broadcast(&g_ready_cv); }
     pthread_mutex_unlock(&g_ready_mu);
 
-    for (int i=0;i<200&&g_nworkers>0;i++) usleep(10000);
+    for (int i=0;i<300&&!g_main_done;i++) usleep(10000);
 
     ht_clear();
     if (svc) (*env)->DeleteGlobalRef(env,svc);
