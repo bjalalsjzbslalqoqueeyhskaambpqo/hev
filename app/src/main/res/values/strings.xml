@@ -21,4 +21,6 @@
     <string name="gaming_search_hint">Buscar app o juego…</string>
     <string name="gaming_picker_title">Aplicaciones priorizadas (máx. 3)</string>
     <string name="gaming_loading_apps">Cargando aplicaciones instaladas…</string>
+    <string name="hotspot_title">Servidor local por Hotspot</string>
+    <string name="hotspot_description">Comparte WiFi para habilitar conexiones locales y usa estos datos en el cliente.</string>
 </resources>

@@ -77,6 +77,9 @@ public class SimpleModeActivity extends ComponentActivity {
     private Button selectGamingAppsBtn;
     private LinearLayout gamingModePanel;
     private LinearLayout gamingControlsLayout;
+    private LinearLayout hotspotPanel;
+    private TextView hotspotIpValueView;
+    private TextView hotspotPortValueView;
     private View panelConnectionView;
     private Animator statusPulseAnimator;
     private Animator statusHaloAnimator;
@@ -142,6 +145,9 @@ public class SimpleModeActivity extends ComponentActivity {
         selectGamingAppsBtn = findViewById(R.id.btnSelectGamingApps);
         gamingModePanel = findViewById(R.id.panelGamingMode);
         gamingControlsLayout = findViewById(R.id.layoutGamingControls);
+        hotspotPanel = findViewById(R.id.panelHotspotInfo);
+        hotspotIpValueView = findViewById(R.id.txtHotspotIpValue);
+        hotspotPortValueView = findViewById(R.id.txtHotspotPortValue);
         panelConnectionView = findViewById(R.id.panelConnection);
 
         internalId = BtProxy.getOrCreateInternalId(this);
@@ -154,6 +160,7 @@ public class SimpleModeActivity extends ComponentActivity {
         setUiState(running ? UiState.CONNECTED : UiState.DISCONNECTED);
         lastRunning = running;
         refreshServiceState();
+        refreshHotspotUi();
 
         connectBtn.setOnClickListener(v -> {
             if (uiState == UiState.CONNECTING) return;
@@ -187,6 +194,17 @@ public class SimpleModeActivity extends ComponentActivity {
 
         setupConnectivityMonitor();
         handler.post(stateTicker);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (BtVpnService.isRunningState()) {
+            Intent refreshIntent = new Intent(this, BtVpnService.class);
+            refreshIntent.setAction(BtVpnService.ACTION_REFRESH_HOTSPOT);
+            startService(refreshIntent);
+        }
+        refreshHotspotUi();
     }
 
     private void setupConnectivityMonitor() {
@@ -636,6 +654,19 @@ public class SimpleModeActivity extends ComponentActivity {
         String logs = BtVpnService.dumpLogs();
         updateServerAuthStatus(logs);
         updateUserMetadata(logs);
+        refreshHotspotUi();
+    }
+
+    private void refreshHotspotUi() {
+        if (hotspotPanel == null) return;
+        String ip = BtVpnService.getHotspotIp(this);
+        boolean hasHotspot = ip != null && !ip.isBlank();
+        hotspotPanel.setVisibility(hasHotspot ? View.VISIBLE : View.GONE);
+        if (!hasHotspot) return;
+        if (hotspotIpValueView != null) hotspotIpValueView.setText(ip);
+        if (hotspotPortValueView != null) {
+            hotspotPortValueView.setText(String.valueOf(BtVpnService.HOTSPOT_PORT));
+        }
     }
 
 

@@ -44,6 +44,7 @@ public class BtVpnService extends VpnService {
     public static final String ACTION_START = "com.blacktunnel.START";
     public static final String ACTION_STOP  = "com.blacktunnel.STOP";
     public static final String ACTION_APPLY = "com.blacktunnel.APPLY";
+    public static final String ACTION_REFRESH_HOTSPOT = "com.blacktunnel.REFRESH_HOTSPOT";
     private static final String CH_ID = "bt_vpn";
     private static final int    NF_ID = 33;
 
@@ -98,6 +99,10 @@ public class BtVpnService extends VpnService {
         }
         if (ACTION_APPLY.equals(action)) {
             executor.execute(this::applyRuntimeChanges);
+            return START_STICKY;
+        }
+        if (ACTION_REFRESH_HOTSPOT.equals(action)) {
+            executor.execute(this::refreshHotspotState);
             return START_STICKY;
         }
         executor.execute(this::startAll);
