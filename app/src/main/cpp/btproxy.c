@@ -163,8 +163,6 @@ static volatile int    g_started   = 0;
 static int             g_relay_fd  = -1;
 static int             g_tun_fd    = -1;
 static int             g_hotspot_fd = -1;
-static atomic_int      g_hotspot_enabled = 0;
-static uint32_t        g_hotspot_ip = 0;
 static atomic_int      g_next_sid  = 1;
 static char            g_internal_id[160] = {0};
 static pthread_t       g_main_thr;
@@ -246,12 +244,10 @@ static void request_tunnel_reset(const char *reason) {
     rfd = g_relay_fd; g_relay_fd = -1;
     tfd = g_tun_fd;   g_tun_fd   = -1;
     g_started = 0;
-    int hfd = g_hotspot_fd; g_hotspot_fd = -1;
     pthread_mutex_unlock(&g_state_mu);
     if (reason) push_log("E", "tunnel reset: %s", reason);
     if (rfd >= 0) close(rfd);
     if (tfd >= 0) close(tfd);
-    if (hfd >= 0) close(hfd);
     connq_clear();
     ht_clear();
 }
@@ -1039,15 +1035,7 @@ Java_com_blacktunnel_BtProxy_nativeDrainLogs(JNIEnv *env, jclass clazz) {
     return (*env)->NewStringUTF(env, out);
 }
 
-JNIEXPORT void JNICALL
-Java_com_blacktunnel_BtProxy_nativeSetHotspot(JNIEnv *env, jclass clazz,
-                                               jboolean enabled, jint ip_int) {
-    pthread_mutex_lock(&g_state_mu);
-    g_hotspot_ip = enabled ? (uint32_t)ip_int : 0;
-    pthread_mutex_unlock(&g_state_mu);
-    atomic_store(&g_hotspot_enabled, enabled ? 1 : 0);
-    push_log("I", "hotspot %s", enabled ? "enabled" : "disabled");
-}
+
 JNIEXPORT void JNICALL
 Java_com_blacktunnel_BtProxy_nativeSetNetwork(JNIEnv *env, jclass clazz, jlong network_handle) {
     pthread_mutex_lock(&g_state_mu);
@@ -1071,8 +1059,6 @@ static JNINativeMethod g_methods[] = {
                            (void*)Java_com_blacktunnel_BtProxy_nativeGetGamingMode },
     { "nativeSetNetwork",  "(J)V",
                            (void*)Java_com_blacktunnel_BtProxy_nativeSetNetwork  },
-    { "nativeSetHotspot",  "(ZI)V",
-                           (void*)Java_com_blacktunnel_BtProxy_nativeSetHotspot  },
 };
 
 JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
