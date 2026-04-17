@@ -1,5 +1,6 @@
 #include <jni.h>
 #include <android/log.h>
+#include <android/multinetwork.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netdb.h>
@@ -165,6 +166,7 @@ static char            g_internal_id[160] = {0};
 static pthread_t       g_main_thr;
 static JavaVM         *g_jvm       = NULL;
 static jobject         g_vpn_svc   = NULL;
+static net_handle_t    g_network   = NETWORK_UNSPECIFIED;
 static pthread_mutex_t g_state_mu  = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_tun_wmu   = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_log_mu    = PTHREAD_MUTEX_INITIALIZER;
@@ -372,6 +374,15 @@ static int tun_recv_full(int fd, uint8_t *buf, int len, int timeout_ms) {
 }
 
 static void jni_protect(int fd) {
+    /* Bindear el socket a la red activa si está disponible (API 23+) */
+    net_handle_t net;
+    pthread_mutex_lock(&g_state_mu);
+    net = g_network;
+    pthread_mutex_unlock(&g_state_mu);
+    if (net != NETWORK_UNSPECIFIED) {
+        android_setsocknetwork(net, fd);
+    }
+
     JavaVM *jvm = NULL; jobject svc = NULL;
     pthread_mutex_lock(&g_state_mu);
     jvm = g_jvm; svc = g_vpn_svc;
@@ -507,6 +518,22 @@ static int open_tunnel(void) {
     return fd;
 }
 
+static int flush_pipe_to_cfd(stream_t *s, int cfd, uint8_t *buf) {
+    ssize_t n = read(s->pfd[0], buf, MAX_PAYLOAD);
+    if (n > 0) {
+        ssize_t off = 0;
+        while (off < n) {
+            ssize_t w = send(cfd, buf + off, n - off, MSG_NOSIGNAL);
+            if (w > 0) { off += w; continue; }
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        return 1;
+    }
+    if (n == 0 || (errno != EAGAIN && errno != EINTR)) return -1;
+    return 0;
+}
+
 static void conn_handle(int cfd, int tfd, uint32_t sid) {
     stream_t *s = ht_put(sid, cfd);
     if (!s) { close(cfd); return; }
@@ -514,10 +541,7 @@ static void conn_handle(int cfd, int tfd, uint32_t sid) {
     uint8_t buf[MAX_PAYLOAD];
 
     ssize_t first = recv(cfd, buf, sizeof(buf), 0);
-    if (first <= 0) {
-        ht_del(sid);
-        return;
-    }
+    if (first <= 0) { ht_del(sid); return; }
 
     if (tun_send(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0) {
         request_tunnel_reset("tun_send T_OPEN failed");
@@ -529,36 +553,31 @@ static void conn_handle(int cfd, int tfd, uint32_t sid) {
     int hev_done = 0;
 
     struct pollfd pfds[2];
-    pfds[0].fd     = cfd;
-    pfds[0].events = POLLIN;
-    pfds[1].fd     = s->pfd[0];
-    pfds[1].events = POLLIN;
+    pfds[0].fd = cfd;     pfds[0].events = POLLIN;
+    pfds[1].fd = s->pfd[0]; pfds[1].events = POLLIN;
 
     while (g_running) {
-        int pr = poll(pfds, 2, gaming ? 100 : 500);
+        int timeout = hev_done ? 200 : (gaming ? 100 : 500);
+        int pr = poll(pfds, 2, timeout);
         if (pr < 0) { if (errno == EINTR) continue; break; }
 
         if (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) break;
         if (pfds[1].revents & (POLLERR | POLLHUP | POLLNVAL)) break;
 
-        if (gaming) {
-            if (pfds[1].revents & POLLIN) {
-                ssize_t n = read(s->pfd[0], buf, sizeof(buf));
-                if (n > 0) {
-                    ssize_t off = 0;
-                    while (off < n) {
-                        ssize_t w = send(cfd, buf + off, n - off, MSG_NOSIGNAL);
-                        if (w > 0) { off += w; continue; }
-                        if (errno == EINTR) continue;
-                        goto done;
-                    }
-                } else if (n == 0 || (errno != EAGAIN && errno != EINTR)) {
-                    break;
-                }
-            }
-            if (!hev_done && (pfds[0].revents & POLLIN)) {
+        /* Prioridad: gaming prioriza respuesta (pfd[1]), daily prioriza envío (pfd[0]) */
+        int order[2] = { gaming ? 1 : 0, gaming ? 0 : 1 };
+        for (int oi = 0; oi < 2; oi++) {
+            int idx = order[oi];
+            if (!(pfds[idx].revents & POLLIN)) continue;
+
+            if (idx == 1) {
+                /* pipe → cfd: datos del servidor hacia hev */
+                if (flush_pipe_to_cfd(s, cfd, buf) < 0) goto done;
+            } else {
+                /* cfd → túnel: datos de hev hacia servidor */
+                if (hev_done) continue;
                 ssize_t n = recv(cfd, buf, sizeof(buf), 0);
-                if (n < 0) { if (errno == EINTR) continue; break; }
+                if (n < 0) { if (errno == EINTR) continue; goto done; }
                 if (n == 0) {
                     shutdown(cfd, SHUT_RD);
                     tun_send(tfd, T_CLOSE, sid, NULL, 0);
@@ -568,46 +587,13 @@ static void conn_handle(int cfd, int tfd, uint32_t sid) {
                 }
                 if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
                     request_tunnel_reset("tun_send T_DATA failed");
-                    break;
-                }
-            }
-        } else {
-            if (!hev_done && (pfds[0].revents & POLLIN)) {
-                ssize_t n = recv(cfd, buf, sizeof(buf), 0);
-                if (n < 0) { if (errno == EINTR) continue; break; }
-                if (n == 0) {
-                    shutdown(cfd, SHUT_RD);
-                    tun_send(tfd, T_CLOSE, sid, NULL, 0);
-                    hev_done = 1;
-                    pfds[0].events = 0;
-                    continue;
-                }
-                if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
-                    request_tunnel_reset("tun_send T_DATA failed");
-                    break;
-                }
-            }
-            if (pfds[1].revents & POLLIN) {
-                ssize_t n = read(s->pfd[0], buf, sizeof(buf));
-                if (n > 0) {
-                    ssize_t off = 0;
-                    while (off < n) {
-                        ssize_t w = send(cfd, buf + off, n - off, MSG_NOSIGNAL);
-                        if (w > 0) { off += w; continue; }
-                        if (errno == EINTR) continue;
-                        goto done;
-                    }
-                } else if (n == 0 || (errno != EAGAIN && errno != EINTR)) {
-                    break;
+                    goto done;
                 }
             }
         }
 
-        if (hev_done) {
-            struct pollfd wp = { s->pfd[0], POLLIN, 0 };
-            int wr = poll(&wp, 1, 0);
-            if (wr == 0) break;
-        }
+        /* Si hev cerró su lado, drenar el pipe hasta vaciar y salir */
+        if (hev_done && pr == 0) break;
     }
 
 done:
@@ -674,8 +660,10 @@ static void stop_conn_workers(void) {
     pthread_mutex_lock(&g_connq_mu);
     pthread_cond_broadcast(&g_connq_cv);
     pthread_mutex_unlock(&g_connq_mu);
-    for (int i = 0; i < g_conn_workers_started; i++)
+    for (int i = 0; i < g_conn_workers_started; i++) {
         pthread_join(g_conn_workers[i], NULL);
+        g_conn_workers[i] = 0;
+    }
     g_conn_workers_started = 0;
 }
 
@@ -959,8 +947,12 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     jobject svc = g_vpn_svc; g_vpn_svc = NULL; g_jvm = NULL;
     pthread_mutex_unlock(&g_state_mu);
     atomic_fetch_add(&g_tunnel_epoch, 1);
-    if (g_relay_fd >= 0) { shutdown(g_relay_fd, SHUT_RDWR); close(g_relay_fd); g_relay_fd = -1; }
-    if (g_tun_fd   >= 0) { shutdown(g_tun_fd,   SHUT_RDWR); close(g_tun_fd);   g_tun_fd   = -1; }
+    pthread_mutex_lock(&g_state_mu);
+    int rfd = g_relay_fd; g_relay_fd = -1;
+    int tfd = g_tun_fd;   g_tun_fd   = -1;
+    pthread_mutex_unlock(&g_state_mu);
+    if (rfd >= 0) { shutdown(rfd, SHUT_RDWR); close(rfd); }
+    if (tfd >= 0) { shutdown(tfd, SHUT_RDWR); close(tfd); }
     pthread_mutex_lock(&g_connq_mu);
     pthread_cond_broadcast(&g_connq_cv);
     pthread_mutex_unlock(&g_connq_mu);
@@ -1007,4 +999,40 @@ Java_com_blacktunnel_BtProxy_nativeDrainLogs(JNIEnv *env, jclass clazz) {
     g_log_len = 0; g_log_buf[0] = '\0';
     pthread_mutex_unlock(&g_log_mu);
     return (*env)->NewStringUTF(env, out);
+}
+
+JNIEXPORT void JNICALL
+Java_com_blacktunnel_BtProxy_nativeSetNetwork(JNIEnv *env, jclass clazz, jlong network_handle) {
+    pthread_mutex_lock(&g_state_mu);
+    g_network = (net_handle_t)network_handle;
+    pthread_mutex_unlock(&g_state_mu);
+    push_log("I", "network_handle=%lld", (long long)network_handle);
+}
+
+static JNINativeMethod g_methods[] = {
+    { "nativeStart",       "(ILandroid/net/VpnService;Ljava/lang/String;)I",
+                           (void*)Java_com_blacktunnel_BtProxy_nativeStart       },
+    { "nativeStop",        "()V",
+                           (void*)Java_com_blacktunnel_BtProxy_nativeStop        },
+    { "nativeDrainLogs",   "()Ljava/lang/String;",
+                           (void*)Java_com_blacktunnel_BtProxy_nativeDrainLogs   },
+    { "nativeSetGamingMode","(Z)V",
+                           (void*)Java_com_blacktunnel_BtProxy_nativeSetGamingMode },
+    { "nativeApplyMode",   "(Z)V",
+                           (void*)Java_com_blacktunnel_BtProxy_nativeApplyMode   },
+    { "nativeGetGamingMode","()I",
+                           (void*)Java_com_blacktunnel_BtProxy_nativeGetGamingMode },
+    { "nativeSetNetwork",  "(J)V",
+                           (void*)Java_com_blacktunnel_BtProxy_nativeSetNetwork  },
+};
+
+JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
+    JNIEnv *env = NULL;
+    if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) return JNI_ERR;
+    jclass cls = (*env)->FindClass(env, "com/blacktunnel/BtProxy");
+    if (!cls) return JNI_ERR;
+    if ((*env)->RegisterNatives(env, cls,
+            g_methods, sizeof(g_methods)/sizeof(g_methods[0])) < 0) return JNI_ERR;
+    (*env)->DeleteLocalRef(env, cls);
+    return JNI_VERSION_1_6;
 }
