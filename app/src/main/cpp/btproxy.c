@@ -761,7 +761,7 @@ static void *keepalive_thread(void *arg) {
 
 static void *main_thread(void *arg) {
     int port = (int)(intptr_t)arg;
-    static int first_start = 1;
+    int first_start = 1;
     start_conn_workers();
 
     while (g_running) {
