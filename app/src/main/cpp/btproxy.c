@@ -33,7 +33,6 @@
 #define FRAME_HDR           7
 #define MAX_PAYLOAD         16384
 #define RELAY_BACKLOG       512
-#define HOTSPOT_PORT        10810
 #define PONG_TIMEOUT_SEC    180
 #define RECONNECT_DELAY_MIN 2
 #define RECONNECT_DELAY_MAX 30
@@ -84,8 +83,8 @@ typedef struct stream_s {
 
 static stream_t       *g_ht[HT_SIZE];
 static pthread_mutex_t g_ht_mu[HT_SIZE];
+static int             g_ht_inited = 0;
 
-static int g_ht_inited = 0;
 static void ht_init(void) {
     for (int i = 0; i < HT_SIZE; i++) {
         g_ht[i] = NULL;
@@ -164,8 +163,6 @@ static volatile int    g_running   = 0;
 static volatile int    g_started   = 0;
 static int             g_relay_fd  = -1;
 static int             g_tun_fd    = -1;
-static int             g_hotspot_fd = -1;
-static uint32_t        g_hotspot_ip = 0;
 static atomic_int      g_next_sid  = 1;
 static char            g_internal_id[160] = {0};
 static pthread_t       g_main_thr;
@@ -182,6 +179,7 @@ static pthread_cond_t  g_start_cv  = PTHREAD_COND_INITIALIZER;
 static int             g_start_st  = 0;
 static atomic_long     g_last_pong = 0;
 static atomic_int      g_tunnel_epoch = 0;
+static int             g_reconnect_delay = RECONNECT_DELAY_MIN;
 
 typedef struct conn_task_s {
     struct conn_task_s *next;
@@ -197,8 +195,7 @@ static conn_task_t    *g_connq_tail = NULL;
 static pthread_t       g_conn_workers[CONN_WORKERS];
 static int             g_conn_workers_started = 0;
 
-JNIEXPORT void JNICALL
-Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz);
+JNIEXPORT void JNICALL Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz);
 static void connq_clear(void);
 
 static void push_log(const char *level, const char *fmt, ...) {
@@ -232,7 +229,6 @@ static void notify_tunnel_reconnected(void) {
     if ((*jvm)->GetEnv(jvm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) {
         (*jvm)->AttachCurrentThread(jvm, &env, NULL); att = 1;
     }
-
     jclass cls = (*env)->GetObjectClass(env, svc);
     jmethodID m = (*env)->GetMethodID(env, cls, "onTunnelReconnected", "()V");
     if (m) (*env)->CallVoidMethod(env, svc, m);
@@ -315,12 +311,10 @@ static int tun_send(int tfd, uint8_t type, uint32_t sid,
     hdr[1] = (sid >> 24) & 0xFF; hdr[2] = (sid >> 16) & 0xFF;
     hdr[3] = (sid >>  8) & 0xFF; hdr[4] =  sid        & 0xFF;
     hdr[5] = (dlen >> 8) & 0xFF; hdr[6] =  dlen       & 0xFF;
-
     struct iovec iov[2];
     iov[0].iov_base = hdr;         iov[0].iov_len = FRAME_HDR;
     iov[1].iov_base = (void*)data; iov[1].iov_len = dlen;
     int niov = dlen > 0 ? 2 : 1;
-
     ssize_t total = FRAME_HDR + dlen, sent = 0;
     while (sent < total) {
         pthread_mutex_lock(&g_tun_wmu);
@@ -378,14 +372,11 @@ static int tun_recv_full(int fd, uint8_t *buf, int len, int timeout_ms) {
 }
 
 static void jni_protect(int fd) {
-    
     net_handle_t net;
     pthread_mutex_lock(&g_state_mu);
     net = g_network;
     pthread_mutex_unlock(&g_state_mu);
-    if (net != NETWORK_UNSPECIFIED) {
-        android_setsocknetwork(net, fd);
-    }
+    if (net != NETWORK_UNSPECIFIED) android_setsocknetwork(net, fd);
 
     JavaVM *jvm = NULL; jobject svc = NULL;
     pthread_mutex_lock(&g_state_mu);
@@ -442,7 +433,6 @@ static int extract_header_value(const char *headers, const char *key, char *out,
 
 static int open_tunnel(void) {
     int fd = -1;
-
     struct sockaddr_in6 a6 = {0};
     a6.sin6_family = AF_INET6;
     a6.sin6_port   = htons(PROXY_PORT);
@@ -455,7 +445,6 @@ static int open_tunnel(void) {
                 { close(fd); fd = -1; }
         }
     }
-
     if (fd < 0) {
         struct addrinfo hints = {0}, *res = NULL;
         hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
@@ -473,7 +462,6 @@ static int open_tunnel(void) {
             freeaddrinfo(res);
         }
     }
-
     if (fd < 0) { push_log("E", "tunnel connect failed"); return -1; }
 
     atomic_store(&g_last_pong, (long)time(NULL));
@@ -557,28 +545,23 @@ static void conn_handle(int cfd, int tfd, uint32_t sid) {
     int hev_done = 0;
 
     struct pollfd pfds[2];
-    pfds[0].fd = cfd;     pfds[0].events = POLLIN;
-    pfds[1].fd = s->pfd[0]; pfds[1].events = POLLIN;
+    pfds[0].fd = cfd;        pfds[0].events = POLLIN;
+    pfds[1].fd = s->pfd[0];  pfds[1].events = POLLIN;
 
     while (g_running) {
         int timeout = hev_done ? 200 : (gaming ? 100 : 500);
         int pr = poll(pfds, 2, timeout);
         if (pr < 0) { if (errno == EINTR) continue; break; }
-
         if (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) break;
         if (pfds[1].revents & (POLLERR | POLLHUP | POLLNVAL)) break;
 
-        
         int order[2] = { gaming ? 1 : 0, gaming ? 0 : 1 };
         for (int oi = 0; oi < 2; oi++) {
             int idx = order[oi];
             if (!(pfds[idx].revents & POLLIN)) continue;
-
             if (idx == 1) {
-                
                 if (flush_pipe_to_cfd(s, cfd, buf) < 0) goto done;
             } else {
-                
                 if (hev_done) continue;
                 ssize_t n = recv(cfd, buf, sizeof(buf), 0);
                 if (n < 0) { if (errno == EINTR) continue; goto done; }
@@ -595,11 +578,8 @@ static void conn_handle(int cfd, int tfd, uint32_t sid) {
                 }
             }
         }
-
-        
         if (hev_done && pr == 0) break;
     }
-
 done:
     ht_del(sid);
 }
@@ -742,7 +722,6 @@ static void *keepalive_thread(void *arg) {
     free(ta);
 
     atomic_store(&g_last_pong, (long)time(NULL));
-
     int ping_interval = atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING ? 5 : 20;
     long last_ping = (long)time(NULL);
 
@@ -757,18 +736,15 @@ static void *keepalive_thread(void *arg) {
             request_tunnel_reset("pong timeout in keepalive");
             break;
         }
-
         if (now - last_ping < ping_interval) continue;
         last_ping = now;
 
         struct timespec tp0, tp1;
         clock_gettime(CLOCK_MONOTONIC, &tp0);
-
         if (tun_send(tfd, T_PING, 0, NULL, 0) < 0) {
             request_tunnel_reset("keepalive ping failed");
             break;
         }
-
         int wait_us = 5000;
         for (int elapsed_us = 0; elapsed_us < 3000000 && g_running; elapsed_us += wait_us) {
             long new_pong = atomic_load(&g_last_pong);
@@ -776,15 +752,12 @@ static void *keepalive_thread(void *arg) {
             usleep(wait_us);
             if (wait_us < 50000) wait_us *= 2;
         }
-
         clock_gettime(CLOCK_MONOTONIC, &tp1);
         long rtt = (tp1.tv_sec - tp0.tv_sec) * 1000L + (tp1.tv_nsec - tp0.tv_nsec) / 1000000L;
         if (rtt > 0) push_log("I", "ping_ms=%ld", rtt);
     }
     return NULL;
 }
-
-static int g_reconnect_delay = RECONNECT_DELAY_MIN;
 
 static void *main_thread(void *arg) {
     int port = (int)(intptr_t)arg;
@@ -825,8 +798,6 @@ static void *main_thread(void *arg) {
             sleep(2); continue;
         }
 
-        int hfd = -1;
-
         int cur_epoch = atomic_fetch_add(&g_tunnel_epoch, 1) + 1;
         g_relay_fd = rfd; g_started = 1;
         push_log("I", "relay listening on 127.0.0.1:%d epoch=%d", port, cur_epoch);
@@ -853,23 +824,14 @@ static void *main_thread(void *arg) {
         else free(ta_ka);
 
         while (g_running) {
-            pthread_mutex_lock(&g_state_mu);
-            hfd = g_hotspot_fd;
-            pthread_mutex_unlock(&g_state_mu);
-            struct pollfd pfds[2];
-            pfds[0].fd = rfd; pfds[0].events = POLLIN;
-            pfds[1].fd = hfd >= 0 ? hfd : -1; pfds[1].events = POLLIN;
-            int nfds = hfd >= 0 ? 2 : 1;
-
-            int pr = poll(pfds, nfds, 1000);
+            struct pollfd pfd = { rfd, POLLIN, 0 };
+            int pr = poll(&pfd, 1, 1000);
             if (!g_running) break;
             if (pr < 0) {
                 if (errno == EINTR) continue;
                 request_tunnel_reset("accept poll failed"); break;
             }
-            if (pr > 0 && (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL))) break;
-
-            
+            if (pr > 0 && (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))) break;
             if (pr == 0) {
                 pthread_mutex_lock(&g_state_mu);
                 int still_same = (g_tun_fd == tfd && g_relay_fd == rfd);
@@ -877,29 +839,20 @@ static void *main_thread(void *arg) {
                 if (!still_same) break;
                 continue;
             }
-
-            
-            for (int i = 0; i < nfds; i++) {
-                if (!(pfds[i].revents & POLLIN)) continue;
-                struct sockaddr_in ca; socklen_t cl = sizeof(ca);
-                int cfd = accept(pfds[i].fd, (struct sockaddr*)&ca, &cl);
-                if (cfd < 0) {
-                    if (!g_running) goto tunnel_done;
-                    if (errno == EINTR || errno == EAGAIN) continue;
-                    if (i == 0) { request_tunnel_reset("accept failed"); goto tunnel_done; }
-                    continue;
-                }
-                tune_local(cfd);
-                {
-                    uint32_t sid;
-                    do {
-                        sid = (uint32_t)atomic_fetch_add(&g_next_sid, 1) & 0x7FFFFFFF;
-                    } while (sid == 0 || ht_get(sid) != NULL);
-                    connq_push(cfd, tfd, sid);
-                }
+            struct sockaddr_in ca; socklen_t cl = sizeof(ca);
+            int cfd = accept(rfd, (struct sockaddr*)&ca, &cl);
+            if (cfd < 0) {
+                if (!g_running) break;
+                if (errno == EINTR || errno == EAGAIN) continue;
+                request_tunnel_reset("accept failed"); break;
             }
+            tune_local(cfd);
+            uint32_t sid;
+            do {
+                sid = (uint32_t)atomic_fetch_add(&g_next_sid, 1) & 0x7FFFFFFF;
+            } while (sid == 0 || ht_get(sid) != NULL);
+            connq_push(cfd, tfd, sid);
         }
-        tunnel_done:;
 
         request_tunnel_reset(NULL);
         if (g_running) { push_log("E", "tunnel dropped, reconnecting"); sleep(1); }
@@ -931,8 +884,6 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     g_running = 1; g_started = 0;
     g_reconnect_delay = RECONNECT_DELAY_MIN;
     atomic_store(&g_next_sid, 1);
-    if (g_hotspot_fd >= 0) { close(g_hotspot_fd); g_hotspot_fd = -1; }
-    g_hotspot_ip = 0;
     pthread_mutex_unlock(&g_state_mu);
 
     pthread_mutex_lock(&g_start_mu); g_start_st = 0;
@@ -974,11 +925,9 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     pthread_mutex_lock(&g_state_mu);
     int rfd = g_relay_fd; g_relay_fd = -1;
     int tfd = g_tun_fd;   g_tun_fd   = -1;
-    int hfd = g_hotspot_fd; g_hotspot_fd = -1;
     pthread_mutex_unlock(&g_state_mu);
     if (rfd >= 0) { shutdown(rfd, SHUT_RDWR); close(rfd); }
     if (tfd >= 0) { shutdown(tfd, SHUT_RDWR); close(tfd); }
-    if (hfd >= 0) { shutdown(hfd, SHUT_RDWR); close(hfd); }
     pthread_mutex_lock(&g_connq_mu);
     pthread_cond_broadcast(&g_connq_cv);
     pthread_mutex_unlock(&g_connq_mu);
@@ -1034,71 +983,21 @@ Java_com_blacktunnel_BtProxy_nativeSetNetwork(JNIEnv *env, jclass clazz, jlong n
     push_log("I", "network_handle=%lld", (long long)network_handle);
 }
 
-static int hotspot_open(uint32_t ip) {
-    int hfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (hfd < 0) return -1;
-    int one = 1;
-    setsockopt(hfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    int fl = fcntl(hfd, F_GETFD, 0);
-    if (fl >= 0) fcntl(hfd, F_SETFD, fl | FD_CLOEXEC);
-    struct sockaddr_in ha = {0};
-    ha.sin_family      = AF_INET;
-    ha.sin_port        = htons(HOTSPOT_PORT);
-    ha.sin_addr.s_addr = ip;
-    if (bind(hfd, (struct sockaddr*)&ha, sizeof(ha)) < 0 ||
-        listen(hfd, RELAY_BACKLOG) < 0) {
-        close(hfd);
-        push_log("E", "hotspot bind failed");
-        return -1;
-    }
-    push_log("I", "hotspot port=%d", HOTSPOT_PORT);
-    return hfd;
-}
-
-JNIEXPORT void JNICALL
-Java_com_blacktunnel_BtProxy_nativeSetHotspot(JNIEnv *env, jclass clazz,
-                                               jboolean enabled, jint ip_int) {
-    pthread_mutex_lock(&g_state_mu);
-    int old_hfd = g_hotspot_fd;
-    g_hotspot_fd = -1;
-    g_hotspot_ip = enabled ? (uint32_t)ip_int : 0;
-    pthread_mutex_unlock(&g_state_mu);
-
-    if (old_hfd >= 0) {
-        shutdown(old_hfd, SHUT_RDWR);
-        close(old_hfd);
-    }
-
-    if (!enabled || !ip_int) {
-        push_log("I", "hotspot off");
-        return;
-    }
-
-    int new_hfd = hotspot_open((uint32_t)ip_int);
-    if (new_hfd >= 0) {
-        pthread_mutex_lock(&g_state_mu);
-        g_hotspot_fd = new_hfd;
-        pthread_mutex_unlock(&g_state_mu);
-    }
-}
-
 static JNINativeMethod g_methods[] = {
-    { "nativeStart",       "(ILandroid/net/VpnService;Ljava/lang/String;)I",
-                           (void*)Java_com_blacktunnel_BtProxy_nativeStart       },
-    { "nativeStop",        "()V",
-                           (void*)Java_com_blacktunnel_BtProxy_nativeStop        },
-    { "nativeDrainLogs",   "()Ljava/lang/String;",
-                           (void*)Java_com_blacktunnel_BtProxy_nativeDrainLogs   },
+    { "nativeStart",        "(ILandroid/net/VpnService;Ljava/lang/String;)I",
+                            (void*)Java_com_blacktunnel_BtProxy_nativeStart       },
+    { "nativeStop",         "()V",
+                            (void*)Java_com_blacktunnel_BtProxy_nativeStop        },
+    { "nativeDrainLogs",    "()Ljava/lang/String;",
+                            (void*)Java_com_blacktunnel_BtProxy_nativeDrainLogs   },
     { "nativeSetGamingMode","(Z)V",
-                           (void*)Java_com_blacktunnel_BtProxy_nativeSetGamingMode },
-    { "nativeApplyMode",   "(Z)V",
-                           (void*)Java_com_blacktunnel_BtProxy_nativeApplyMode   },
+                            (void*)Java_com_blacktunnel_BtProxy_nativeSetGamingMode },
+    { "nativeApplyMode",    "(Z)V",
+                            (void*)Java_com_blacktunnel_BtProxy_nativeApplyMode   },
     { "nativeGetGamingMode","()I",
-                           (void*)Java_com_blacktunnel_BtProxy_nativeGetGamingMode },
-    { "nativeSetNetwork",  "(J)V",
-                           (void*)Java_com_blacktunnel_BtProxy_nativeSetNetwork  },
-    { "nativeSetHotspot",  "(ZI)V",
-                           (void*)Java_com_blacktunnel_BtProxy_nativeSetHotspot  },
+                            (void*)Java_com_blacktunnel_BtProxy_nativeGetGamingMode },
+    { "nativeSetNetwork",   "(J)V",
+                            (void*)Java_com_blacktunnel_BtProxy_nativeSetNetwork  },
 };
 
 JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
