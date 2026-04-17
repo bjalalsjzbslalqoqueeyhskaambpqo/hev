@@ -6,11 +6,18 @@ import android.app.NotificationManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.BroadcastReceiver;
+import android.content.IntentFilter;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 import android.net.VpnService;
+import android.net.wifi.WifiManager;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.util.Enumeration;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
@@ -55,10 +62,11 @@ public class BtVpnService extends VpnService {
     private volatile int                  hevTunFd  = -1;
     private volatile File                 hevCfgFile;
     private volatile ConnectivityManager.NetworkCallback networkCallback;
+    private volatile BroadcastReceiver hotspotReceiver;
 
     public static boolean isRunningState() { return runningState.get(); }
 
-    // ─── Logs ────────────────────────────────────────────────────────────────
+    
 
     public static void log(String msg) {
         String line = "[" + new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()) + "] " + msg + "\n";
@@ -79,7 +87,7 @@ public class BtVpnService extends VpnService {
         }
     }
 
-    // ─── Intents ─────────────────────────────────────────────────────────────
+    
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -103,26 +111,26 @@ public class BtVpnService extends VpnService {
         super.onDestroy();
     }
 
-    // ─── Callback desde C cuando el túnel TCP reconecta ──────────────────────
+    
 
     public void onTunnelReconnected() {
         if (!running.get() || stopping.get()) return;
-        // Prioridad alta: limpiar el executor y encolar inmediatamente
+        
         executor.execute(this::rebuildHev);
     }
 
-    // ─── Núcleo: arrancar hev sobre un TUN nuevo ──────────────────────────────
-    // Único lugar donde se crea el TUN y se arranca hev.
-    // Devuelve true si todo quedó listo, false si falló.
+    
+    
+    
 
     private boolean startHev() {
-        // 1. Parar hev anterior si estaba corriendo
+        
         stopHev();
 
-        // 2. Cerrar TUN anterior
+        
         closeTun();
 
-        // 3. Crear nuevo TUN
+        
         boolean gaming = BtProxy.isGamingMode(this);
         Builder builder = new Builder()
                 .setSession("bt-hev")
@@ -147,7 +155,7 @@ public class BtVpnService extends VpnService {
             return false;
         }
 
-        // 4. Escribir config y arrancar hev
+        
         hevCfgFile = writeHevCfg(gaming);
         final int  fd  = hevTunFd;
         final File cfg = hevCfgFile;
@@ -163,7 +171,7 @@ public class BtVpnService extends VpnService {
         return true;
     }
 
-    // ─── Parar hev limpiamente ────────────────────────────────────────────────
+    
 
     private void stopHev() {
         try { HevBridge.stop(); } catch (Throwable ignored) {}
@@ -174,7 +182,7 @@ public class BtVpnService extends VpnService {
         }
     }
 
-    // ─── Cerrar TUN ──────────────────────────────────────────────────────────
+    
 
     private void closeTun() {
         ParcelFileDescriptor pfd = tunPfd;
@@ -186,7 +194,7 @@ public class BtVpnService extends VpnService {
         if (fd >= 0) try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
     }
 
-    // ─── Arranque completo ────────────────────────────────────────────────────
+    
 
     private void startAll() {
         if (running.get() || stopping.get()) return;
@@ -194,13 +202,13 @@ public class BtVpnService extends VpnService {
         createChannel();
         startForeground(NF_ID, buildNotif());
 
-        // Limpiar cualquier instancia anterior de btproxy
+        
         BtProxy.stop();
         proxyStarted.set(false);
 
         String internalId = BtProxy.getOrCreateInternalId(this);
 
-        // Arrancar btproxy (conecta túnel TCP al servidor)
+        
         if (BtProxy.start(this, internalId) < 0) {
             SystemClock.sleep(250);
             if (BtProxy.start(this, internalId) < 0) {
@@ -212,8 +220,9 @@ public class BtVpnService extends VpnService {
         proxyStarted.set(true);
         BtProxy.applyStoredGamingMode(this);
         registerActiveNetwork();
+        registerHotspotReceiver();
 
-        // Arrancar hev con TUN nuevo
+        
         if (!startHev()) {
             BtProxy.stop();
             proxyStarted.set(false);
@@ -226,7 +235,7 @@ public class BtVpnService extends VpnService {
         log("I startAll completo");
     }
 
-    // ─── Parada completa ──────────────────────────────────────────────────────
+    
 
     private void stopAll() {
         if (!stopping.compareAndSet(false, true)) return;
@@ -235,8 +244,9 @@ public class BtVpnService extends VpnService {
             runningState.set(false);
 
             unregisterActiveNetwork();
-            // Orden correcto: primero btproxy (libera streams),
-            // luego hev (deja de leer TUN), luego cerrar TUN.
+            unregisterHotspotReceiver();
+            
+            
             if (proxyStarted.compareAndSet(true, false)) BtProxy.stop();
             stopHev();
             closeTun();
@@ -247,8 +257,8 @@ public class BtVpnService extends VpnService {
         }
     }
 
-    // ─── Reconstruir hev tras reconexión del túnel ────────────────────────────
-    // btproxy ya reconectó al servidor — solo necesitamos un TUN y hev nuevos.
+    
+    
 
     private void rebuildHev() {
         if (!running.get() || stopping.get()) return;
@@ -259,7 +269,7 @@ public class BtVpnService extends VpnService {
         }
     }
 
-    // ─── Cambio de modo gaming en caliente ───────────────────────────────────
+    
 
     private void applyRuntimeChanges() {
         if (!running.get() || stopping.get()) return;
@@ -267,7 +277,7 @@ public class BtVpnService extends VpnService {
         rebuildHev();
     }
 
-    // ─── Rutas VPN ───────────────────────────────────────────────────────────
+    
 
     private void addPublicRoutes(Builder builder) {
         String[] excludes = {
@@ -338,7 +348,7 @@ public class BtVpnService extends VpnService {
         }
     }
 
-    // ─── Red activa ──────────────────────────────────────────────────────────
+    
 
     private void registerActiveNetwork() {
         try {
@@ -373,7 +383,81 @@ public class BtVpnService extends VpnService {
         } catch (Exception ignored) {}
     }
 
-    // ─── Config hev ──────────────────────────────────────────────────────────
+    
+
+    public static final int HOTSPOT_PORT = 10810;
+
+    private void registerHotspotReceiver() {
+        hotspotReceiver = new BroadcastReceiver() {
+            @Override public void onReceive(Context ctx, Intent intent) {
+                int state = intent.getIntExtra(
+                    "wifi_state", WifiManager.WIFI_STATE_UNKNOWN);
+                
+                if (state == 13) {
+                    int ip = getHotspotIpInt();
+                    if (ip != 0) {
+                        BtProxy.nativeSetHotspot(true, ip);
+                        log("I hotspot activo ip=" + intToIp(ip) + " port=" + HOTSPOT_PORT);
+                    }
+                } else if (state == 11) {
+                    BtProxy.nativeSetHotspot(false, 0);
+                    log("I hotspot desactivado");
+                }
+            }
+        };
+        try {
+            IntentFilter f = new IntentFilter("android.net.wifi.WIFI_AP_STATE_CHANGED");
+            registerReceiver(hotspotReceiver, f);
+            
+            int ip = getHotspotIpInt();
+            if (ip != 0) {
+                BtProxy.nativeSetHotspot(true, ip);
+                log("I hotspot ya activo ip=" + intToIp(ip) + " port=" + HOTSPOT_PORT);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void unregisterHotspotReceiver() {
+        BroadcastReceiver r = hotspotReceiver;
+        hotspotReceiver = null;
+        if (r != null) try { unregisterReceiver(r); } catch (Exception ignored) {}
+        BtProxy.nativeSetHotspot(false, 0);
+    }
+
+    public static int getHotspotIpInt() {
+        try {
+            Enumeration<NetworkInterface> ifaces = NetworkInterface.getNetworkInterfaces();
+            while (ifaces.hasMoreElements()) {
+                NetworkInterface iface = ifaces.nextElement();
+                String name = iface.getName();
+                
+                if (!name.startsWith("wlan") && !name.startsWith("ap")
+                        && !name.startsWith("swlan")) continue;
+                Enumeration<InetAddress> addrs = iface.getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    InetAddress addr = addrs.nextElement();
+                    if (addr instanceof Inet4Address && !addr.isLoopbackAddress()) {
+                        byte[] b = addr.getAddress();
+                        return ((b[0] & 0xFF) << 24) | ((b[1] & 0xFF) << 16)
+                             | ((b[2] & 0xFF) << 8)  |  (b[3] & 0xFF);
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return 0;
+    }
+
+    public static String getHotspotIp() {
+        int ip = getHotspotIpInt();
+        return ip != 0 ? intToIp(ip) : null;
+    }
+
+    private static String intToIp(int ip) {
+        return ((ip >> 24) & 0xFF) + "." + ((ip >> 16) & 0xFF) + "."
+             + ((ip >> 8)  & 0xFF) + "." + (ip & 0xFF);
+    }
+
+    
 
     private File writeHevCfg(boolean gaming) {
         int mtu          = gaming ? 1500  : 1480;
@@ -421,7 +505,7 @@ public class BtVpnService extends VpnService {
         return f;
     }
 
-    // ─── Notificación ────────────────────────────────────────────────────────
+    
 
     private void createChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
@@ -439,7 +523,7 @@ public class BtVpnService extends VpnService {
                 .build();
     }
 
-    // ─── JNI bridge ──────────────────────────────────────────────────────────
+    
 
     static final class HevBridge {
         static { System.loadLibrary("hev-jni"); }
@@ -447,7 +531,6 @@ public class BtVpnService extends VpnService {
         static native void stop();
     }
 }
-
 
 final class BtProxy {
     static final int SOCKS5_PORT = 10809;
@@ -522,4 +605,5 @@ final class BtProxy {
     public  static native void   nativeApplyMode(boolean enabled);
     public  static native int    nativeGetGamingMode();
     public  static native void   nativeSetNetwork(long networkHandle);
+    public  static native void   nativeSetHotspot(boolean enabled, int ipInt);
 }
