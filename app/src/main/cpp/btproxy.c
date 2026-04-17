@@ -395,8 +395,17 @@ static int open_tunnel(void) {
     }
 
     char uname[128]={0}, udays[32]={0};
-    const char *p=strstr(h2,"X-User-Name:"); if(p) sscanf(p+12," %127s",uname);
-    p=strstr(h2,"X-User-Days:");  if(p) sscanf(p+12," %31s",udays);
+    const char *p; char *e;
+    if ((p=strstr(h2,"X-User-Name:"))!=NULL) {
+        p+=12; while(*p==' ')p++;
+        if ((e=strstr(p,"
+"))!=NULL) { int n=(int)(e-p); if(n>0&&n<128){memcpy(uname,p,n);uname[n]=0;} }
+    }
+    if ((p=strstr(h2,"X-User-Days:"))!=NULL) {
+        p+=12; while(*p==' ')p++;
+        if ((e=strstr(p,"
+"))!=NULL) { int n=(int)(e-p); if(n>0&&n<32){memcpy(udays,p,n);udays[n]=0;} }
+    }
     if (uname[0]) push_log("I","user=%s days=%s",uname,udays);
     push_log("I","tunnel ok");
     return fd;
@@ -689,15 +698,14 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     pthread_mutex_unlock(&g_ready_mu);
 
     if (st!=1) {
-        Java_com_blacktunnel_BtProxy_nativeStop(env,clazz);
+        do_shutdown(env);
         return -1;
     }
     push_log("I","nativeStart ok");
     return 0;
 }
 
-JNIEXPORT void JNICALL
-Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
+static void do_shutdown(JNIEnv *env) {
     pthread_mutex_lock(&g_mu);
     if (!g_running) { pthread_mutex_unlock(&g_mu); return; }
     g_running=0;
@@ -708,19 +716,42 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     pthread_mutex_unlock(&g_mu);
 
     atomic_fetch_add(&g_tunnel_epoch,1);
+
     if (rfd>=0) { shutdown(rfd,SHUT_RDWR); close(rfd); }
     if (tfd>=0) { shutdown(tfd,SHUT_RDWR); close(tfd); }
 
-    pthread_mutex_lock(&g_qmu); pthread_cond_broadcast(&g_qcv); pthread_mutex_unlock(&g_qmu);
+    pthread_mutex_lock(&g_qmu);
+    pthread_cond_broadcast(&g_qcv);
+    conn_task_t *t=g_qhead; g_qhead=g_qtail=NULL;
+    pthread_mutex_unlock(&g_qmu);
+    while (t) { conn_task_t *nx=t->next; close(t->cfd); free(t); t=nx; }
+
     pthread_mutex_lock(&g_ready_mu);
-    if (g_ready_st==0) { g_ready_st=-1; pthread_cond_broadcast(&g_ready_cv); }
+    g_ready_st=-1; pthread_cond_broadcast(&g_ready_cv);
     pthread_mutex_unlock(&g_ready_mu);
 
-    for (int i=0;i<300&&!g_main_done;i++) usleep(10000);
+    for (int i=0;i<500&&!g_main_done;i++) usleep(10000);
 
     ht_clear();
-    if (svc) (*env)->DeleteGlobalRef(env,svc);
+    if (svc && env) (*env)->DeleteGlobalRef(env,svc);
+    else if (svc) {
+        JavaVM *jvm=NULL;
+        pthread_mutex_lock(&g_mu); jvm=g_jvm; pthread_mutex_unlock(&g_mu);
+        if (jvm) {
+            JNIEnv *e2=NULL; int att=0;
+            if ((*jvm)->GetEnv(jvm,(void**)&e2,JNI_VERSION_1_6)!=JNI_OK)
+                { (*jvm)->AttachCurrentThread(jvm,&e2,NULL); att=1; }
+            if (e2) (*e2)->DeleteGlobalRef(e2,svc);
+            if (att) (*jvm)->DetachCurrentThread(jvm);
+        }
+    }
     g_ready=0;
+    push_log("I","shutdown done");
+}
+
+JNIEXPORT void JNICALL
+Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
+    do_shutdown(env);
 }
 
 JNIEXPORT void JNICALL
