@@ -77,7 +77,12 @@ public class SimpleModeActivity extends ComponentActivity {
     private Button selectGamingAppsBtn;
     private LinearLayout gamingModePanel;
     private LinearLayout gamingControlsLayout;
+    private LinearLayout layoutHotspot;
+    private LinearLayout layoutHotspotData;
     private View panelConnectionView;
+    private TextView tvEstado;
+    private TextView tvIp;
+    private TextView tvPuerto;
     private Animator statusPulseAnimator;
     private Animator statusHaloAnimator;
     private final ExecutorService appLoadExecutor = Executors.newSingleThreadExecutor();
@@ -142,6 +147,11 @@ public class SimpleModeActivity extends ComponentActivity {
         selectGamingAppsBtn = findViewById(R.id.btnSelectGamingApps);
         gamingModePanel = findViewById(R.id.panelGamingMode);
         gamingControlsLayout = findViewById(R.id.layoutGamingControls);
+        layoutHotspot = findViewById(R.id.layoutHotspot);
+        layoutHotspotData = findViewById(R.id.layoutHotspotData);
+        tvEstado = findViewById(R.id.tvEstado);
+        tvIp = findViewById(R.id.tvIp);
+        tvPuerto = findViewById(R.id.tvPuerto);
         panelConnectionView = findViewById(R.id.panelConnection);
 
         internalId = BtProxy.getOrCreateInternalId(this);
@@ -187,6 +197,12 @@ public class SimpleModeActivity extends ComponentActivity {
 
         setupConnectivityMonitor();
         handler.post(stateTicker);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        refreshHotspotUi();
     }
 
     private void setupConnectivityMonitor() {
@@ -636,6 +652,38 @@ public class SimpleModeActivity extends ComponentActivity {
         String logs = BtVpnService.dumpLogs();
         updateServerAuthStatus(logs);
         updateUserMetadata(logs);
+        refreshHotspotUi();
+    }
+
+    private void refreshHotspotUi() {
+        if (layoutHotspot == null) return;
+
+        if (!BtVpnService.isRunningState()) {
+            layoutHotspot.setVisibility(View.GONE);
+            return;
+        }
+
+        layoutHotspot.setVisibility(View.VISIBLE);
+        int hotspotIpInt = BtVpnService.getHotspotIpInt();
+        if (hotspotIpInt != 0) {
+            if (tvEstado != null) tvEstado.setVisibility(View.GONE);
+            if (layoutHotspotData != null) layoutHotspotData.setVisibility(View.VISIBLE);
+            if (tvIp != null) tvIp.setText("IP: " + intToIp(hotspotIpInt));
+            if (tvPuerto != null) tvPuerto.setText("Puerto: " + BtVpnService.HOTSPOT_PORT);
+        } else {
+            if (tvEstado != null) {
+                tvEstado.setVisibility(View.VISIBLE);
+                tvEstado.setText("Activá 'Compartir internet' para ver los datos de conexión");
+            }
+            if (layoutHotspotData != null) layoutHotspotData.setVisibility(View.GONE);
+        }
+    }
+
+    private String intToIp(int ip) {
+        return ((ip >> 24) & 0xFF) + "."
+                + ((ip >> 16) & 0xFF) + "."
+                + ((ip >> 8) & 0xFF) + "."
+                + (ip & 0xFF);
     }
 
 
