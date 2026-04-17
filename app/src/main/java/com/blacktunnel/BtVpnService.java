@@ -216,7 +216,6 @@ public class BtVpnService extends VpnService {
         proxyStarted.set(true);
         BtProxy.applyStoredGamingMode(this);
         registerActiveNetwork();
-        registerHotspotReceiver();
 
         
         if (!startHev()) {
@@ -228,6 +227,7 @@ public class BtVpnService extends VpnService {
 
         running.set(true);
         runningState.set(true);
+        registerHotspotReceiver();
         log("I startAll completo");
     }
 
@@ -360,9 +360,11 @@ public class BtVpnService extends VpnService {
             networkCallback = new ConnectivityManager.NetworkCallback() {
                 @Override public void onAvailable(Network net) {
                     BtProxy.nativeSetNetwork(net.getNetworkHandle());
+                    refreshHotspotState();
                 }
                 @Override public void onLost(Network net) {
                     BtProxy.nativeSetNetwork(0L);
+                    refreshHotspotState();
                 }
             };
             cm.registerNetworkCallback(req, networkCallback);
