@@ -11,10 +11,6 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 import android.net.VpnService;
-import java.net.Inet4Address;
-import java.net.InetAddress;
-import java.net.NetworkInterface;
-import java.util.Enumeration;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
@@ -44,11 +40,11 @@ public class BtVpnService extends VpnService {
     private static final String CH_ID = "bt_vpn";
     private static final int    NF_ID = 33;
 
-    private static final AtomicBoolean runningState  = new AtomicBoolean(false);
-    private static final AtomicBoolean proxyStarted  = new AtomicBoolean(false);
-    private static final Object        LOG_LOCK       = new Object();
-    private static final StringBuilder LOGS           = new StringBuilder(8192);
-    private static final int           MAX_LOG_CHARS  = 24000;
+    private static final AtomicBoolean runningState = new AtomicBoolean(false);
+    private static final AtomicBoolean proxyStarted = new AtomicBoolean(false);
+    private static final Object        LOG_LOCK      = new Object();
+    private static final StringBuilder LOGS          = new StringBuilder(8192);
+    private static final int           MAX_LOG_CHARS = 24000;
 
     private final AtomicBoolean  running  = new AtomicBoolean(false);
     private final AtomicBoolean  stopping = new AtomicBoolean(false);
@@ -61,8 +57,6 @@ public class BtVpnService extends VpnService {
     private volatile ConnectivityManager.NetworkCallback networkCallback;
 
     public static boolean isRunningState() { return runningState.get(); }
-
-    
 
     public static void log(String msg) {
         String line = "[" + new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()) + "] " + msg + "\n";
@@ -82,8 +76,6 @@ public class BtVpnService extends VpnService {
             return LOGS.toString();
         }
     }
-
-    
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -107,26 +99,15 @@ public class BtVpnService extends VpnService {
         super.onDestroy();
     }
 
-    
-
     public void onTunnelReconnected() {
         if (!running.get() || stopping.get()) return;
-        
         executor.execute(this::rebuildHev);
     }
 
-    
-    
-    
-
     private boolean startHev() {
-        
         stopHev();
-
-        
         closeTun();
 
-        
         boolean gaming = BtProxy.isGamingMode(this);
         Builder builder = new Builder()
                 .setSession("bt-hev")
@@ -138,10 +119,7 @@ public class BtVpnService extends VpnService {
         applyPerAppVpnPolicy(builder);
 
         tunPfd = builder.establish();
-        if (tunPfd == null) {
-            log("E startHev: establish() falló");
-            return false;
-        }
+        if (tunPfd == null) { log("E startHev: establish falló"); return false; }
 
         try {
             hevTunFd = ParcelFileDescriptor.dup(tunPfd.getFileDescriptor()).detachFd();
@@ -151,7 +129,6 @@ public class BtVpnService extends VpnService {
             return false;
         }
 
-        
         hevCfgFile = writeHevCfg(gaming);
         final int  fd  = hevTunFd;
         final File cfg = hevCfgFile;
@@ -162,35 +139,25 @@ public class BtVpnService extends VpnService {
             if (hevTunFd == fd) hevTunFd = -1;
         }, "hev");
         hevThread.start();
-
         log("I startHev ok gaming=" + gaming);
         return true;
     }
-
-    
 
     private void stopHev() {
         try { HevBridge.stop(); } catch (Throwable ignored) {}
         Thread t = hevThread;
         hevThread = null;
-        if (t != null) {
-            try { t.join(2000); } catch (InterruptedException ignored) {}
-        }
+        if (t != null) try { t.join(2000); } catch (InterruptedException ignored) {}
     }
-
-    
 
     private void closeTun() {
         ParcelFileDescriptor pfd = tunPfd;
         tunPfd = null;
         if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
-
         int fd = hevTunFd;
         hevTunFd = -1;
         if (fd >= 0) try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
     }
-
-    
 
     private void startAll() {
         if (running.get() || stopping.get()) return;
@@ -198,13 +165,11 @@ public class BtVpnService extends VpnService {
         createChannel();
         startForeground(NF_ID, buildNotif());
 
-        
         BtProxy.stop();
         proxyStarted.set(false);
 
         String internalId = BtProxy.getOrCreateInternalId(this);
 
-        
         if (BtProxy.start(this, internalId) < 0) {
             SystemClock.sleep(250);
             if (BtProxy.start(this, internalId) < 0) {
@@ -216,12 +181,11 @@ public class BtVpnService extends VpnService {
         proxyStarted.set(true);
         BtProxy.applyStoredGamingMode(this);
         registerActiveNetwork();
-        registerHotspotReceiver();
 
-        
         if (!startHev()) {
             BtProxy.stop();
             proxyStarted.set(false);
+            unregisterActiveNetwork();
             stopForeground(STOP_FOREGROUND_REMOVE);
             return;
         }
@@ -231,18 +195,12 @@ public class BtVpnService extends VpnService {
         log("I startAll completo");
     }
 
-    
-
     private void stopAll() {
         if (!stopping.compareAndSet(false, true)) return;
         try {
             running.set(false);
             runningState.set(false);
-
             unregisterActiveNetwork();
-            unregisterHotspotReceiver();
-            
-            
             if (proxyStarted.compareAndSet(true, false)) BtProxy.stop();
             stopHev();
             closeTun();
@@ -253,19 +211,14 @@ public class BtVpnService extends VpnService {
         }
     }
 
-    
-    
-
     private void rebuildHev() {
         if (!running.get() || stopping.get()) return;
         log("I rebuildHev inicio");
         if (!startHev()) {
-            log("E rebuildHev falló — parando todo");
+            log("E rebuildHev falló");
             stopAll();
         }
     }
-
-    
 
     private void applyRuntimeChanges() {
         if (!running.get() || stopping.get()) return;
@@ -273,7 +226,37 @@ public class BtVpnService extends VpnService {
         rebuildHev();
     }
 
-    
+    private void registerActiveNetwork() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            if (cm == null) return;
+            Network active = cm.getActiveNetwork();
+            if (active != null) BtProxy.nativeSetNetwork(active.getNetworkHandle());
+            networkCallback = new ConnectivityManager.NetworkCallback() {
+                @Override public void onAvailable(Network net) {
+                    BtProxy.nativeSetNetwork(net.getNetworkHandle());
+                }
+                @Override public void onLost(Network net) {
+                    BtProxy.nativeSetNetwork(0L);
+                }
+            };
+            cm.registerNetworkCallback(
+                new NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .build(),
+                networkCallback);
+        } catch (Exception ignored) {}
+    }
+
+    private void unregisterActiveNetwork() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            ConnectivityManager.NetworkCallback cb = networkCallback;
+            networkCallback = null;
+            if (cm != null && cb != null) cm.unregisterNetworkCallback(cb);
+            BtProxy.nativeSetNetwork(0L);
+        } catch (Exception ignored) {}
+    }
 
     private void addPublicRoutes(Builder builder) {
         String[] excludes = {
@@ -284,21 +267,20 @@ public class BtVpnService extends VpnService {
         for (String cidr : excludes) {
             try {
                 String[] p = cidr.split("/");
-                long base  = inet2long(InetAddress.getByName(p[0]));
-                int  pfx   = Integer.parseInt(p[1]);
-                long mask  = pfx == 0 ? 0L : (~0L << (32 - pfx)) & 0xFFFFFFFFL;
+                long base = inet2long(InetAddress.getByName(p[0]));
+                int  pfx  = Integer.parseInt(p[1]);
+                long mask = pfx == 0 ? 0L : (~0L << (32 - pfx)) & 0xFFFFFFFFL;
                 long start = base & mask;
-                long end   = start + (~mask & 0xFFFFFFFFL);
-                excluded.add(new long[]{start, end});
+                excluded.add(new long[]{start, start + (~mask & 0xFFFFFFFFL)});
             } catch (UnknownHostException ignored) {}
         }
         excluded.sort((a, b) -> Long.compare(a[0], b[0]));
-        long cur = 0L, universeEnd = 0xFFFFFFFEL;
+        long cur = 0L, end = 0xFFFFFFFEL;
         for (long[] ex : excluded) {
             if (cur < ex[0]) addCIDRs(builder, cur, ex[0] - 1);
             if (cur <= ex[1]) cur = ex[1] + 1;
         }
-        if (cur <= universeEnd) addCIDRs(builder, cur, universeEnd);
+        if (cur <= end) addCIDRs(builder, cur, end);
         builder.addRoute("2000::", 3);
         builder.addRoute("fd40::", 128);
     }
@@ -312,8 +294,7 @@ public class BtVpnService extends VpnService {
     }
 
     private int maxBlockPrefix(long start, long end) {
-        int  align     = 32 - Math.min(32, Long.numberOfTrailingZeros(start));
-        int  prefix    = Math.max(0, align);
+        int prefix = Math.max(0, 32 - Math.min(32, Long.numberOfTrailingZeros(start)));
         long remaining = end - start + 1;
         while (prefix < 32) {
             if ((1L << (32 - prefix)) <= remaining) break;
@@ -335,109 +316,13 @@ public class BtVpnService extends VpnService {
         boolean gaming = BtProxy.isGamingMode(this);
         List<String> pkgs = BtProxy.getGamingSelectedPackages(this);
         if (gaming && !pkgs.isEmpty()) {
-            for (String pkg : pkgs) {
-                if (pkg == null || pkg.isBlank()) continue;
-                try { builder.addAllowedApplication(pkg); } catch (Exception ignored) {}
-            }
+            for (String pkg : pkgs)
+                if (pkg != null && !pkg.isBlank())
+                    try { builder.addAllowedApplication(pkg); } catch (Exception ignored) {}
         } else {
             try { builder.addDisallowedApplication(getPackageName()); } catch (Exception ignored) {}
         }
     }
-
-    
-
-    private void registerActiveNetwork() {
-        try {
-            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-            if (cm == null) return;
-            Network active = cm.getActiveNetwork();
-            if (active != null) {
-                BtProxy.nativeSetNetwork(active.getNetworkHandle());
-            }
-            NetworkRequest req = new NetworkRequest.Builder()
-                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    .build();
-            networkCallback = new ConnectivityManager.NetworkCallback() {
-                @Override public void onAvailable(Network net) {
-                    BtProxy.nativeSetNetwork(net.getNetworkHandle());
-                }
-                @Override public void onLost(Network net) {
-                    BtProxy.nativeSetNetwork(0L);
-                }
-            };
-            cm.registerNetworkCallback(req, networkCallback);
-        } catch (Exception ignored) {}
-    }
-
-    private void unregisterActiveNetwork() {
-        try {
-            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-            ConnectivityManager.NetworkCallback cb = networkCallback;
-            networkCallback = null;
-            if (cm != null && cb != null) cm.unregisterNetworkCallback(cb);
-            BtProxy.nativeSetNetwork(0L);
-        } catch (Exception ignored) {}
-    }
-
-    
-
-    public static final int HOTSPOT_PORT = 10810;
-
-    private void registerHotspotReceiver() {
-        refreshHotspotState();
-    }
-
-    private void unregisterHotspotReceiver() {
-        BtProxy.nativeSetHotspot(false, 0);
-        getSharedPreferences("bt_ui", Context.MODE_PRIVATE)
-            .edit().remove("hotspot_ip").apply();
-    }
-
-    public void refreshHotspotState() {
-        if (!running.get()) return;
-        int ip = getHotspotIpInt();
-        if (ip != 0) {
-            BtProxy.nativeSetHotspot(true, ip);
-            getSharedPreferences("bt_ui", Context.MODE_PRIVATE)
-                .edit().putString("hotspot_ip", intToIp(ip)).apply();
-        } else {
-            BtProxy.nativeSetHotspot(false, 0);
-            getSharedPreferences("bt_ui", Context.MODE_PRIVATE)
-                .edit().remove("hotspot_ip").apply();
-        }
-    }
-
-    public static int getHotspotIpInt() {
-        try {
-            Enumeration<NetworkInterface> ifaces = NetworkInterface.getNetworkInterfaces();
-            while (ifaces.hasMoreElements()) {
-                NetworkInterface iface = ifaces.nextElement();
-                String name = iface.getName();
-                if (!name.startsWith("wlan") && !name.startsWith("ap")
-                        && !name.startsWith("swlan")) continue;
-                Enumeration<InetAddress> addrs = iface.getInetAddresses();
-                while (addrs.hasMoreElements()) {
-                    InetAddress addr = addrs.nextElement();
-                    if (addr instanceof Inet4Address && !addr.isLoopbackAddress()) {
-                        byte[] b = addr.getAddress();
-                        return ((b[0]&0xFF)<<24)|((b[1]&0xFF)<<16)|((b[2]&0xFF)<<8)|(b[3]&0xFF);
-                    }
-                }
-            }
-        } catch (Exception ignored) {}
-        return 0;
-    }
-
-    public static String getHotspotIp(Context ctx) {
-        return ctx.getSharedPreferences("bt_ui", Context.MODE_PRIVATE)
-                  .getString("hotspot_ip", null);
-    }
-
-    private static String intToIp(int ip) {
-        return ((ip>>24)&0xFF)+"."+((ip>>16)&0xFF)+"."+((ip>>8)&0xFF)+"."+(ip&0xFF);
-    }
-
-    
 
     private File writeHevCfg(boolean gaming) {
         int mtu          = gaming ? 1500  : 1480;
@@ -485,8 +370,6 @@ public class BtVpnService extends VpnService {
         return f;
     }
 
-    
-
     private void createChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
         NotificationManager nm = getSystemService(NotificationManager.class);
@@ -502,8 +385,6 @@ public class BtVpnService extends VpnService {
                 .setOngoing(true)
                 .build();
     }
-
-    
 
     static final class HevBridge {
         static { System.loadLibrary("hev-jni"); }
@@ -585,5 +466,4 @@ final class BtProxy {
     public  static native void   nativeApplyMode(boolean enabled);
     public  static native int    nativeGetGamingMode();
     public  static native void   nativeSetNetwork(long networkHandle);
-    public  static native void   nativeSetHotspot(boolean enabled, int ipInt);
 }
