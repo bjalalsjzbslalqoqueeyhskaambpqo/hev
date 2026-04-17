@@ -519,6 +519,69 @@ static int open_tunnel(void) {
     return fd;
 }
 
+static int socks5_server_handshake(int cfd, uint8_t *out, int *out_len) {
+    uint8_t buf[512];
+    struct timeval tv = {5, 0};
+    setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    ssize_t n = recv(cfd, buf, sizeof(buf), 0);
+    if (n < 3 || buf[0] != 0x05) return -1;
+    uint8_t auth_resp[2] = {0x05, 0x00};
+    send(cfd, auth_resp, 2, MSG_NOSIGNAL);
+
+    n = recv(cfd, buf, sizeof(buf), 0);
+    if (n < 7 || buf[0] != 0x05 || buf[1] != 0x01) return -1;
+
+    uint8_t atyp = buf[3];
+    char host[256] = {0};
+    uint16_t port = 0;
+    int hdr_len = 0;
+
+    if (atyp == 0x01) {
+        if (n < 10) return -1;
+        snprintf(host, sizeof(host), "%d.%d.%d.%d", buf[4], buf[5], buf[6], buf[7]);
+        port = ((uint16_t)buf[8] << 8) | buf[9];
+        hdr_len = 10;
+    } else if (atyp == 0x03) {
+        int dlen = buf[4];
+        if (n < 5 + dlen + 2) return -1;
+        memcpy(host, buf + 5, dlen); host[dlen] = 0;
+        port = ((uint16_t)buf[5+dlen] << 8) | buf[5+dlen+1];
+        hdr_len = 5 + dlen + 2;
+    } else if (atyp == 0x04) {
+        if (n < 22) return -1;
+        snprintf(host, sizeof(host),
+            "%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
+            buf[4],buf[5],buf[6],buf[7],buf[8],buf[9],buf[10],buf[11],
+            buf[12],buf[13],buf[14],buf[15],buf[16],buf[17],buf[18],buf[19]);
+        port = ((uint16_t)buf[20] << 8) | buf[21];
+        hdr_len = 22;
+    } else return -1;
+
+    uint8_t ok[10] = {0x05,0x00,0x00,0x01, 0,0,0,0, 0,0};
+    send(cfd, ok, 10, MSG_NOSIGNAL);
+
+    tv.tv_sec = 0;
+    setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    int dname_len = strlen(host);
+    int total = 5 + 1 + dname_len + 2;
+    if (total > MAX_PAYLOAD) return -1;
+    out[0] = 0x05; out[1] = 0x01; out[2] = 0x00; out[3] = 0x03;
+    out[4] = (uint8_t)dname_len;
+    memcpy(out + 5, host, dname_len);
+    out[5 + dname_len]     = (uint8_t)(port >> 8);
+    out[5 + dname_len + 1] = (uint8_t)(port & 0xFF);
+    *out_len = total;
+
+    int extra = (int)n - hdr_len;
+    if (extra > 0 && total + extra <= MAX_PAYLOAD) {
+        memcpy(out + total, buf + hdr_len, extra);
+        *out_len = total + extra;
+    }
+    return 0;
+}
+
 static int flush_pipe_to_cfd(stream_t *s, int cfd, uint8_t *buf) {
     ssize_t n = read(s->pfd[0], buf, MAX_PAYLOAD);
     if (n > 0) {
@@ -822,25 +885,7 @@ static void *main_thread(void *arg) {
             sleep(2); continue;
         }
 
-        int hfd = socket(AF_INET, SOCK_STREAM, 0);
-        if (hfd >= 0) {
-            int hone = 1;
-            setsockopt(hfd, SOL_SOCKET, SO_REUSEADDR, &hone, sizeof(hone));
-            int fl2 = fcntl(hfd, F_GETFD, 0);
-            if (fl2 >= 0) fcntl(hfd, F_SETFD, fl2 | FD_CLOEXEC);
-            struct sockaddr_in ha = {0};
-            ha.sin_family      = AF_INET;
-            ha.sin_port        = htons(HOTSPOT_PORT);
-            ha.sin_addr.s_addr = htonl(INADDR_ANY);
-            if (bind(hfd, (struct sockaddr*)&ha, sizeof(ha)) < 0 ||
-                listen(hfd, RELAY_BACKLOG) < 0) {
-                close(hfd); hfd = -1;
-                push_log("E", "hotspot relay bind failed");
-            } else {
-                g_hotspot_fd = hfd;
-                push_log("I", "hotspot relay port=%d", HOTSPOT_PORT);
-            }
-        }
+        int hfd = -1;
 
         int cur_epoch = atomic_fetch_add(&g_tunnel_epoch, 1) + 1;
         g_relay_fd = rfd; g_started = 1;
@@ -903,11 +948,39 @@ static void *main_thread(void *arg) {
                     continue;
                 }
                 tune_local(cfd);
-                uint32_t sid;
-                do {
-                    sid = (uint32_t)atomic_fetch_add(&g_next_sid, 1) & 0x7FFFFFFF;
-                } while (sid == 0 || ht_get(sid) != NULL);
-                connq_push(cfd, tfd, sid);
+                if (i == 1) {
+                    uint8_t socks_hdr[MAX_PAYLOAD];
+                    int socks_len = 0;
+                    if (socks5_server_handshake(cfd, socks_hdr, &socks_len) < 0) {
+                        close(cfd); continue;
+                    }
+                    uint32_t sid;
+                    do {
+                        sid = (uint32_t)atomic_fetch_add(&g_next_sid, 1) & 0x7FFFFFFF;
+                    } while (sid == 0 || ht_get(sid) != NULL);
+                    stream_t *s = ht_put(sid, cfd);
+                    if (!s) { close(cfd); continue; }
+                    if (tun_send(tfd, T_OPEN, sid, socks_hdr, (uint16_t)socks_len) < 0) {
+                        request_tunnel_reset("hotspot T_OPEN failed");
+                        ht_del(sid);
+                        continue;
+                    }
+                    conn_task_t *t = malloc(sizeof(conn_task_t));
+                    if (!t) { ht_del(sid); continue; }
+                    t->next = NULL; t->cfd = cfd; t->tfd = tfd; t->sid = sid;
+                    pthread_mutex_lock(&g_connq_mu);
+                    if (g_connq_tail) g_connq_tail->next = t;
+                    else g_connq_head = t;
+                    g_connq_tail = t;
+                    pthread_cond_signal(&g_connq_cv);
+                    pthread_mutex_unlock(&g_connq_mu);
+                } else {
+                    uint32_t sid;
+                    do {
+                        sid = (uint32_t)atomic_fetch_add(&g_next_sid, 1) & 0x7FFFFFFF;
+                    } while (sid == 0 || ht_get(sid) != NULL);
+                    connq_push(cfd, tfd, sid);
+                }
             }
         }
         tunnel_done:;
@@ -1035,7 +1108,6 @@ Java_com_blacktunnel_BtProxy_nativeDrainLogs(JNIEnv *env, jclass clazz) {
     return (*env)->NewStringUTF(env, out);
 }
 
-
 JNIEXPORT void JNICALL
 Java_com_blacktunnel_BtProxy_nativeSetNetwork(JNIEnv *env, jclass clazz, jlong network_handle) {
     pthread_mutex_lock(&g_state_mu);
@@ -1059,6 +1131,8 @@ static JNINativeMethod g_methods[] = {
                            (void*)Java_com_blacktunnel_BtProxy_nativeGetGamingMode },
     { "nativeSetNetwork",  "(J)V",
                            (void*)Java_com_blacktunnel_BtProxy_nativeSetNetwork  },
+    { "nativeSetHotspot",  "(ZI)V",
+                           (void*)Java_com_blacktunnel_BtProxy_nativeSetHotspot  },
 };
 
 JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
