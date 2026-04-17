@@ -163,6 +163,7 @@ static volatile int    g_started   = 0;
 static int             g_relay_fd  = -1;
 static int             g_tun_fd    = -1;
 static int             g_hotspot_fd = -1;
+static uint32_t        g_hotspot_ip = 0;
 static atomic_int      g_next_sid  = 1;
 static char            g_internal_id[160] = {0};
 static pthread_t       g_main_thr;
@@ -1114,6 +1115,54 @@ Java_com_blacktunnel_BtProxy_nativeSetNetwork(JNIEnv *env, jclass clazz, jlong n
     g_network = (net_handle_t)network_handle;
     pthread_mutex_unlock(&g_state_mu);
     push_log("I", "network_handle=%lld", (long long)network_handle);
+}
+
+static int hotspot_open(uint32_t ip) {
+    int hfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (hfd < 0) return -1;
+    int one = 1;
+    setsockopt(hfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    int fl = fcntl(hfd, F_GETFD, 0);
+    if (fl >= 0) fcntl(hfd, F_SETFD, fl | FD_CLOEXEC);
+    struct sockaddr_in ha = {0};
+    ha.sin_family      = AF_INET;
+    ha.sin_port        = htons(HOTSPOT_PORT);
+    ha.sin_addr.s_addr = ip;
+    if (bind(hfd, (struct sockaddr*)&ha, sizeof(ha)) < 0 ||
+        listen(hfd, RELAY_BACKLOG) < 0) {
+        close(hfd);
+        push_log("E", "hotspot bind failed");
+        return -1;
+    }
+    push_log("I", "hotspot port=%d", HOTSPOT_PORT);
+    return hfd;
+}
+
+JNIEXPORT void JNICALL
+Java_com_blacktunnel_BtProxy_nativeSetHotspot(JNIEnv *env, jclass clazz,
+                                               jboolean enabled, jint ip_int) {
+    pthread_mutex_lock(&g_state_mu);
+    int old_hfd = g_hotspot_fd;
+    g_hotspot_fd = -1;
+    g_hotspot_ip = enabled ? (uint32_t)ip_int : 0;
+    pthread_mutex_unlock(&g_state_mu);
+
+    if (old_hfd >= 0) {
+        shutdown(old_hfd, SHUT_RDWR);
+        close(old_hfd);
+    }
+
+    if (!enabled || !ip_int) {
+        push_log("I", "hotspot off");
+        return;
+    }
+
+    int new_hfd = hotspot_open((uint32_t)ip_int);
+    if (new_hfd >= 0) {
+        pthread_mutex_lock(&g_state_mu);
+        g_hotspot_fd = new_hfd;
+        pthread_mutex_unlock(&g_state_mu);
+    }
 }
 
 static JNINativeMethod g_methods[] = {
