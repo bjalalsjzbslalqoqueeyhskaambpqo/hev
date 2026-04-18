@@ -367,7 +367,8 @@ static int open_tunnel(void) {
     char uname[128]={0},udays[32]={0};
     parse_hdr(h2,"X-User-Name:",uname,sizeof(uname));
     parse_hdr(h2,"X-User-Days:",udays,sizeof(udays));
-    if (uname[0]) push_log("I","user=%s days=%s",uname,udays);
+    if (uname[0]) push_log("I","user_name=%s",uname);
+    if (udays[0]) push_log("I","user_days=%s",udays);
     push_log("I","tunnel ok");
     return fd;
 }
@@ -537,21 +538,31 @@ static void *main_thread(void *arg) {
                     struct sockaddr_in ca; socklen_t cl=sizeof(ca);
                     int cfd;
                     while ((cfd=accept(rfd,(struct sockaddr*)&ca,&cl))>=0) {
-                        /* Socket local — TCP_NODELAY para gaming, Nagle para daily */
                         int gaming=(atomic_load(&g_mode)==MODE_GAMING);
                         int v=gaming?1:0;
                         setsockopt(cfd,IPPROTO_TCP,TCP_NODELAY,&v,sizeof(v));
                         int fdc=fcntl(cfd,F_GETFD,0);
                         if(fdc>=0) fcntl(cfd,F_SETFD,fdc|FD_CLOEXEC);
-                        /* non-blocking para epoll */
-                        int flc=fcntl(cfd,F_GETFL,0);
-                        fcntl(cfd,F_SETFL,flc|O_NONBLOCK);
+
+                        /* Leer primer paquete ANTES de poner en epoll
+                         * El servidor necesita T_OPEN para abrir el stream */
+                        uint8_t buf[MAX_PAYLOAD];
+                        ssize_t first=recv(cfd,buf,sizeof(buf),0);
+                        if (first<=0) { close(cfd); cl=sizeof(ca); continue; }
 
                         uint32_t sid;
                         do { sid=(uint32_t)atomic_fetch_add(&g_next_sid,1)&0x7FFFFFFF; }
-                        while (!sid||ht_get(sid)>=0);
+                        while (!sid||ht_get(sid)!=-1);
 
                         ht_put(sid,cfd);
+
+                        if (tun_send(tfd,T_OPEN,sid,buf,(uint16_t)first)<0) {
+                            ht_del(sid); close(cfd); dead=1; break;
+                        }
+
+                        /* Ahora sí non-blocking para epoll */
+                        int flc=fcntl(cfd,F_GETFL,0);
+                        fcntl(cfd,F_SETFL,flc|O_NONBLOCK);
 
                         struct epoll_event cev;
                         cev.events=EPOLLIN|EPOLLET;
@@ -559,7 +570,7 @@ static void *main_thread(void *arg) {
                         if (epoll_ctl(epfd,EPOLL_CTL_ADD,cfd,&cev)<0) {
                             ht_del(sid); close(cfd);
                         }
-                        ca.sin_family=AF_INET; cl=sizeof(ca);
+                        cl=sizeof(ca);
                     }
                     continue;
                 }
@@ -580,17 +591,13 @@ static void *main_thread(void *arg) {
 
                 if (evs&EPOLLIN) {
                     uint8_t buf[MAX_PAYLOAD];
-                    ssize_t nr;
-                    /* EPOLLET: leer hasta EAGAIN */
+                    ssize_t nr=0;
                     while ((nr=recv(cfd,buf,sizeof(buf),0))>0) {
-                        /* Primer recv es T_OPEN, resto T_DATA */
-                        /* tunnel_reader ya registró el sid */
                         if (tun_send(tfd,T_DATA,sid,buf,(uint16_t)nr)<0) {
                             dead=1; break;
                         }
                     }
-                    if (nr==0) {
-                        /* hev cerró su lado */
+                    if (!dead && nr==0) {
                         epoll_ctl(epfd,EPOLL_CTL_DEL,cfd,NULL);
                         ht_del(sid); close(cfd);
                         tun_send(tfd,T_CLOSE,sid,NULL,0);
