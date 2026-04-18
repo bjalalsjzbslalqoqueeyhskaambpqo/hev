@@ -121,7 +121,7 @@ public class BtVpnService extends VpnService {
         boolean gaming = BtProxy.isGamingMode(this);
         Builder builder = new Builder()
                 .setSession("bt-hev")
-                .setMtu(gaming ? 1500 : 1480)
+                .setMtu(1500)
                 .addAddress("198.18.0.1", 15)
                 .addAddress("fd40::1", 128)
                 .addDnsServer("198.18.0.2");
@@ -175,7 +175,7 @@ public class BtVpnService extends VpnService {
 
         Builder builder = new Builder()
                 .setSession("bt-hev")
-                .setMtu(gaming ? 1500 : 1480)
+                .setMtu(1500)
                 .addAddress("198.18.0.1", 15)
                 .addAddress("fd40::1", 128)
                 .addDnsServer("198.18.0.2");
@@ -340,22 +340,11 @@ public class BtVpnService extends VpnService {
     }
 
     private File writeHevCfg(boolean gaming) {
-        int mtu         = gaming ? 1500  : 1480;
-        int tcpBuf      = 65536;
-        int taskStack   = 20480 + tcpBuf;
-        int maxSessions = gaming ? 512   : 1024;
-        int udpBufNums  = gaming ? 64    : 48;
-        int tcpRwTimeout = gaming ? 45000 : 90000;
-        int udpRwTimeout = gaming ? 20000 : 45000;
         String yml =
-            "tunnel:\n  name: bt-hev\n  mtu: " + mtu + "\n  ipv4: 198.18.0.1\n  ipv6: 'fd40::1'\n" +
+            "tunnel:\n  name: bt-hev\n  mtu: 1500\n  ipv4: 198.18.0.1\n  ipv6: 'fd40::1'\n" +
             "socks5:\n  address: 127.0.0.1\n  port: " + BtProxy.SOCKS5_PORT + "\n  udp: 'tcp'\n  pipeline: true\n" +
             "mapdns:\n  address: 198.18.0.2\n  port: 53\n  network: 198.18.0.0\n  netmask: 255.254.0.0\n  cache-size: 8192\n" +
-            "misc:\n  task-stack-size: " + taskStack + "\n  tcp-buffer-size: " + tcpBuf +
-            "\n  udp-copy-buffer-nums: " + udpBufNums + "\n  connect-timeout: 700\n" +
-            "  tcp-read-write-timeout: " + tcpRwTimeout + "\n  udp-read-write-timeout: " + udpRwTimeout +
-            "\n  max-session-count: " + maxSessions + "\n  log-level: warn\n  limit-nofile: 65535\n";
-        log("hev profile=" + (gaming ? "gaming" : "normal") + " mtu=" + mtu + " sessions=" + maxSessions);
+            "misc:\n  connect-timeout: 700\n  log-level: warn\n  limit-nofile: 65535\n";
         File f = new File(getFilesDir(), "hev.yml");
         try (FileOutputStream o = new FileOutputStream(f, false)) {
             o.write(yml.getBytes(StandardCharsets.UTF_8)); o.flush();
