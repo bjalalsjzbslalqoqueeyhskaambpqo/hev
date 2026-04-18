@@ -180,7 +180,6 @@ static int             g_start_st  = 0;
 static atomic_long     g_last_pong = 0;
 static atomic_int      g_tunnel_epoch = 0;
 
-
 typedef struct conn_task_s {
     struct conn_task_s *next;
     int cfd;
@@ -274,36 +273,27 @@ static void tune_tunnel(int fd) {
 }
 
 static void tune_local(int fd) {
-    int v = 1;
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &v, sizeof(v));
     int mode = atomic_load(&g_global_mode);
-    v = (mode == GLOBAL_MODE_GAMING) ? SNDBUF_GAMING : g_sndbuf_daily;
+    int gaming = (mode == GLOBAL_MODE_GAMING);
+    int v = gaming ? 1 : 0;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &v, sizeof(v));
+    v = gaming ? SNDBUF_GAMING : g_sndbuf_daily;
     setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &v, sizeof(v));
     setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &v, sizeof(v));
     int flags = fcntl(fd, F_GETFD, 0);
     if (flags >= 0) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
 
-static int set_nonblocking(int fd, int nb) {
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (flags < 0) return -1;
-    if (nb) flags |= O_NONBLOCK;
-    else    flags &= ~O_NONBLOCK;
-    return fcntl(fd, F_SETFL, flags);
-}
-
 static int connect_with_timeout(int fd, const struct sockaddr *addr, socklen_t addrlen, int timeout_sec) {
-    set_nonblocking(fd, 1);
+    int fl = fcntl(fd, F_GETFL, 0); fcntl(fd, F_SETFL, fl | O_NONBLOCK);
     int r = connect(fd, addr, addrlen);
-    if (r == 0) { set_nonblocking(fd, 0); return 0; }
-    if (errno != EINPROGRESS) { set_nonblocking(fd, 0); return -1; }
-    struct pollfd pfd = { fd, POLLOUT, 0 };
-    int pr = poll(&pfd, 1, timeout_sec * 1000);
-    set_nonblocking(fd, 0);
+    if (r == 0) { fcntl(fd, F_SETFL, fl); return 0; }
+    if (errno != EINPROGRESS) { fcntl(fd, F_SETFL, fl); return -1; }
+    struct pollfd pfd = {fd, POLLOUT, 0};
+    int pr = poll(&pfd, 1, timeout_sec * 1000); fcntl(fd, F_SETFL, fl);
     if (pr <= 0) return -1;
     int err = 0; socklen_t elen = sizeof(err);
-    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &elen) < 0 || err != 0) return -1;
-    return 0;
+    return (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &elen) < 0 || err) ? -1 : 0;
 }
 
 static int tun_send(int tfd, uint8_t type, uint32_t sid,
@@ -520,101 +510,52 @@ static void conn_handle(int cfd, int tfd, uint32_t sid) {
     if (!s) { close(cfd); return; }
 
     uint8_t buf[MAX_PAYLOAD];
-
     ssize_t first = recv(cfd, buf, sizeof(buf), 0);
-    if (first <= 0) {
-        ht_del(sid);
-        return;
-    }
+    if (first <= 0) { ht_del(sid); return; }
 
     if (tun_send(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0) {
         request_tunnel_reset("tun_send T_OPEN failed");
-        ht_del(sid);
-        return;
+        ht_del(sid); return;
     }
 
-    int gaming   = (atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING);
+    int gaming = (atomic_load(&g_global_mode) == GLOBAL_MODE_GAMING);
     int hev_done = 0;
-
-    struct pollfd pfds[2];
-    pfds[0].fd     = cfd;
-    pfds[0].events = POLLIN;
-    pfds[1].fd     = s->pfd[0];
-    pfds[1].events = POLLIN;
+    struct pollfd pfds[2] = {{cfd, POLLIN, 0}, {s->pfd[0], POLLIN, 0}};
 
     while (g_running) {
-        int pr = poll(pfds, 2, gaming ? 100 : 500);
+        int pr = poll(pfds, 2, gaming ? 20 : 1000);
         if (pr < 0) { if (errno == EINTR) continue; break; }
+        if (pfds[0].revents & (POLLERR|POLLHUP|POLLNVAL)) break;
+        if (pfds[1].revents & (POLLERR|POLLHUP|POLLNVAL)) break;
 
-        if (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) break;
-        if (pfds[1].revents & (POLLERR | POLLHUP | POLLNVAL)) break;
+        if (pfds[1].revents & POLLIN) {
+            ssize_t n = read(s->pfd[0], buf, sizeof(buf));
+            if (n > 0) {
+                ssize_t off = 0;
+                while (off < n) {
+                    ssize_t w = send(cfd, buf+off, n-off, MSG_NOSIGNAL);
+                    if (w > 0) { off += w; continue; }
+                    if (errno == EINTR) continue;
+                    goto done;
+                }
+            } else if (n == 0 || (errno != EAGAIN && errno != EINTR)) break;
+        }
 
-        if (gaming) {
-            if (pfds[1].revents & POLLIN) {
-                ssize_t n = read(s->pfd[0], buf, sizeof(buf));
-                if (n > 0) {
-                    ssize_t off = 0;
-                    while (off < n) {
-                        ssize_t w = send(cfd, buf + off, n - off, MSG_NOSIGNAL);
-                        if (w > 0) { off += w; continue; }
-                        if (errno == EINTR) continue;
-                        goto done;
-                    }
-                } else if (n == 0 || (errno != EAGAIN && errno != EINTR)) {
-                    break;
-                }
-            }
-            if (!hev_done && (pfds[0].revents & POLLIN)) {
-                ssize_t n = recv(cfd, buf, sizeof(buf), 0);
-                if (n < 0) { if (errno == EINTR) continue; break; }
-                if (n == 0) {
-                    shutdown(cfd, SHUT_RD);
-                    tun_send(tfd, T_CLOSE, sid, NULL, 0);
-                    hev_done = 1;
-                    pfds[0].events = 0;
-                    continue;
-                }
-                if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
-                    request_tunnel_reset("tun_send T_DATA failed");
-                    break;
-                }
-            }
-        } else {
-            if (!hev_done && (pfds[0].revents & POLLIN)) {
-                ssize_t n = recv(cfd, buf, sizeof(buf), 0);
-                if (n < 0) { if (errno == EINTR) continue; break; }
-                if (n == 0) {
-                    shutdown(cfd, SHUT_RD);
-                    tun_send(tfd, T_CLOSE, sid, NULL, 0);
-                    hev_done = 1;
-                    pfds[0].events = 0;
-                    continue;
-                }
-                if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
-                    request_tunnel_reset("tun_send T_DATA failed");
-                    break;
-                }
-            }
-            if (pfds[1].revents & POLLIN) {
-                ssize_t n = read(s->pfd[0], buf, sizeof(buf));
-                if (n > 0) {
-                    ssize_t off = 0;
-                    while (off < n) {
-                        ssize_t w = send(cfd, buf + off, n - off, MSG_NOSIGNAL);
-                        if (w > 0) { off += w; continue; }
-                        if (errno == EINTR) continue;
-                        goto done;
-                    }
-                } else if (n == 0 || (errno != EAGAIN && errno != EINTR)) {
-                    break;
-                }
+        if (!hev_done && (pfds[0].revents & POLLIN)) {
+            ssize_t n = recv(cfd, buf, sizeof(buf), 0);
+            if (n < 0) { if (errno == EINTR) {} else goto done; }
+            else if (n == 0) {
+                shutdown(cfd, SHUT_RD);
+                tun_send(tfd, T_CLOSE, sid, NULL, 0);
+                hev_done = 1; pfds[0].events = 0;
+            } else if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n) < 0) {
+                request_tunnel_reset("tun_send T_DATA failed"); goto done;
             }
         }
 
         if (hev_done) {
-            struct pollfd wp = { s->pfd[0], POLLIN, 0 };
-            int wr = poll(&wp, 1, 0);
-            if (wr == 0) break;
+            struct pollfd wp = {s->pfd[0], POLLIN, 0};
+            if (poll(&wp, 1, 0) == 0) break;
         }
     }
 
@@ -1001,7 +942,6 @@ JNIEXPORT jint JNICALL
 Java_com_blacktunnel_BtProxy_nativeGetGamingMode(JNIEnv *env, jclass clazz) {
     return (jint)atomic_load(&g_global_mode);
 }
-
 
 JNIEXPORT void JNICALL
 Java_com_blacktunnel_BtProxy_nativeSetNetwork(JNIEnv *env, jclass clazz, jlong network_handle) {
