@@ -167,6 +167,8 @@ static size_t          g_loglen = 0;
 static pthread_mutex_t g_ready_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_ready_cv = PTHREAD_COND_INITIALIZER;
 static int             g_ready_st = 0;
+static pthread_mutex_t g_done_mu  = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_done_cv  = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t g_qmu  = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_qcv  = PTHREAD_COND_INITIALIZER;
 static conn_task_t    *g_qhead = NULL, *g_qtail = NULL;
@@ -598,7 +600,9 @@ static void *main_thread(void *arg) {
 
         int rfd = socket(AF_INET, SOCK_STREAM, 0);
         if (rfd < 0) { close(tfd); sleep(1); continue; }
-        int one = 1; setsockopt(rfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        int one = 1;
+        setsockopt(rfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        setsockopt(rfd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one));
         int fl = fcntl(rfd, F_GETFD, 0); if (fl >= 0) fcntl(rfd, F_SETFD, fl | FD_CLOEXEC);
         struct sockaddr_in la = {0};
         la.sin_family = AF_INET; la.sin_port = htons((uint16_t)port);
@@ -669,7 +673,10 @@ static void *main_thread(void *arg) {
     g_nworkers = 0;
     ht_clear();
     push_log("I", "main_thread done");
+    pthread_mutex_lock(&g_done_mu);
     g_main_done = 1;
+    pthread_cond_broadcast(&g_done_cv);
+    pthread_mutex_unlock(&g_done_mu);
     return NULL;
 }
 
@@ -697,7 +704,15 @@ static void do_shutdown(JNIEnv *env) {
     g_ready_st = -1; pthread_cond_broadcast(&g_ready_cv);
     pthread_mutex_unlock(&g_ready_mu);
 
-    for (int i = 0; i < 500 && !g_main_done; i++) usleep(10000);
+    pthread_mutex_lock(&g_done_mu);
+    if (!g_main_done) {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += 6;
+        while (!g_main_done)
+            if (pthread_cond_timedwait(&g_done_cv, &g_done_mu, &ts) != 0) break;
+    }
+    pthread_mutex_unlock(&g_done_mu);
 
     ht_clear();
     if (svc && env) (*env)->DeleteGlobalRef(env, svc);
