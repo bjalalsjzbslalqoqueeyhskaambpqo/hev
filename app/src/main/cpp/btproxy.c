@@ -670,8 +670,11 @@ static void *tunnel_reader(void *arg) {
             while (off < (ssize_t)len) {
                 ssize_t n = write(s->pfd[1], payload + off, len - off);
                 if (n > 0) { off += n; continue; }
-                if (errno == EAGAIN || errno == EWOULDBLOCK) break;
                 if (errno == EINTR) continue;
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    struct pollfd wp = {s->pfd[1], POLLOUT, 0};
+                    if (poll(&wp, 1, 200) > 0) continue;
+                }
                 break;
             }
             break;
