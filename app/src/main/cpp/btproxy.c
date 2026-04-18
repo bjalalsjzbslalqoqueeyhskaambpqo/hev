@@ -494,9 +494,7 @@ static void *main_thread(void *arg) {
         struct epoll_event ev;
         ev.events=EPOLLIN; ev.data.fd=rfd;
         epoll_ctl(epfd,EPOLL_CTL_ADD,rfd,&ev);
-        /* tfd en epoll solo para detectar cierre */
-        ev.events=EPOLLIN|EPOLLERR|EPOLLHUP; ev.data.fd=tfd;
-        epoll_ctl(epfd,EPOLL_CTL_ADD,tfd,&ev);
+        /* tfd NO va en epoll — tunnel_reader lo lee en su thread */
 
         int epoch=atomic_fetch_add(&g_tunnel_epoch,1)+1;
         pthread_mutex_lock(&g_mu);
@@ -526,61 +524,57 @@ static void *main_thread(void *arg) {
         int dead=0;
 
         while (g_running&&!dead) {
-            int n=epoll_wait(epfd,events,MAX_EPOLL_EVENTS,-1);
+            int n=epoll_wait(epfd,events,MAX_EPOLL_EVENTS,1000);
             if (n<0){if(errno==EINTR)continue;break;}
+
+            if (n==0) {
+                pthread_mutex_lock(&g_mu);
+                int same=(g_tun_fd==tfd&&g_relay_fd==rfd);
+                pthread_mutex_unlock(&g_mu);
+                if (!same) break;
+                continue;
+            }
 
             for (int i=0;i<n&&!dead;i++) {
                 int fd=events[i].data.fd;
                 uint32_t evs=events[i].events;
 
-                /* Nuevo cliente de hev */
                 if (fd==rfd) {
                     struct sockaddr_in ca; socklen_t cl=sizeof(ca);
-                    int cfd;
-                    while ((cfd=accept(rfd,(struct sockaddr*)&ca,&cl))>=0) {
-                        int gaming=(atomic_load(&g_mode)==MODE_GAMING);
-                        int v=gaming?1:0;
-                        setsockopt(cfd,IPPROTO_TCP,TCP_NODELAY,&v,sizeof(v));
-                        int fdc=fcntl(cfd,F_GETFD,0);
-                        if(fdc>=0) fcntl(cfd,F_SETFD,fdc|FD_CLOEXEC);
+                    int cfd=accept(rfd,(struct sockaddr*)&ca,&cl);
+                    if (cfd<0) continue;
+                    int gaming=(atomic_load(&g_mode)==MODE_GAMING);
+                    int v=gaming?1:0;
+                    setsockopt(cfd,IPPROTO_TCP,TCP_NODELAY,&v,sizeof(v));
+                    int fdc=fcntl(cfd,F_GETFD,0);
+                    if(fdc>=0) fcntl(cfd,F_SETFD,fdc|FD_CLOEXEC);
 
-                        /* Leer primer paquete ANTES de poner en epoll
-                         * El servidor necesita T_OPEN para abrir el stream */
-                        uint8_t buf[MAX_PAYLOAD];
-                        ssize_t first=recv(cfd,buf,sizeof(buf),0);
-                        if (first<=0) { close(cfd); cl=sizeof(ca); continue; }
+                    uint32_t sid;
+                    do { sid=(uint32_t)atomic_fetch_add(&g_next_sid,1)&0x7FFFFFFF; }
+                    while (!sid||ht_get(sid)!=-1);
 
-                        uint32_t sid;
-                        do { sid=(uint32_t)atomic_fetch_add(&g_next_sid,1)&0x7FFFFFFF; }
-                        while (!sid||ht_get(sid)!=-1);
+                    /* Leer primer paquete y registrar sid */
+                    uint8_t buf[MAX_PAYLOAD];
+                    ssize_t first=recv(cfd,buf,sizeof(buf),0);
+                    if (first<=0) { close(cfd); continue; }
 
-                        ht_put(sid,cfd);
+                    ht_put(sid,cfd);
 
-                        if (tun_send(tfd,T_OPEN,sid,buf,(uint16_t)first)<0) {
-                            ht_del(sid); close(cfd); dead=1; break;
-                        }
+                    if (tun_send(tfd,T_OPEN,sid,buf,(uint16_t)first)<0)
+                        { ht_del(sid); close(cfd); dead=1; break; }
 
-                        /* Ahora sí non-blocking para epoll */
-                        int flc=fcntl(cfd,F_GETFL,0);
-                        fcntl(cfd,F_SETFL,flc|O_NONBLOCK);
-
-                        struct epoll_event cev;
-                        cev.events=EPOLLIN|EPOLLET;
-                        cev.data.u64=((uint64_t)sid<<32)|(uint32_t)cfd;
-                        if (epoll_ctl(epfd,EPOLL_CTL_ADD,cfd,&cev)<0) {
-                            ht_del(sid); close(cfd);
-                        }
-                        cl=sizeof(ca);
-                    }
+                    /* Level-triggered: epoll notifica mientras haya datos */
+                    struct epoll_event cev;
+                    cev.events=EPOLLIN;
+                    cev.data.u64=((uint64_t)sid<<32)|(uint32_t)cfd;
+                    if (epoll_ctl(epfd,EPOLL_CTL_ADD,cfd,&cev)<0)
+                        { ht_del(sid); close(cfd); }
                     continue;
                 }
 
-                /* Túnel cayó */
-                if (fd==tfd) { dead=1; break; }
-
                 /* Datos de hev → servidor */
                 uint32_t sid=(uint32_t)(events[i].data.u64>>32);
-                int cfd=(int)(events[i].data.u64&0xFFFFFFFF);
+                int cfd=(int)(uint32_t)events[i].data.u64;
 
                 if (evs&(EPOLLERR|EPOLLHUP)) {
                     epoll_ctl(epfd,EPOLL_CTL_DEL,cfd,NULL);
@@ -591,13 +585,11 @@ static void *main_thread(void *arg) {
 
                 if (evs&EPOLLIN) {
                     uint8_t buf[MAX_PAYLOAD];
-                    ssize_t nr=0;
-                    while ((nr=recv(cfd,buf,sizeof(buf),0))>0) {
-                        if (tun_send(tfd,T_DATA,sid,buf,(uint16_t)nr)<0) {
-                            dead=1; break;
-                        }
-                    }
-                    if (!dead && nr==0) {
+                    ssize_t n2=recv(cfd,buf,sizeof(buf),0);
+                    if (n2>0) {
+                        if (tun_send(tfd,T_DATA,sid,buf,(uint16_t)n2)<0)
+                            dead=1;
+                    } else if (n2==0) {
                         epoll_ctl(epfd,EPOLL_CTL_DEL,cfd,NULL);
                         ht_del(sid); close(cfd);
                         tun_send(tfd,T_CLOSE,sid,NULL,0);
