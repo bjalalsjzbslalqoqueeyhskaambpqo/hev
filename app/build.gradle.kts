@@ -30,6 +30,37 @@ val baseUrlEscaped = baseUrlRaw.replace("\\", "\\\\").replace("\"", "\\\"")
 val tokenEscaped = tokenRaw.replace("\\", "\\\\").replace("\"", "\\\"")
 val hasInjectedConfig = baseUrlRaw.isNotBlank() && tokenRaw.isNotBlank()
 
+val appIdentityFile = rootProject.file("APP_IDENTITY.txt")
+val appIdentityDefaults = mapOf(
+    "APPLICATION_ID" to "com.blacktunnel.panel",
+    "APP_NAME" to "ADM VPS"
+)
+val appIdentityRaw = if (appIdentityFile.exists()) appIdentityFile.readText() else ""
+val appIdentityOverrides = appIdentityRaw
+    .lines()
+    .map { it.trim() }
+    .filter { it.isNotEmpty() && !it.startsWith("#") }
+    .mapNotNull { line ->
+        val separatorIndex = line.indexOf('=')
+        if (separatorIndex <= 0) {
+            return@mapNotNull null
+        }
+        val key = line.substring(0, separatorIndex).trim()
+        val value = line.substring(separatorIndex + 1).trim()
+        key to value
+    }
+    .toMap()
+
+val applicationIdRaw = appIdentityOverrides["APPLICATION_ID"]?.ifBlank { null }
+    ?: appIdentityDefaults.getValue("APPLICATION_ID")
+val appNameRaw = appIdentityOverrides["APP_NAME"]?.ifBlank { null }
+    ?: appIdentityDefaults.getValue("APP_NAME")
+val appNameEscaped = appNameRaw.replace("\\", "\\\\").replace("\"", "\\\"")
+
+val validApplicationIdRegex = Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+$")
+if (!validApplicationIdRegex.matches(applicationIdRaw)) {
+    throw GradleException("APP_IDENTITY.txt APPLICATION_ID inválido: $applicationIdRaw")
+}
 
 val signingStoreFile = System.getenv("SIGNING_STORE_FILE")
 val signingStorePassword = System.getenv("SIGNING_STORE_PASSWORD")
@@ -42,12 +73,13 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.blacktunnel.panel"
+        applicationId = applicationIdRaw
         minSdk = 24
         targetSdk = 34
         versionCode = 4
         versionName = "1.3.0"
 
+        resValue("string", "app_name", "\"$appNameEscaped\"")
         buildConfigField("String", "SELLER_CODE", "\"$sellerCodeEscaped\"")
         buildConfigField("String", "INJECTED_BASE_URL", "\"$baseUrlEscaped\"")
         buildConfigField("String", "INJECTED_TOKEN", "\"$tokenEscaped\"")
