@@ -46,10 +46,6 @@
 #define PROXY_PORT       80
 #define TUNNEL_HOST      "2.brawlpass.com.ar"
 
-#define MODE_DAILY  0
-#define MODE_GAMING 1
-
-static atomic_int      g_mode           = MODE_DAILY;
 static volatile int    g_running        = 0;
 static volatile int    g_started        = 0;
 static int             g_relay_fd       = -1;
@@ -209,14 +205,12 @@ static void tune_tun(int fd) {
     v=1;       setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,  &v,sizeof(v));
     v=1;       setsockopt(fd,IPPROTO_TCP,TCP_QUICKACK, &v,sizeof(v));
     v=0x10;    setsockopt(fd,IPPROTO_IP, IP_TOS,       &v,sizeof(v));
-    v=262144;  setsockopt(fd,SOL_SOCKET, SO_SNDBUF,    &v,sizeof(v));
-    v=262144;  setsockopt(fd,SOL_SOCKET, SO_RCVBUF,    &v,sizeof(v));
+    v=524288;  setsockopt(fd,SOL_SOCKET, SO_SNDBUF,    &v,sizeof(v));
+    v=524288;  setsockopt(fd,SOL_SOCKET, SO_RCVBUF,    &v,sizeof(v));
     v=1;       setsockopt(fd,SOL_SOCKET, SO_KEEPALIVE, &v,sizeof(v));
-    int mode=atomic_load(&g_mode);
-    int idle=(mode==MODE_GAMING)?10:30, intvl=(mode==MODE_GAMING)?3:5, cnt=3;
-    setsockopt(fd,IPPROTO_TCP,TCP_KEEPIDLE, &idle, sizeof(idle));
-    setsockopt(fd,IPPROTO_TCP,TCP_KEEPINTVL,&intvl,sizeof(intvl));
-    setsockopt(fd,IPPROTO_TCP,TCP_KEEPCNT,  &cnt,  sizeof(cnt));
+    v=20; setsockopt(fd,IPPROTO_TCP,TCP_KEEPIDLE, &v,sizeof(v));
+    v=5;  setsockopt(fd,IPPROTO_TCP,TCP_KEEPINTVL,&v,sizeof(v));
+    v=3;  setsockopt(fd,IPPROTO_TCP,TCP_KEEPCNT,  &v,sizeof(v));
     int fl=fcntl(fd,F_GETFD,0); if(fl>=0) fcntl(fd,F_SETFD,fl|FD_CLOEXEC);
 }
 
@@ -260,7 +254,7 @@ static int tun_send(int tfd, uint8_t type, uint32_t sid,
         } else if (errno==EAGAIN||errno==EWOULDBLOCK) {
             pthread_mutex_unlock(&g_wmu);
             struct pollfd wp={tfd,POLLOUT,0};
-            if (poll(&wp,1,(atomic_load(&g_mode)==MODE_GAMING)?5:30)<=0) return -1;
+            if (poll(&wp,1,15)<=0) return -1;
         } else { pthread_mutex_unlock(&g_wmu); return -1; }
     }
     return 0;
@@ -431,7 +425,7 @@ static void *tunnel_reader(void *arg) {
 static void *keepalive(void *arg) {
     thr_t *ta=(thr_t*)arg; int tfd=ta->tfd,epoch=ta->epoch; free(ta);
     atomic_store(&g_last_pong,(long)time(NULL));
-    int interval=(atomic_load(&g_mode)==MODE_GAMING)?5:20;
+    int interval=15;
     long last=time(NULL);
     while (g_running&&atomic_load(&g_tunnel_epoch)==epoch) {
         sleep(1);
@@ -543,9 +537,6 @@ static void *main_thread(void *arg) {
                     struct sockaddr_in ca; socklen_t cl=sizeof(ca);
                     int cfd=accept(rfd,(struct sockaddr*)&ca,&cl);
                     if (cfd<0) continue;
-                    int gaming=(atomic_load(&g_mode)==MODE_GAMING);
-                    int v=gaming?1:0;
-                    setsockopt(cfd,IPPROTO_TCP,TCP_NODELAY,&v,sizeof(v));
                     int fdc=fcntl(cfd,F_GETFD,0);
                     if(fdc>=0) fcntl(cfd,F_SETFD,fdc|FD_CLOEXEC);
 
@@ -686,23 +677,6 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     g_started=0;
 }
 
-JNIEXPORT void JNICALL
-Java_com_blacktunnel_BtProxy_nativeSetGamingMode(JNIEnv *e,jclass c,jboolean en) {
-    atomic_store(&g_mode,en?MODE_GAMING:MODE_DAILY);
-    push_log("I","mode=%s",en?"gaming":"daily");
-}
-
-JNIEXPORT void JNICALL
-Java_com_blacktunnel_BtProxy_nativeApplyMode(JNIEnv *e,jclass c,jboolean en) {
-    atomic_store(&g_mode,en?MODE_GAMING:MODE_DAILY);
-    push_log("I","apply_mode=%s",en?"gaming":"daily");
-}
-
-JNIEXPORT jint JNICALL
-Java_com_blacktunnel_BtProxy_nativeGetGamingMode(JNIEnv *e,jclass c) {
-    return atomic_load(&g_mode);
-}
-
 JNIEXPORT jstring JNICALL
 Java_com_blacktunnel_BtProxy_nativeDrainLogs(JNIEnv *env,jclass c) {
     pthread_mutex_lock(&g_log_mu);
@@ -724,9 +698,6 @@ static JNINativeMethod g_methods[]={
     {"nativeStop","()V",(void*)Java_com_blacktunnel_BtProxy_nativeStop},
     {"nativeDrainLogs","()Ljava/lang/String;",
                        (void*)Java_com_blacktunnel_BtProxy_nativeDrainLogs},
-    {"nativeSetGamingMode","(Z)V",(void*)Java_com_blacktunnel_BtProxy_nativeSetGamingMode},
-    {"nativeApplyMode","(Z)V",(void*)Java_com_blacktunnel_BtProxy_nativeApplyMode},
-    {"nativeGetGamingMode","()I",(void*)Java_com_blacktunnel_BtProxy_nativeGetGamingMode},
     {"nativeSetNetwork","(J)V",(void*)Java_com_blacktunnel_BtProxy_nativeSetNetwork},
 };
 
