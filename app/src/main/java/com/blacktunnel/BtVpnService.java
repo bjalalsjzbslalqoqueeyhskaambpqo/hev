@@ -170,7 +170,6 @@ public class BtVpnService extends VpnService {
             }
         }
         proxyStarted.set(true);
-        BtProxy.applyStoredGamingMode(this);
         registerNet();
 
         Builder builder = new Builder()
@@ -242,7 +241,6 @@ public class BtVpnService extends VpnService {
 
     private void applyRuntimeChanges() {
         if (!running.get() || stopping.get()) return;
-        BtProxy.applyRuntimeMode(this);
         rebuildTunnel();
     }
 
@@ -348,6 +346,7 @@ public class BtVpnService extends VpnService {
             "  connect-timeout: 5000\n" +
             "  tcp-read-write-timeout: 180000\n" +
             "  udp-read-write-timeout: 30000\n" +
+            "  udp-recv-buffer-size: 131072\n" +
             "  max-session-count: 512\n" +
             "  log-level: warn\n" +
             "  limit-nofile: 65535\n";
@@ -395,16 +394,12 @@ final class BtProxy {
     static void setGamingMode(Context ctx, boolean enabled) {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
            .edit().putBoolean(KEY_GAMING_MODE, enabled).apply();
-        nativeSetGamingMode(enabled);
     }
 
     static boolean isGamingMode(Context ctx) {
         return ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                   .getBoolean(KEY_GAMING_MODE, false);
     }
-
-    static void applyStoredGamingMode(Context ctx) { nativeSetGamingMode(isGamingMode(ctx)); }
-    static void applyRuntimeMode(Context ctx)      { nativeApplyMode(isGamingMode(ctx)); }
 
     static List<String> getGamingSelectedPackages(Context ctx) {
         Set<String> set = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -448,8 +443,5 @@ final class BtProxy {
     private static native int    nativeStart(int port, VpnService svc, String id);
     private static native void   nativeStop();
     private static native String nativeDrainLogs();
-    public  static native void   nativeSetGamingMode(boolean enabled);
-    public  static native void   nativeApplyMode(boolean enabled);
-    public  static native int    nativeGetGamingMode();
     public  static native void   nativeSetNetwork(long networkHandle);
 }
