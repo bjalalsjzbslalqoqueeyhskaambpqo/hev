@@ -348,7 +348,7 @@ public class BtVpnService extends VpnService {
             "  connect-timeout: 5000\n" +
             "  tcp-read-write-timeout: 180000\n" +
             "  udp-read-write-timeout: 30000\n" +
-            "  max-session-count: 256\n" +
+            "  max-session-count: 512\n" +
             "  log-level: warn\n" +
             "  limit-nofile: 65535\n";
         File f = new File(getFilesDir(), "hev.yml");
