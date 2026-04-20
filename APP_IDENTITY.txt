@@ -3,5 +3,5 @@
 # APPLICATION_ID=com.blacktunnel.panel.maquina2
 # APP_NAME=ADM VPS - Máquina 2
 
-APPLICATION_ID=com.blacktunnel.panel
-APP_NAME=ADM VPS
+APPLICATION_ID=com.blacktunnel.panel2
+APP_NAME=ADM VPS2
