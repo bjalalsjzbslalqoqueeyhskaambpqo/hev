@@ -6,6 +6,7 @@ on:
     paths:
       - 'PANEL_CONFIG.txt'
       - 'SELLER_CODE.txt'
+      - 'APP_IDENTITY.txt'
       - 'app/**'
       - 'build.gradle.kts'
       - 'settings.gradle.kts'
