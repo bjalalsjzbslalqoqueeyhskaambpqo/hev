@@ -57,6 +57,11 @@ public class BtVpnService extends VpnService {
 
     public static boolean isRunningState() { return runningState.get(); }
 
+    public static long[] getTrafficStats() {
+        try { return HevBridge.nativeGetStats(); }
+        catch (Throwable e) { return new long[]{0,0,0,0}; }
+    }
+
     public static void log(String message) {
         String line = "[" + new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date())
                     + "] " + message + "\n";
@@ -373,8 +378,9 @@ public class BtVpnService extends VpnService {
 
     static final class HevBridge {
         static { System.loadLibrary("hev-jni"); }
-        static native int  start(String path, int fd);
-        static native void stop();
+        static native int    start(String path, int fd);
+        static native void   stop();
+        static native long[] nativeGetStats();
     }
 }
 
@@ -394,6 +400,11 @@ final class BtProxy {
     static void setGamingMode(Context ctx, boolean enabled) {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
            .edit().putBoolean(KEY_GAMING_MODE, enabled).apply();
+    }
+
+    static void applyStoredGamingMode(Context ctx) {
+        // Gaming mode ahora solo afecta la config de hev
+        // Se aplica al reconectar via writeHevCfg
     }
 
     static boolean isGamingMode(Context ctx) {
