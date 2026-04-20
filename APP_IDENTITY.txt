@@ -1,7 +1,2 @@
-# Personaliza estos valores para poder instalar varias apps en paralelo.
-# Ejemplo para una segunda máquina:
-# APPLICATION_ID=com.blacktunnel.panel.maquina2
-# APP_NAME=ADM VPS - Máquina 2
-
 APPLICATION_ID=com.blacktunnel.panel2
 APP_NAME=ADM VPS2
