@@ -7,6 +7,7 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
@@ -53,6 +54,10 @@ import java.util.concurrent.Executors;
 public class SimpleModeActivity extends ComponentActivity {
     private static final String PREF_UI = "ui_state";
     private static final String KEY_HIDE_ID = "hide_internal_id";
+    private static final String PREF_TRAFFIC = "traffic_stats";
+    private static final String KEY_LIFETIME_RX = "lifetime_rx";
+    private static final String KEY_LIFETIME_TX = "lifetime_tx";
+    private static final int HOTSPOT_PROXY_PORT = 1080;
 
     private enum UiState {
         DISCONNECTED,
@@ -70,6 +75,11 @@ public class SimpleModeActivity extends ComponentActivity {
     private TextView userValueView;
     private TextView daysValueView;
     private TextView pingValueView;
+    private TextView realtimeDownUpView;
+    private TextView lifetimeDownUpView;
+    private TextView streamsView;
+    private TextView hotspotInfoView;
+    private Switch hotspotShareSwitch;
     private Switch gamingModeSwitch;
     private TextView gamingModeBadgeView;
     private TextView gamingDescriptionView;
@@ -90,6 +100,11 @@ public class SimpleModeActivity extends ComponentActivity {
     private boolean hideInternalId = false;
     private boolean applyingRuntimeChanges = false;
     private int lastPingMs = -1;
+    private long lastRxBytes = -1L;
+    private long lastTxBytes = -1L;
+    private long lifetimeRxBytes = 0L;
+    private long lifetimeTxBytes = 0L;
+    private boolean isHotspotSharing = false;
 
     private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
     private ConnectivityManager connectivityManager;
@@ -135,6 +150,11 @@ public class SimpleModeActivity extends ComponentActivity {
         userValueView = findViewById(R.id.txtUser);
         daysValueView = findViewById(R.id.txtDays);
         pingValueView = findViewById(R.id.txtPingValue);
+        realtimeDownUpView = findViewById(R.id.txtRealtimeDownUp);
+        lifetimeDownUpView = findViewById(R.id.txtLifetimeDownUp);
+        streamsView = findViewById(R.id.txtStreams);
+        hotspotInfoView = findViewById(R.id.txtHotspotInfo);
+        hotspotShareSwitch = findViewById(R.id.switchHotspotShare);
         gamingModeSwitch = findViewById(R.id.switchGamingMode);
         gamingModeBadgeView = findViewById(R.id.txtGamingBadge);
         gamingDescriptionView = findViewById(R.id.txtGamingDescription);
@@ -147,8 +167,12 @@ public class SimpleModeActivity extends ComponentActivity {
         internalId = BtProxy.getOrCreateInternalId(this);
         BtProxy.applyStoredGamingMode(this);
         hideInternalId = getSharedPreferences(PREF_UI, MODE_PRIVATE).getBoolean(KEY_HIDE_ID, false);
+        SharedPreferences trafficPrefs = getSharedPreferences(PREF_TRAFFIC, MODE_PRIVATE);
+        lifetimeRxBytes = trafficPrefs.getLong(KEY_LIFETIME_RX, 0L);
+        lifetimeTxBytes = trafficPrefs.getLong(KEY_LIFETIME_TX, 0L);
         if (deviceIdView != null) deviceIdView.setText("ID: " + internalId);
         refreshDeviceIdVisibility();
+        refreshTrafficUi(0L, 0L, BtVpnService.getActiveStreams());
 
         boolean running = BtVpnService.isRunningState();
         setUiState(running ? UiState.CONNECTED : UiState.DISCONNECTED);
@@ -182,6 +206,12 @@ public class SimpleModeActivity extends ComponentActivity {
         }
         if (selectGamingAppsBtn != null) {
             selectGamingAppsBtn.setOnClickListener(v -> openGamingAppsDialog());
+        }
+        if (hotspotShareSwitch != null) {
+            hotspotShareSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                if (isChecked) activarCompartir();
+                else desactivarCompartir();
+            });
         }
         refreshGamingModeUi();
 
@@ -230,6 +260,7 @@ public class SimpleModeActivity extends ComponentActivity {
     protected void onDestroy() {
         handler.removeCallbacks(stateTicker);
         handler.removeCallbacks(autoDisconnectRunnable);
+        if (isHotspotSharing) desactivarCompartir();
         stopStatusPulse();
         stopStatusHaloWave();
         if (connectivityManager != null && networkCallback != null) {
@@ -636,6 +667,7 @@ public class SimpleModeActivity extends ComponentActivity {
         String logs = BtVpnService.dumpLogs();
         updateServerAuthStatus(logs);
         updateUserMetadata(logs);
+        updateTrafficStats();
     }
 
 
@@ -872,8 +904,86 @@ public class SimpleModeActivity extends ComponentActivity {
                     pingValueView.setTextColor(c(R.color.color_text_disabled));
                     lastPingMs = -1;
                 }
+                lastRxBytes = -1L;
+                lastTxBytes = -1L;
             }
         }
         refreshGamingModeUi();
+    }
+
+    private void activarCompartir() {
+        String ip = BtVpnService.getHotspotIp();
+        if (ip == null) {
+            Toast.makeText(this, "Activá el hotspot WiFi primero", Toast.LENGTH_LONG).show();
+            if (hotspotShareSwitch != null) {
+                hotspotShareSwitch.setOnCheckedChangeListener(null);
+                hotspotShareSwitch.setChecked(false);
+                hotspotShareSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                    if (isChecked) activarCompartir();
+                    else desactivarCompartir();
+                });
+            }
+            return;
+        }
+        BtVpnService.startLocalProxy(HOTSPOT_PROXY_PORT);
+        isHotspotSharing = true;
+        if (hotspotInfoView != null) {
+            hotspotInfoView.setText("SOCKS5: " + ip + ":" + HOTSPOT_PROXY_PORT);
+            hotspotInfoView.setVisibility(View.VISIBLE);
+        }
+        Toast.makeText(this, "Compartir internet activado", Toast.LENGTH_SHORT).show();
+    }
+
+    private void desactivarCompartir() {
+        BtVpnService.stopLocalProxy();
+        isHotspotSharing = false;
+        if (hotspotInfoView != null) hotspotInfoView.setVisibility(View.GONE);
+        Toast.makeText(this, "Compartir internet desactivado", Toast.LENGTH_SHORT).show();
+    }
+
+    private void updateTrafficStats() {
+        long[] s = BtVpnService.getTrafficStats();
+        long totalTx = s.length > 1 ? s[1] : 0L;
+        long totalRx = s.length > 3 ? s[3] : 0L;
+
+        if (lastRxBytes < 0 || totalRx < lastRxBytes) lastRxBytes = totalRx;
+        if (lastTxBytes < 0 || totalTx < lastTxBytes) lastTxBytes = totalTx;
+
+        long deltaRx = Math.max(0L, totalRx - lastRxBytes);
+        long deltaTx = Math.max(0L, totalTx - lastTxBytes);
+        lastRxBytes = totalRx;
+        lastTxBytes = totalTx;
+
+        lifetimeRxBytes += deltaRx;
+        lifetimeTxBytes += deltaTx;
+        getSharedPreferences(PREF_TRAFFIC, MODE_PRIVATE)
+                .edit()
+                .putLong(KEY_LIFETIME_RX, lifetimeRxBytes)
+                .putLong(KEY_LIFETIME_TX, lifetimeTxBytes)
+                .apply();
+
+        int streams = BtVpnService.getActiveStreams();
+        refreshTrafficUi(deltaRx, deltaTx, streams);
+    }
+
+    private void refreshTrafficUi(long deltaRxBytes, long deltaTxBytes, int streams) {
+        if (realtimeDownUpView != null) {
+            long downKbps = deltaRxBytes / 1024L;
+            long upKbps = deltaTxBytes / 1024L;
+            realtimeDownUpView.setText("↓ " + downKbps + " KB/s  ↑ " + upKbps + " KB/s");
+        }
+        if (lifetimeDownUpView != null) {
+            lifetimeDownUpView.setText("↓ " + formatBytes(lifetimeRxBytes) + "  ↑ " + formatBytes(lifetimeTxBytes));
+        }
+        if (streamsView != null) {
+            streamsView.setText("Conexiones activas: " + streams);
+        }
+    }
+
+    private String formatBytes(long bytes) {
+        if (bytes < 1024L) return bytes + " B";
+        if (bytes < 1024L * 1024L) return String.format(Locale.US, "%.1f KB", bytes / 1024f);
+        if (bytes < 1024L * 1024L * 1024L) return String.format(Locale.US, "%.1f MB", bytes / (1024f * 1024f));
+        return String.format(Locale.US, "%.2f GB", bytes / (1024f * 1024f * 1024f));
     }
 }
