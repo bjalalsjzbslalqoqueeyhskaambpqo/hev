@@ -334,7 +334,7 @@ public class BtVpnService extends VpnService {
     private static void pipeResponse(InputStream in, OutputStream out) throws Exception {
         // Leer status line
         String status = readLine(in);
-        if (status == null || status.isEmpty()) return;
+        if (status.isEmpty()) return;
         out.write((status + "\r\n").getBytes(StandardCharsets.UTF_8));
 
         // Leer headers de response
@@ -364,10 +364,12 @@ public class BtVpnService extends VpnService {
             out.write(buf);
             out.flush();
         } else if (contentLength == 0) {
-            // Sin body
+            // Sin body — ok
         } else {
-            // Sin Content-Length — pipe hasta cierre
+            // Sin Content-Length ni chunked — pipe hasta cierre del socket
+            // El keep-alive no es posible en este caso
             pipe(in, out);
+            throw new EOFException();
         }
     }
 
@@ -375,7 +377,7 @@ public class BtVpnService extends VpnService {
         byte[] buf = new byte[8192];
         while (true) {
             String sizeLine = readLine(in);
-            if (sizeLine == null || sizeLine.isEmpty()) break;
+            if (sizeLine.isEmpty()) continue;
             out.write((sizeLine + "\r\n").getBytes(StandardCharsets.UTF_8));
             int chunkSize;
             try { chunkSize = Integer.parseInt(sizeLine.trim().split(";")[0], 16); }
