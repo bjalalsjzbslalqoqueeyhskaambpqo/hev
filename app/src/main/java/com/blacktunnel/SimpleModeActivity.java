@@ -53,7 +53,7 @@ import java.util.concurrent.Executors;
 public class SimpleModeActivity extends ComponentActivity {
     private static final String PREF_UI    = "ui_state";
     private static final String KEY_HIDE_ID = "hide_internal_id";
-    private static final int    HOTSPOT_PROXY_PORT = 1080;
+    private static final int    HOTSPOT_PROXY_PORT = 7071;
 
     private enum UiState { DISCONNECTED, CONNECTING, CONNECTED }
 
@@ -188,7 +188,7 @@ public class SimpleModeActivity extends ComponentActivity {
                     }
                     BtVpnService.startLocalProxy(HOTSPOT_PROXY_PORT);
                     if (hotspotInfoView != null) {
-                        hotspotInfoView.setText("SOCKS5: " + ip + ":" + HOTSPOT_PROXY_PORT);
+                        hotspotInfoView.setText("Proxy: " + ip + ":" + HOTSPOT_PROXY_PORT);
                         hotspotInfoView.setVisibility(View.VISIBLE);
                     }
                 } else {
@@ -242,10 +242,10 @@ public class SimpleModeActivity extends ComponentActivity {
         handler.removeCallbacks(autoDisconnectRunnable);
         stopStatusPulse();
         stopStatusHaloWave();
-        BtVpnService.stopLocalProxy();
         if (connectivityManager != null && networkCallback != null) {
             try { connectivityManager.unregisterNetworkCallback(networkCallback); } catch (Throwable ignored) {}
         }
+        BtVpnService.stopLocalProxy();
         appLoadExecutor.shutdownNow();
         super.onDestroy();
     }
