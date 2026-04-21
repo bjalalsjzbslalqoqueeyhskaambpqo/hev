@@ -18,10 +18,10 @@ import android.provider.Settings;
 import androidx.core.app.NotificationCompat;
 import java.io.File;
 import java.io.FileOutputStream;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.NetworkInterface;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -87,22 +87,33 @@ public class BtVpnService extends VpnService {
         }
     }
 
-    public static void startLocalProxy(int listenPort) {
+    public static void startLocalProxy(int port) {
         if (proxyStarted.getAndSet(true)) return;
         Thread t = new Thread(() -> {
-            try (ServerSocket ss = new ServerSocket(listenPort, 50, InetAddress.getByName("0.0.0.0"))) {
+            try (ServerSocket ss = new ServerSocket(port, 50, InetAddress.getByName("0.0.0.0"))) {
                 ss.setReuseAddress(true);
                 while (!Thread.currentThread().isInterrupted()) {
                     Socket client;
                     try { client = ss.accept(); }
                     catch (Exception e) { break; }
-                    String ip = client.getInetAddress().getHostAddress();
-                    if (ip == null || ip.startsWith("127.") ||
-                        ip.startsWith("198.18.") || ip.startsWith("fd40")) {
-                        try { client.close(); } catch (Exception ignored) {}
-                        continue;
-                    }
-                    Thread relay = new Thread(() -> relayToSocks5(client));
+                    Thread relay = new Thread(() -> {
+                        try (Socket dst = new Socket("127.0.0.1", BtProxy.SOCKS5_PORT)) {
+                            dst.setTcpNoDelay(true);
+                            client.setTcpNoDelay(true);
+                            Thread r = new Thread(() -> {
+                                try { pipe(dst.getInputStream(), client.getOutputStream()); }
+                                catch (Exception ignored) {}
+                                try { client.close(); } catch (Exception ignored) {}
+                            });
+                            r.setDaemon(true);
+                            r.start();
+                            try { pipe(client.getInputStream(), dst.getOutputStream()); }
+                            catch (Exception ignored) {}
+                            try { dst.close(); } catch (Exception ignored) {}
+                        } catch (Exception ignored) {
+                            try { client.close(); } catch (Exception ignored2) {}
+                        }
+                    });
                     relay.setDaemon(true);
                     relay.start();
                 }
@@ -118,6 +129,12 @@ public class BtVpnService extends VpnService {
         Thread t = localProxyThread;
         if (t != null) { t.interrupt(); localProxyThread = null; }
         proxyStarted.set(false);
+    }
+
+    private static void pipe(InputStream in, OutputStream out) throws Exception {
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
     }
 
     public static String getHotspotIp() {
@@ -154,34 +171,6 @@ public class BtVpnService extends VpnService {
             }
         } catch (Exception ignored) {}
         return null;
-    }
-
-    private static void relayToSocks5(Socket client) {
-        try (Socket proxy = new Socket("127.0.0.1", BtProxy.SOCKS5_PORT)) {
-            proxy.setTcpNoDelay(true);
-            client.setTcpNoDelay(true);
-            InputStream  ci = client.getInputStream();
-            OutputStream co = client.getOutputStream();
-            InputStream  pi = proxy.getInputStream();
-            OutputStream po = proxy.getOutputStream();
-            Thread t = new Thread(() -> {
-                try { pipe(pi, co); } catch (Exception ignored) {}
-                try { client.close(); } catch (Exception ignored) {}
-            });
-            t.setDaemon(true);
-            t.start();
-            try { pipe(ci, po); } catch (Exception ignored) {}
-            try { proxy.close(); } catch (Exception ignored) {}
-            t.interrupt();
-        } catch (Exception ignored) {
-            try { client.close(); } catch (Exception ignored2) {}
-        }
-    }
-
-    private static void pipe(InputStream in, OutputStream out) throws Exception {
-        byte[] buf = new byte[8192];
-        int n;
-        while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
     }
 
     @Override
