@@ -133,29 +133,31 @@ public class BtVpnService extends VpnService {
      *   }
      */
     public static String getHotspotIp() {
-        // Interfaces conocidas de hotspot en Android
-        String[] hotspotIfaces = {"ap0", "wlan0", "swlan0", "wlan1", "rndis0"};
+        // Busca la IP del hotspot en todas las interfaces activas.
+        // Excluye: loopback, VPN interna (198.18.x), IPv6, e interfaces
+        // conocidas que NO son hotspot (rmnet=datos móviles, dummy, p2p).
         try {
             Enumeration<NetworkInterface> ifaces = NetworkInterface.getNetworkInterfaces();
+            if (ifaces == null) return null;
             while (ifaces.hasMoreElements()) {
                 NetworkInterface iface = ifaces.nextElement();
                 if (!iface.isUp() || iface.isLoopback()) continue;
                 String name = iface.getName().toLowerCase();
-                boolean isHotspot = false;
-                for (String h : hotspotIfaces) {
-                    if (name.equals(h) || name.startsWith("ap") || name.startsWith("swlan")) {
-                        isHotspot = true; break;
-                    }
-                }
-                if (!isHotspot) continue;
+                // Excluir interfaces que nunca son hotspot
+                if (name.startsWith("rmnet") || name.startsWith("dummy") ||
+                        name.startsWith("p2p") || name.startsWith("tun") ||
+                        name.startsWith("bt-") || name.equals("lo")) continue;
                 Enumeration<java.net.InetAddress> addrs = iface.getInetAddresses();
                 while (addrs.hasMoreElements()) {
                     java.net.InetAddress addr = addrs.nextElement();
-                    if (!addr.isLoopbackAddress() && addr instanceof java.net.Inet4Address) {
-                        String ip = addr.getHostAddress();
-                        // Filtrar IPs de la VPN
-                        if (!ip.startsWith("198.18.")) return ip;
-                    }
+                    if (addr.isLoopbackAddress()) continue;
+                    if (!(addr instanceof java.net.Inet4Address)) continue;
+                    String ip = addr.getHostAddress();
+                    if (ip == null) continue;
+                    // Excluir IPs de la VPN interna
+                    if (ip.startsWith("198.18.")) continue;
+                    // Rangos típicos de hotspot: 192.168.x.x y 10.x.x.x
+                    if (ip.startsWith("192.168.") || ip.startsWith("10.")) return ip;
                 }
             }
         } catch (Exception ignored) {}
