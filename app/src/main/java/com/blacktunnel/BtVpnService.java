@@ -18,10 +18,11 @@ import android.provider.Settings;
 import androidx.core.app.NotificationCompat;
 import java.io.File;
 import java.io.FileOutputStream;
-import java.net.Inet4Address;
-import java.net.InetAddress;
+import java.io.EOFException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.Inet4Address;
+import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -119,14 +120,11 @@ public class BtVpnService extends VpnService {
             client.setTcpNoDelay(true);
             InputStream  ci = client.getInputStream();
             OutputStream co = client.getOutputStream();
-            // Leer primer byte para detectar protocolo
             int first = ci.read();
             if (first < 0) return;
             if (first == 0x05) {
-                // SOCKS5 directo — pasar todo al motor sin traducir
                 handleSocks5Direct(client, ci, co, (byte) first);
             } else {
-                // HTTP — leer el resto de la primera línea y traducir
                 handleHttpProxy(client, ci, co, (byte) first);
             }
         } catch (Exception ignored) {
@@ -135,13 +133,11 @@ public class BtVpnService extends VpnService {
         }
     }
 
-    // SOCKS5 directo — el cliente ya habla SOCKS5, relay puro al motor
     private static void handleSocks5Direct(Socket client, InputStream ci, OutputStream co, byte firstByte) throws Exception {
         try (Socket motor = new Socket("127.0.0.1", BtProxy.SOCKS5_PORT)) {
             motor.setTcpNoDelay(true);
             InputStream  mi = motor.getInputStream();
             OutputStream mo = motor.getOutputStream();
-            // Reenviar el primer byte ya leído y luego relay completo
             mo.write(firstByte);
             Thread r = new Thread(() -> {
                 try { pipe(mi, co); } catch (Exception ignored) {}
@@ -153,104 +149,82 @@ public class BtVpnService extends VpnService {
         }
     }
 
-    // HTTP proxy — traduce HTTP/HTTPS a SOCKS5
     private static void handleHttpProxy(Socket client, InputStream ci, OutputStream co, byte firstByte) throws Exception {
-        // Leer la primera línea completa (método + URL + versión)
         StringBuilder sb = new StringBuilder();
         sb.append((char) firstByte);
         int b;
         while ((b = ci.read()) >= 0) {
             sb.append((char) b);
-            if (sb.length() >= 2 && sb.charAt(sb.length()-2) == '
-' && sb.charAt(sb.length()-1) == '
-') break;
+            int len = sb.length();
+            if (len >= 2 && sb.charAt(len - 2) == '\r' && sb.charAt(len - 1) == '\n') break;
         }
         String firstLine = sb.toString().trim();
 
-        // Leer y descartar el resto de headers hasta 
-
-
-        // Para CONNECT los descartamos, para GET los guardamos
         StringBuilder headers = new StringBuilder();
         String line;
         while (!(line = readLine(ci)).isEmpty()) {
-            headers.append(line).append("
-");
+            headers.append(line).append("\r\n");
         }
 
         String host;
-        int    port;
+        int    dstPort;
         boolean isConnect = firstLine.startsWith("CONNECT ");
 
         if (isConnect) {
-            // CONNECT host:port HTTP/1.1
             String hostPort = firstLine.split(" ")[1];
             int colon = hostPort.lastIndexOf(':');
-            host = colon >= 0 ? hostPort.substring(0, colon) : hostPort;
-            port = colon >= 0 ? Integer.parseInt(hostPort.substring(colon + 1)) : 443;
+            host    = colon >= 0 ? hostPort.substring(0, colon) : hostPort;
+            dstPort = colon >= 0 ? Integer.parseInt(hostPort.substring(colon + 1)) : 443;
         } else {
-            // GET http://host/path HTTP/1.1  o  GET /path HTTP/1.1
             String url = firstLine.split(" ").length > 1 ? firstLine.split(" ")[1] : "";
             if (url.startsWith("http://")) {
-                String withoutScheme = url.substring(7);
-                int slash = withoutScheme.indexOf('/');
-                String hostPort = slash >= 0 ? withoutScheme.substring(0, slash) : withoutScheme;
+                String without = url.substring(7);
+                int slash = without.indexOf('/');
+                String hostPort = slash >= 0 ? without.substring(0, slash) : without;
                 int colon = hostPort.lastIndexOf(':');
-                host = colon >= 0 ? hostPort.substring(0, colon) : hostPort;
-                port = colon >= 0 ? Integer.parseInt(hostPort.substring(colon + 1)) : 80;
+                host    = colon >= 0 ? hostPort.substring(0, colon) : hostPort;
+                dstPort = colon >= 0 ? Integer.parseInt(hostPort.substring(colon + 1)) : 80;
             } else {
-                // Ruta relativa — buscar Host header
                 host = extractHeader(headers.toString(), "Host:");
                 int colon = host.lastIndexOf(':');
-                if (colon >= 0) { port = Integer.parseInt(host.substring(colon + 1)); host = host.substring(0, colon); }
-                else port = 80;
+                if (colon >= 0) { dstPort = Integer.parseInt(host.substring(colon + 1)); host = host.substring(0, colon); }
+                else dstPort = 80;
             }
         }
 
-        // Handshake SOCKS5 con el motor
         try (Socket motor = new Socket("127.0.0.1", BtProxy.SOCKS5_PORT)) {
             motor.setTcpNoDelay(true);
             InputStream  mi = motor.getInputStream();
             OutputStream mo = motor.getOutputStream();
 
-            // Saludo sin auth
             mo.write(new byte[]{0x05, 0x01, 0x00});
             mo.flush();
             byte[] resp = new byte[2];
             readFully(mi, resp);
             if (resp[0] != 0x05 || resp[1] != 0x00) return;
 
-            // Request CONNECT con dominio
-            byte[] hostBytes = host.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            byte[] hostBytes = host.getBytes(StandardCharsets.UTF_8);
             byte[] req = new byte[7 + hostBytes.length];
             req[0] = 0x05; req[1] = 0x01; req[2] = 0x00;
             req[3] = 0x03; req[4] = (byte) hostBytes.length;
             System.arraycopy(hostBytes, 0, req, 5, hostBytes.length);
-            req[5 + hostBytes.length] = (byte) ((port >> 8) & 0xFF);
-            req[6 + hostBytes.length] = (byte) (port & 0xFF);
+            req[5 + hostBytes.length] = (byte) ((dstPort >> 8) & 0xFF);
+            req[6 + hostBytes.length] = (byte) (dstPort & 0xFF);
             mo.write(req); mo.flush();
 
-            // Respuesta del motor (10 bytes para IPv4)
             byte[] sresp = new byte[10];
             readFully(mi, sresp);
             if (sresp[1] != 0x00) return;
 
             if (isConnect) {
-                // HTTPS — responder 200 y relay puro
-                co.write("HTTP/1.1 200 Connection established
-
-".getBytes());
+                co.write("HTTP/1.1 200 Connection established\r\n\r\n".getBytes(StandardCharsets.UTF_8));
                 co.flush();
             } else {
-                // HTTP plano — reenviar el request original al motor
-                String rebuiltRequest = firstLine + "
-" + headers + "
-";
-                mo.write(rebuiltRequest.getBytes());
+                String rebuilt = firstLine + "\r\n" + headers + "\r\n";
+                mo.write(rebuilt.getBytes(StandardCharsets.UTF_8));
                 mo.flush();
             }
 
-            // Relay bidireccional
             Thread r = new Thread(() -> {
                 try { pipe(mi, co); } catch (Exception ignored) {}
                 try { client.close(); } catch (Exception ignored) {}
@@ -265,20 +239,17 @@ public class BtVpnService extends VpnService {
         StringBuilder sb = new StringBuilder();
         int b;
         while ((b = in.read()) >= 0) {
-            if (b == '
-') break;
-            if (b != '
-') sb.append((char) b);
+            if (b == '\n') break;
+            if (b != '\r') sb.append((char) b);
         }
         return sb.toString();
     }
 
     private static String extractHeader(String headers, String name) {
-        for (String line : headers.split("
-")) {
-            if (line.toLowerCase(java.util.Locale.ROOT).startsWith(name.toLowerCase(java.util.Locale.ROOT))) {
-                return line.substring(name.length()).trim();
-            }
+        String nameLower = name.toLowerCase(Locale.ROOT);
+        for (String l : headers.split("\r\n")) {
+            if (l.toLowerCase(Locale.ROOT).startsWith(nameLower))
+                return l.substring(name.length()).trim();
         }
         return "";
     }
@@ -287,7 +258,7 @@ public class BtVpnService extends VpnService {
         int off = 0;
         while (off < buf.length) {
             int n = in.read(buf, off, buf.length - off);
-            if (n < 0) throw new java.io.EOFException();
+            if (n < 0) throw new EOFException();
             off += n;
         }
     }
@@ -306,25 +277,21 @@ public class BtVpnService extends VpnService {
                 NetworkInterface iface = ifaces.nextElement();
                 if (!iface.isUp() || iface.isLoopback()) continue;
                 String name = iface.getName().toLowerCase();
-                // Excluir solo lo que con certeza nunca es hotspot
-                if (name.equals("lo")          ||
-                    name.startsWith("rmnet")   ||
-                    name.startsWith("ccmni")   ||
-                    name.startsWith("dummy")   ||
-                    name.startsWith("p2p")     ||
-                    name.startsWith("bt-pan")  ||
-                    name.startsWith("sit")     ||
+                if (name.equals("lo")         ||
+                    name.startsWith("rmnet")  ||
+                    name.startsWith("ccmni")  ||
+                    name.startsWith("dummy")  ||
+                    name.startsWith("p2p")    ||
+                    name.startsWith("bt-pan") ||
+                    name.startsWith("sit")    ||
                     name.startsWith("ip6tnl")) continue;
                 Enumeration<InetAddress> addrs = iface.getInetAddresses();
                 while (addrs.hasMoreElements()) {
                     InetAddress addr = addrs.nextElement();
-                    // isSiteLocalAddress() cubre 10.x, 172.16.x y 192.168.x
-                    // sin depender del nombre de interfaz
                     if (!addr.isSiteLocalAddress()) continue;
                     if (!(addr instanceof Inet4Address)) continue;
                     String ip = addr.getHostAddress();
                     if (ip == null) continue;
-                    // Excluir IPs internas de la VPN y datos móviles
                     if (ip.startsWith("198.18.")) continue;
                     if (ip.startsWith("172.")) continue;
                     return ip;
@@ -533,9 +500,6 @@ public class BtVpnService extends VpnService {
                 if (pkg != null && !pkg.isBlank())
                     try { builder.addAllowedApplication(pkg); } catch (Exception ignored) {}
         }
-        // No excluimos nuestra app — btproxy.c protege sus propios sockets
-        // hacia el servidor con protect_fd(), evitando el bucle.
-        // El proxy local del hotspot necesita pasar por el TUN para funcionar.
     }
 
     private File writeHevCfg(boolean gaming) {
