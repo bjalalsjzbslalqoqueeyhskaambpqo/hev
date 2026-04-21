@@ -18,13 +18,20 @@ import android.provider.Settings;
 import androidx.core.app.NotificationCompat;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -32,172 +39,31 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.net.InetAddress;
-import java.net.NetworkInterface;
-import java.net.ServerSocket;
-import java.net.Socket;
-import java.util.Enumeration;
 
 public class BtVpnService extends VpnService {
     public static final String ACTION_START = "com.blacktunnel.START";
     public static final String ACTION_STOP  = "com.blacktunnel.STOP";
     public static final String ACTION_APPLY = "com.blacktunnel.APPLY";
-    private static final String CH_ID = "bt_vpn";
-    private static final int    NF_ID = 33;
-    private static final AtomicBoolean runningState  = new AtomicBoolean(false);
-    private static final AtomicBoolean proxyStarted  = new AtomicBoolean(false);
-    private static final AtomicInteger activeStreams  = new AtomicInteger(0);
+    private static final String CH_ID        = "bt_vpn";
+    private static final int    NF_ID        = 33;
+    private static final AtomicBoolean runningState     = new AtomicBoolean(false);
+    private static final AtomicBoolean proxyStarted     = new AtomicBoolean(false);
     private static volatile Thread     localProxyThread = null;
-    private static final Object        LOG_LOCK     = new Object();
-    private static final StringBuilder LOGS         = new StringBuilder(8192);
-    private static final int           MAX_LOG_CHARS = 24000;
+    private static final Object        LOG_LOCK         = new Object();
+    private static final StringBuilder LOGS             = new StringBuilder(8192);
+    private static final int           MAX_LOG_CHARS    = 24000;
 
-    private final AtomicBoolean  running  = new AtomicBoolean(false);
-    private final AtomicBoolean  stopping = new AtomicBoolean(false);
+    private final AtomicBoolean   running  = new AtomicBoolean(false);
+    private final AtomicBoolean   stopping = new AtomicBoolean(false);
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
-    private volatile ParcelFileDescriptor tunPfd;
-    private volatile Thread               hevThread;
-    private volatile int                  hevTunFd  = -1;
-    private volatile File                 hevCfgFile;
+    private volatile ParcelFileDescriptor                tunPfd;
+    private volatile Thread                              hevThread;
+    private volatile int                                 hevTunFd = -1;
+    private volatile File                                hevCfgFile;
     private volatile ConnectivityManager.NetworkCallback netCallback;
 
     public static boolean isRunningState() { return runningState.get(); }
-
-    public static long[] getTrafficStats() {
-        try { return HevBridge.nativeGetStats(); }
-        catch (Throwable e) { return new long[]{0,0,0,0}; }
-    }
-
-    public static int getActiveStreams() { return activeStreams.get(); }
-
-    /**
-     * Inicia un proxy SOCKS5 local en la interfaz de hotspot.
-     * Solo acepta conexiones de IPs externas (no loopback ni VPN).
-     * El tráfico entrante se reenvía al proxy del motor (10809)
-     * que ya está dentro del túnel — así no hay bucle.
-     *
-     * Para detenerlo llamar stopLocalProxy().
-     */
-    public static void startLocalProxy(int listenPort) {
-        if (proxyStarted.getAndSet(true)) return;
-        Thread t = new Thread(() -> {
-            try (ServerSocket ss = new ServerSocket(listenPort,
-                    50, InetAddress.getByName("0.0.0.0"))) {
-                ss.setReuseAddress(true);
-                while (!Thread.currentThread().isInterrupted()) {
-                    Socket client;
-                    try { client = ss.accept(); }
-                    catch (Exception e) { break; }
-
-                    // Rechazar loopback y direcciones VPN (198.18.x.x, fd40::)
-                    String ip = client.getInetAddress().getHostAddress();
-                    if (ip == null || ip.startsWith("127.") ||
-                        ip.startsWith("198.18.") || ip.startsWith("fd40")) {
-                        try { client.close(); } catch (Exception ignored) {}
-                        continue;
-                    }
-
-                    Thread relay = new Thread(() -> relayToSocks5(client));
-                    relay.setDaemon(true);
-                    relay.start();
-                }
-            } catch (Exception ignored) {}
-            proxyStarted.set(false);
-        }, "local-proxy");
-        t.setDaemon(true);
-        localProxyThread = t;
-        t.start();
-    }
-
-    public static void stopLocalProxy() {
-        Thread t = localProxyThread;
-        if (t != null) { t.interrupt(); localProxyThread = null; }
-        proxyStarted.set(false);
-    }
-
-    /**
-     * Detecta si el hotspot WiFi está activo y retorna su IP.
-     * La interfaz de hotspot en Android típicamente es wlan0, ap0 o swlan0.
-     * Retorna null si el hotspot no está activo o no se encuentra la IP.
-     *
-     * Uso desde UI:
-     *   String ip = BtVpnService.getHotspotIp();
-     *   if (ip != null) {
-     *       // mostrar "Compartir: IP:puerto"
-     *   } else {
-     *       // mostrar "Activá el hotspot WiFi primero"
-     *   }
-     */
-    public static String getHotspotIp() {
-        // Interfaces conocidas de hotspot en Android
-        String[] hotspotIfaces = {"ap0", "wlan0", "swlan0", "wlan1", "rndis0"};
-        try {
-            Enumeration<NetworkInterface> ifaces = NetworkInterface.getNetworkInterfaces();
-            while (ifaces.hasMoreElements()) {
-                NetworkInterface iface = ifaces.nextElement();
-                if (!iface.isUp() || iface.isLoopback()) continue;
-                String name = iface.getName().toLowerCase();
-                boolean isHotspot = false;
-                for (String h : hotspotIfaces) {
-                    if (name.equals(h) || name.startsWith("ap") || name.startsWith("swlan")) {
-                        isHotspot = true; break;
-                    }
-                }
-                if (!isHotspot) continue;
-                Enumeration<java.net.InetAddress> addrs = iface.getInetAddresses();
-                while (addrs.hasMoreElements()) {
-                    java.net.InetAddress addr = addrs.nextElement();
-                    if (!addr.isLoopbackAddress() && addr instanceof java.net.Inet4Address) {
-                        String ip = addr.getHostAddress();
-                        // Filtrar IPs de la VPN
-                        if (!ip.startsWith("198.18.")) return ip;
-                    }
-                }
-            }
-        } catch (Exception ignored) {}
-        return null;
-    }
-
-    /**
-     * Relay SOCKS5 — conecta al cliente externo con el motor local.
-     * El motor (10809) ya está protegido por VpnService.protect()
-     * así que su tráfico sale por la red real, no por el TUN.
-     * El cliente externo entra por hotspot → aquí → motor → túnel → internet.
-     */
-    private static void relayToSocks5(Socket client) {
-        activeStreams.incrementAndGet();
-        try (Socket proxy = new Socket("127.0.0.1", BtProxy.SOCKS5_PORT)) {
-            proxy.setTcpNoDelay(true);
-            client.setTcpNoDelay(true);
-            InputStream  ci = client.getInputStream();
-            OutputStream co = client.getOutputStream();
-            InputStream  pi = proxy.getInputStream();
-            OutputStream po = proxy.getOutputStream();
-            Thread t = new Thread(() -> {
-                try { pipe(pi, co); } catch (Exception ignored) {}
-                try { client.close(); } catch (Exception ignored) {}
-            });
-            t.setDaemon(true);
-            t.start();
-            try { pipe(ci, po); } catch (Exception ignored) {}
-            try { proxy.close(); } catch (Exception ignored) {}
-            t.interrupt();
-        } catch (Exception ignored) {
-            try { client.close(); } catch (Exception ignored2) {}
-        } finally {
-            activeStreams.decrementAndGet();
-        }
-    }
-
-    private static void pipe(InputStream in, OutputStream out) throws Exception {
-        byte[] buf = new byte[8192];
-        int n;
-        while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
-    }
 
     public static void log(String message) {
         String line = "[" + new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date())
@@ -219,6 +85,91 @@ public class BtVpnService extends VpnService {
             }
             return LOGS.toString();
         }
+    }
+
+    public static void startLocalProxy(int listenPort) {
+        if (proxyStarted.getAndSet(true)) return;
+        Thread t = new Thread(() -> {
+            try (ServerSocket ss = new ServerSocket(listenPort, 50, InetAddress.getByName("0.0.0.0"))) {
+                ss.setReuseAddress(true);
+                while (!Thread.currentThread().isInterrupted()) {
+                    Socket client;
+                    try { client = ss.accept(); }
+                    catch (Exception e) { break; }
+                    String ip = client.getInetAddress().getHostAddress();
+                    if (ip == null || ip.startsWith("127.") ||
+                        ip.startsWith("198.18.") || ip.startsWith("fd40")) {
+                        try { client.close(); } catch (Exception ignored) {}
+                        continue;
+                    }
+                    Thread relay = new Thread(() -> relayToSocks5(client));
+                    relay.setDaemon(true);
+                    relay.start();
+                }
+            } catch (Exception ignored) {}
+            proxyStarted.set(false);
+        }, "local-proxy");
+        t.setDaemon(true);
+        localProxyThread = t;
+        t.start();
+    }
+
+    public static void stopLocalProxy() {
+        Thread t = localProxyThread;
+        if (t != null) { t.interrupt(); localProxyThread = null; }
+        proxyStarted.set(false);
+    }
+
+    public static String getHotspotIp() {
+        try {
+            Enumeration<NetworkInterface> ifaces = NetworkInterface.getNetworkInterfaces();
+            if (ifaces == null) return null;
+            while (ifaces.hasMoreElements()) {
+                NetworkInterface iface = ifaces.nextElement();
+                if (!iface.isUp() || iface.isLoopback()) continue;
+                String name = iface.getName().toLowerCase();
+                if (name.startsWith("rmnet") || name.startsWith("dummy") ||
+                    name.startsWith("p2p")   || name.startsWith("tun")   ||
+                    name.startsWith("bt-")   || name.equals("lo")) continue;
+                Enumeration<InetAddress> addrs = iface.getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    InetAddress addr = addrs.nextElement();
+                    if (addr.isLoopbackAddress() || !(addr instanceof Inet4Address)) continue;
+                    String ip = addr.getHostAddress();
+                    if (ip == null || ip.startsWith("198.18.")) continue;
+                    if (ip.startsWith("192.168.") || ip.startsWith("10.")) return ip;
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private static void relayToSocks5(Socket client) {
+        try (Socket proxy = new Socket("127.0.0.1", BtProxy.SOCKS5_PORT)) {
+            proxy.setTcpNoDelay(true);
+            client.setTcpNoDelay(true);
+            InputStream  ci = client.getInputStream();
+            OutputStream co = client.getOutputStream();
+            InputStream  pi = proxy.getInputStream();
+            OutputStream po = proxy.getOutputStream();
+            Thread t = new Thread(() -> {
+                try { pipe(pi, co); } catch (Exception ignored) {}
+                try { client.close(); } catch (Exception ignored) {}
+            });
+            t.setDaemon(true);
+            t.start();
+            try { pipe(ci, po); } catch (Exception ignored) {}
+            try { proxy.close(); } catch (Exception ignored) {}
+            t.interrupt();
+        } catch (Exception ignored) {
+            try { client.close(); } catch (Exception ignored2) {}
+        }
+    }
+
+    private static void pipe(InputStream in, OutputStream out) throws Exception {
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
     }
 
     @Override
@@ -250,135 +201,48 @@ public class BtVpnService extends VpnService {
 
     private void rebuildTunnel() {
         if (!running.get() || stopping.get()) return;
-
-        try { HevBridge.stop(); } catch (Throwable ignored) {}
-        Thread old = hevThread; hevThread = null;
-        if (old != null) try { old.join(2000); } catch (InterruptedException ignored) {}
-
-        ParcelFileDescriptor oldPfd = tunPfd; tunPfd = null;
-        if (oldPfd != null) try { oldPfd.close(); } catch (Exception ignored) {}
-        int oldFd = hevTunFd; hevTunFd = -1;
-        if (oldFd >= 0) try { ParcelFileDescriptor.adoptFd(oldFd).close(); } catch (Exception ignored) {}
-
+        log("rebuildTunnel");
+        ParcelFileDescriptor old = tunPfd; tunPfd = null;
+        stopHev();
+        if (old != null) try { old.close(); } catch (Exception ignored) {}
+        if (!running.get() || stopping.get()) return;
         boolean gaming = BtProxy.isGamingMode(this);
-        Builder builder = new Builder()
-                .setSession("bt-hev")
-                .setMtu(1500)
-                .addAddress("198.18.0.1", 15)
-                .addAddress("fd40::1", 128)
-                .addDnsServer("198.18.0.2");
-        addPublicRoutes(builder);
-        applyPerAppVpnPolicy(builder);
-
-        tunPfd = builder.establish();
-        if (tunPfd == null) { stopAll(); return; }
-
-        try {
-            hevTunFd = ParcelFileDescriptor.dup(tunPfd.getFileDescriptor()).detachFd();
-        } catch (Exception e) {
-            try { tunPfd.close(); } catch (Exception ignored) {}
-            tunPfd = null;
-            stopAll(); return;
-        }
-
         hevCfgFile = writeHevCfg(gaming);
-        final int fd = hevTunFd; final File cfg = hevCfgFile;
-        hevThread = new Thread(() -> {
-            HevBridge.start(cfg.getAbsolutePath(), fd);
-            try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
-            if (hevTunFd == fd) hevTunFd = -1;
-        }, "hev");
-        hevThread.start();
+        ParcelFileDescriptor pfd = buildTun(gaming);
+        if (pfd == null) { stopAll(); return; }
+        tunPfd = pfd;
+        startHev(pfd.getFd());
     }
 
     private void startAll() {
-        if (running.get() || stopping.get()) return;
-
+        if (running.getAndSet(true)) return;
+        stopping.set(false);
+        runningState.set(true);
         createChannel();
         startForeground(NF_ID, buildNotif());
-
-        BtProxy.stop();
-        proxyStarted.set(false);
-
-        String internalId = BtProxy.getOrCreateInternalId(this);
-        boolean gaming    = BtProxy.isGamingMode(this);
-
-        if (BtProxy.start(this, internalId) < 0) {
-            SystemClock.sleep(250);
-            if (BtProxy.start(this, internalId) < 0) {
-                log("E btproxy start failed");
-                stopForeground(STOP_FOREGROUND_REMOVE);
-                return;
-            }
-        }
-        proxyStarted.set(true);
-        registerNet();
-
-        Builder builder = new Builder()
-                .setSession("bt-hev")
-                .setMtu(1500)
-                .addAddress("198.18.0.1", 15)
-                .addAddress("fd40::1", 128)
-                .addDnsServer("198.18.0.2");
-        addPublicRoutes(builder);
-        applyPerAppVpnPolicy(builder);
-
-        tunPfd = builder.establish();
-        if (tunPfd == null) {
-            unregisterNet();
-            if (proxyStarted.compareAndSet(true, false)) BtProxy.stop();
-            stopForeground(STOP_FOREGROUND_REMOVE);
-            return;
-        }
-
-        try {
-            hevTunFd = ParcelFileDescriptor.dup(tunPfd.getFileDescriptor()).detachFd();
-        } catch (Exception e) {
-            try { tunPfd.close(); } catch (Exception ignored) {}
-            tunPfd = null;
-            unregisterNet();
-            if (proxyStarted.compareAndSet(true, false)) BtProxy.stop();
-            stopForeground(STOP_FOREGROUND_REMOVE);
-            return;
-        }
-
+        boolean gaming = BtProxy.isGamingMode(this);
         hevCfgFile = writeHevCfg(gaming);
-        final int fd = hevTunFd; final File cfg = hevCfgFile;
-        hevThread = new Thread(() -> {
-            HevBridge.start(cfg.getAbsolutePath(), fd);
-            try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
-            if (hevTunFd == fd) hevTunFd = -1;
-        }, "hev");
-        hevThread.start();
-
-        running.set(true);
-        runningState.set(true);
-        log("I startAll ok");
+        if (BtProxy.start(this, BtProxy.getOrCreateInternalId(this)) != 0) {
+            log("btproxy start failed"); stopAll(); return;
+        }
+        ParcelFileDescriptor pfd = buildTun(gaming);
+        if (pfd == null) { stopAll(); return; }
+        tunPfd = pfd;
+        startHev(pfd.getFd());
+        registerNet();
     }
 
     private void stopAll() {
-        if (!stopping.compareAndSet(false, true)) return;
-        try {
-            running.set(false);
-            runningState.set(false);
-
-            try { HevBridge.stop(); } catch (Throwable ignored) {}
-            Thread ht = hevThread; hevThread = null;
-            if (ht != null) try { ht.join(2000); } catch (InterruptedException ignored) {}
-
-            ParcelFileDescriptor pfd = tunPfd; tunPfd = null;
-            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
-            int fd = hevTunFd; hevTunFd = -1;
-            if (fd >= 0) try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
-
-            if (proxyStarted.compareAndSet(true, false)) BtProxy.stop();
-
-            unregisterNet();
-            stopForeground(STOP_FOREGROUND_REMOVE);
-            log("I stopAll ok");
-        } finally {
-            stopping.set(false);
-        }
+        if (!running.getAndSet(false)) return;
+        stopping.set(true);
+        unregisterNet();
+        stopHev();
+        BtProxy.stop();
+        ParcelFileDescriptor pfd = tunPfd; tunPfd = null;
+        if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+        runningState.set(false);
+        stopForeground(true);
+        stopSelf();
     }
 
     private void applyRuntimeChanges() {
@@ -386,12 +250,45 @@ public class BtVpnService extends VpnService {
         rebuildTunnel();
     }
 
+    private void startHev(int fd) {
+        if (hevCfgFile == null) return;
+        hevTunFd = fd;
+        hevThread = new Thread(() -> {
+            try { HevBridge.start(hevCfgFile.getAbsolutePath(), hevTunFd); }
+            catch (Exception e) { log("hev error: " + e.getMessage()); }
+        }, "hev-tunnel");
+        hevThread.setDaemon(true);
+        hevThread.start();
+    }
+
+    private void stopHev() {
+        HevBridge.stop();
+        Thread t = hevThread; hevThread = null;
+        if (t != null) try { t.join(3000); } catch (Exception ignored) {}
+        hevTunFd = -1;
+    }
+
+    private ParcelFileDescriptor buildTun(boolean gaming) {
+        try {
+            Builder builder = new Builder()
+                    .setSession("bt-hev")
+                    .setMtu(1500)
+                    .addAddress("198.18.0.1", 15)
+                    .addAddress("fd40::1", 128)
+                    .addDnsServer("198.18.0.2")
+                    .addDnsServer("8.8.8.8");
+            addPublicRoutes(builder);
+            applyPerAppVpnPolicy(builder);
+            return builder.establish();
+        } catch (Exception e) {
+            log("buildTun error: " + e.getMessage()); return null;
+        }
+    }
+
     private void registerNet() {
         try {
             ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
             if (cm == null) return;
-            Network active = cm.getActiveNetwork();
-            if (active != null) BtProxy.nativeSetNetwork(active.getNetworkHandle());
             netCallback = new ConnectivityManager.NetworkCallback() {
                 @Override public void onAvailable(Network net) {
                     BtProxy.nativeSetNetwork(net.getNetworkHandle());
@@ -402,8 +299,7 @@ public class BtVpnService extends VpnService {
             };
             cm.registerNetworkCallback(
                 new NetworkRequest.Builder()
-                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    .build(),
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(),
                 netCallback);
         } catch (Exception ignored) {}
     }
@@ -515,9 +411,8 @@ public class BtVpnService extends VpnService {
 
     static final class HevBridge {
         static { System.loadLibrary("hev-jni"); }
-        static native int    start(String path, int fd);
-        static native void   stop();
-        static native long[] nativeGetStats();
+        static native int  start(String path, int fd);
+        static native void stop();
     }
 }
 
@@ -539,10 +434,7 @@ final class BtProxy {
            .edit().putBoolean(KEY_GAMING_MODE, enabled).apply();
     }
 
-    static void applyStoredGamingMode(Context ctx) {
-        // Gaming mode ahora solo afecta la config de hev
-        // Se aplica al reconectar via writeHevCfg
-    }
+    static void applyStoredGamingMode(Context ctx) {}
 
     static boolean isGamingMode(Context ctx) {
         return ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
