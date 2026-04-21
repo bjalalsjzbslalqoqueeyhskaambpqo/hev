@@ -128,16 +128,28 @@ public class BtVpnService extends VpnService {
                 NetworkInterface iface = ifaces.nextElement();
                 if (!iface.isUp() || iface.isLoopback()) continue;
                 String name = iface.getName().toLowerCase();
-                if (name.startsWith("rmnet") || name.startsWith("dummy") ||
-                    name.startsWith("p2p")   || name.startsWith("tun")   ||
-                    name.startsWith("bt-")   || name.equals("lo")) continue;
+                // Excluir solo lo que con certeza nunca es hotspot
+                if (name.equals("lo")          ||
+                    name.startsWith("rmnet")   ||
+                    name.startsWith("ccmni")   ||
+                    name.startsWith("dummy")   ||
+                    name.startsWith("p2p")     ||
+                    name.startsWith("bt-pan")  ||
+                    name.startsWith("sit")     ||
+                    name.startsWith("ip6tnl")) continue;
                 Enumeration<InetAddress> addrs = iface.getInetAddresses();
                 while (addrs.hasMoreElements()) {
                     InetAddress addr = addrs.nextElement();
-                    if (addr.isLoopbackAddress() || !(addr instanceof Inet4Address)) continue;
+                    // isSiteLocalAddress() cubre 10.x, 172.16.x y 192.168.x
+                    // sin depender del nombre de interfaz
+                    if (!addr.isSiteLocalAddress()) continue;
+                    if (!(addr instanceof Inet4Address)) continue;
                     String ip = addr.getHostAddress();
-                    if (ip == null || ip.startsWith("198.18.")) continue;
-                    if (ip.startsWith("192.168.") || ip.startsWith("10.")) return ip;
+                    if (ip == null) continue;
+                    // Excluir IPs internas de la VPN y datos móviles
+                    if (ip.startsWith("198.18.")) continue;
+                    if (ip.startsWith("172.")) continue;
+                    return ip;
                 }
             }
         } catch (Exception ignored) {}
