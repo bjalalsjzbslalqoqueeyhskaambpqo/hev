@@ -32,6 +32,14 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.util.Enumeration;
 
 public class BtVpnService extends VpnService {
     public static final String ACTION_START = "com.blacktunnel.START";
@@ -39,8 +47,10 @@ public class BtVpnService extends VpnService {
     public static final String ACTION_APPLY = "com.blacktunnel.APPLY";
     private static final String CH_ID = "bt_vpn";
     private static final int    NF_ID = 33;
-    private static final AtomicBoolean runningState = new AtomicBoolean(false);
-    private static final AtomicBoolean proxyStarted = new AtomicBoolean(false);
+    private static final AtomicBoolean runningState  = new AtomicBoolean(false);
+    private static final AtomicBoolean proxyStarted  = new AtomicBoolean(false);
+    private static final AtomicInteger activeStreams  = new AtomicInteger(0);
+    private static volatile Thread     localProxyThread = null;
     private static final Object        LOG_LOCK     = new Object();
     private static final StringBuilder LOGS         = new StringBuilder(8192);
     private static final int           MAX_LOG_CHARS = 24000;
@@ -60,6 +70,133 @@ public class BtVpnService extends VpnService {
     public static long[] getTrafficStats() {
         try { return HevBridge.nativeGetStats(); }
         catch (Throwable e) { return new long[]{0,0,0,0}; }
+    }
+
+    public static int getActiveStreams() { return activeStreams.get(); }
+
+    /**
+     * Inicia un proxy SOCKS5 local en la interfaz de hotspot.
+     * Solo acepta conexiones de IPs externas (no loopback ni VPN).
+     * El tráfico entrante se reenvía al proxy del motor (10809)
+     * que ya está dentro del túnel — así no hay bucle.
+     *
+     * Para detenerlo llamar stopLocalProxy().
+     */
+    public static void startLocalProxy(int listenPort) {
+        if (proxyStarted.getAndSet(true)) return;
+        Thread t = new Thread(() -> {
+            try (ServerSocket ss = new ServerSocket(listenPort,
+                    50, InetAddress.getByName("0.0.0.0"))) {
+                ss.setReuseAddress(true);
+                while (!Thread.currentThread().isInterrupted()) {
+                    Socket client;
+                    try { client = ss.accept(); }
+                    catch (Exception e) { break; }
+
+                    // Rechazar loopback y direcciones VPN (198.18.x.x, fd40::)
+                    String ip = client.getInetAddress().getHostAddress();
+                    if (ip == null || ip.startsWith("127.") ||
+                        ip.startsWith("198.18.") || ip.startsWith("fd40")) {
+                        try { client.close(); } catch (Exception ignored) {}
+                        continue;
+                    }
+
+                    Thread relay = new Thread(() -> relayToSocks5(client));
+                    relay.setDaemon(true);
+                    relay.start();
+                }
+            } catch (Exception ignored) {}
+            proxyStarted.set(false);
+        }, "local-proxy");
+        t.setDaemon(true);
+        localProxyThread = t;
+        t.start();
+    }
+
+    public static void stopLocalProxy() {
+        Thread t = localProxyThread;
+        if (t != null) { t.interrupt(); localProxyThread = null; }
+        proxyStarted.set(false);
+    }
+
+    /**
+     * Detecta si el hotspot WiFi está activo y retorna su IP.
+     * La interfaz de hotspot en Android típicamente es wlan0, ap0 o swlan0.
+     * Retorna null si el hotspot no está activo o no se encuentra la IP.
+     *
+     * Uso desde UI:
+     *   String ip = BtVpnService.getHotspotIp();
+     *   if (ip != null) {
+     *       // mostrar "Compartir: IP:puerto"
+     *   } else {
+     *       // mostrar "Activá el hotspot WiFi primero"
+     *   }
+     */
+    public static String getHotspotIp() {
+        // Interfaces conocidas de hotspot en Android
+        String[] hotspotIfaces = {"ap0", "wlan0", "swlan0", "wlan1", "rndis0"};
+        try {
+            Enumeration<NetworkInterface> ifaces = NetworkInterface.getNetworkInterfaces();
+            while (ifaces.hasMoreElements()) {
+                NetworkInterface iface = ifaces.nextElement();
+                if (!iface.isUp() || iface.isLoopback()) continue;
+                String name = iface.getName().toLowerCase();
+                boolean isHotspot = false;
+                for (String h : hotspotIfaces) {
+                    if (name.equals(h) || name.startsWith("ap") || name.startsWith("swlan")) {
+                        isHotspot = true; break;
+                    }
+                }
+                if (!isHotspot) continue;
+                Enumeration<java.net.InetAddress> addrs = iface.getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    java.net.InetAddress addr = addrs.nextElement();
+                    if (!addr.isLoopbackAddress() && addr instanceof java.net.Inet4Address) {
+                        String ip = addr.getHostAddress();
+                        // Filtrar IPs de la VPN
+                        if (!ip.startsWith("198.18.")) return ip;
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    /**
+     * Relay SOCKS5 — conecta al cliente externo con el motor local.
+     * El motor (10809) ya está protegido por VpnService.protect()
+     * así que su tráfico sale por la red real, no por el TUN.
+     * El cliente externo entra por hotspot → aquí → motor → túnel → internet.
+     */
+    private static void relayToSocks5(Socket client) {
+        activeStreams.incrementAndGet();
+        try (Socket proxy = new Socket("127.0.0.1", BtProxy.SOCKS5_PORT)) {
+            proxy.setTcpNoDelay(true);
+            client.setTcpNoDelay(true);
+            InputStream  ci = client.getInputStream();
+            OutputStream co = client.getOutputStream();
+            InputStream  pi = proxy.getInputStream();
+            OutputStream po = proxy.getOutputStream();
+            Thread t = new Thread(() -> {
+                try { pipe(pi, co); } catch (Exception ignored) {}
+                try { client.close(); } catch (Exception ignored) {}
+            });
+            t.setDaemon(true);
+            t.start();
+            try { pipe(ci, po); } catch (Exception ignored) {}
+            try { proxy.close(); } catch (Exception ignored) {}
+            t.interrupt();
+        } catch (Exception ignored) {
+            try { client.close(); } catch (Exception ignored2) {}
+        } finally {
+            activeStreams.decrementAndGet();
+        }
+    }
+
+    private static void pipe(InputStream in, OutputStream out) throws Exception {
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
     }
 
     public static void log(String message) {
