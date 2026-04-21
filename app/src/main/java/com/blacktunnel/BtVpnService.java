@@ -16,9 +16,9 @@ import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.provider.Settings;
 import androidx.core.app.NotificationCompat;
+import java.io.EOFException;
 import java.io.File;
 import java.io.FileOutputStream;
-import java.io.EOFException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Inet4Address;
@@ -88,6 +88,8 @@ public class BtVpnService extends VpnService {
         }
     }
 
+    // ── Proxy local hotspot ──────────────────────────────────────
+
     public static void startLocalProxy(int port) {
         if (proxyStarted.getAndSet(true)) return;
         Thread t = new Thread(() -> {
@@ -115,17 +117,21 @@ public class BtVpnService extends VpnService {
         proxyStarted.set(false);
     }
 
+    // Detecta protocolo por primer byte y despacha
     private static void handleClient(Socket client) {
         try {
             client.setTcpNoDelay(true);
+            client.setSoTimeout(60000);
             InputStream  ci = client.getInputStream();
             OutputStream co = client.getOutputStream();
             int first = ci.read();
             if (first < 0) return;
             if (first == 0x05) {
+                // SOCKS5 directo — relay puro al motor
                 handleSocks5Direct(client, ci, co, (byte) first);
             } else {
-                handleHttpProxy(client, ci, co, (byte) first);
+                // HTTP — loop de requests keep-alive
+                handleHttpLoop(client, ci, co, (byte) first);
             }
         } catch (Exception ignored) {
         } finally {
@@ -133,6 +139,7 @@ public class BtVpnService extends VpnService {
         }
     }
 
+    // SOCKS5 directo: reenvía todo al motor sin tocar nada
     private static void handleSocks5Direct(Socket client, InputStream ci, OutputStream co, byte firstByte) throws Exception {
         try (Socket motor = new Socket("127.0.0.1", BtProxy.SOCKS5_PORT)) {
             motor.setTcpNoDelay(true);
@@ -149,90 +156,260 @@ public class BtVpnService extends VpnService {
         }
     }
 
-    private static void handleHttpProxy(Socket client, InputStream ci, OutputStream co, byte firstByte) throws Exception {
-        StringBuilder sb = new StringBuilder();
-        sb.append((char) firstByte);
-        int b;
-        while ((b = ci.read()) >= 0) {
-            sb.append((char) b);
-            int len = sb.length();
-            if (len >= 2 && sb.charAt(len - 2) == '\r' && sb.charAt(len - 1) == '\n') break;
-        }
-        String firstLine = sb.toString().trim();
+    // HTTP loop — maneja múltiples requests keep-alive en la misma conexión
+    private static void handleHttpLoop(Socket client, InputStream ci, OutputStream co, byte firstByte) throws Exception {
+        byte[] pending = new byte[]{(byte) firstByte};
+        while (true) {
+            // Leer primera línea del request
+            String firstLine = readLineWithPrefix(ci, pending);
+            pending = null;
+            if (firstLine == null || firstLine.isEmpty()) return;
 
-        StringBuilder headers = new StringBuilder();
-        String line;
-        while (!(line = readLine(ci)).isEmpty()) {
-            headers.append(line).append("\r\n");
-        }
+            // Leer headers
+            StringBuilder headers = new StringBuilder();
+            String line;
+            while (!(line = readLine(ci)).isEmpty()) {
+                headers.append(line).append("\r\n");
+            }
+            String hdrs = headers.toString();
 
-        String host;
-        int    dstPort;
-        boolean isConnect = firstLine.startsWith("CONNECT ");
+            boolean isConnect = firstLine.startsWith("CONNECT ");
+            boolean keepAlive = !firstLine.contains("HTTP/1.0") &&
+                                !hdrs.toLowerCase(Locale.ROOT).contains("connection: close");
 
-        if (isConnect) {
-            String hostPort = firstLine.split(" ")[1];
-            int colon = hostPort.lastIndexOf(':');
-            host    = colon >= 0 ? hostPort.substring(0, colon) : hostPort;
-            dstPort = colon >= 0 ? Integer.parseInt(hostPort.substring(colon + 1)) : 443;
-        } else {
-            String url = firstLine.split(" ").length > 1 ? firstLine.split(" ")[1] : "";
-            if (url.startsWith("http://")) {
-                String without = url.substring(7);
-                int slash = without.indexOf('/');
-                String hostPort = slash >= 0 ? without.substring(0, slash) : without;
-                int colon = hostPort.lastIndexOf(':');
-                host    = colon >= 0 ? hostPort.substring(0, colon) : hostPort;
-                dstPort = colon >= 0 ? Integer.parseInt(hostPort.substring(colon + 1)) : 80;
+            if (isConnect) {
+                // HTTPS CONNECT — tunnel puro, no hay más requests después
+                handleConnect(firstLine, ci, co);
+                return;
             } else {
-                host = extractHeader(headers.toString(), "Host:");
-                int colon = host.lastIndexOf(':');
-                if (colon >= 0) { dstPort = Integer.parseInt(host.substring(colon + 1)); host = host.substring(0, colon); }
-                else dstPort = 80;
+                // HTTP plano — procesar request y continuar si keep-alive
+                boolean ok = handleHttpRequest(firstLine, hdrs, ci, co);
+                if (!ok || !keepAlive) return;
             }
         }
+    }
+
+    // HTTPS CONNECT: negocia SOCKS5 y hace relay puro
+    private static void handleConnect(String firstLine, InputStream ci, OutputStream co) throws Exception {
+        String[] parts = firstLine.split(" ");
+        if (parts.length < 2) return;
+        String hostPort = parts[1];
+        int colon = hostPort.lastIndexOf(':');
+        String host = colon >= 0 ? hostPort.substring(0, colon) : hostPort;
+        int    port = colon >= 0 ? parsePort(hostPort.substring(colon + 1), 443) : 443;
 
         try (Socket motor = new Socket("127.0.0.1", BtProxy.SOCKS5_PORT)) {
             motor.setTcpNoDelay(true);
             InputStream  mi = motor.getInputStream();
             OutputStream mo = motor.getOutputStream();
 
-            mo.write(new byte[]{0x05, 0x01, 0x00});
-            mo.flush();
-            byte[] resp = new byte[2];
-            readFully(mi, resp);
-            if (resp[0] != 0x05 || resp[1] != 0x00) return;
+            if (!socks5Connect(mi, mo, host, port)) return;
 
-            byte[] hostBytes = host.getBytes(StandardCharsets.UTF_8);
-            byte[] req = new byte[7 + hostBytes.length];
-            req[0] = 0x05; req[1] = 0x01; req[2] = 0x00;
-            req[3] = 0x03; req[4] = (byte) hostBytes.length;
-            System.arraycopy(hostBytes, 0, req, 5, hostBytes.length);
-            req[5 + hostBytes.length] = (byte) ((dstPort >> 8) & 0xFF);
-            req[6 + hostBytes.length] = (byte) (dstPort & 0xFF);
-            mo.write(req); mo.flush();
+            co.write("HTTP/1.1 200 Connection established\r\n\r\n".getBytes(StandardCharsets.UTF_8));
+            co.flush();
 
-            byte[] sresp = new byte[10];
-            readFully(mi, sresp);
-            if (sresp[1] != 0x00) return;
-
-            if (isConnect) {
-                co.write("HTTP/1.1 200 Connection established\r\n\r\n".getBytes(StandardCharsets.UTF_8));
-                co.flush();
-            } else {
-                String rebuilt = firstLine + "\r\n" + headers + "\r\n";
-                mo.write(rebuilt.getBytes(StandardCharsets.UTF_8));
-                mo.flush();
-            }
-
+            // Relay bidireccional hasta que cualquiera cierre
             Thread r = new Thread(() -> {
                 try { pipe(mi, co); } catch (Exception ignored) {}
-                try { client.close(); } catch (Exception ignored) {}
+                try { motor.close(); } catch (Exception ignored) {}
             });
             r.setDaemon(true);
             r.start();
             pipe(ci, mo);
         }
+    }
+
+    // HTTP plano: abre conexión SOCKS5, manda request, devuelve response
+    private static boolean handleHttpRequest(String firstLine, String hdrs, InputStream ci, OutputStream co) throws Exception {
+        String[] parts = firstLine.split(" ");
+        if (parts.length < 2) return false;
+        String method = parts[0];
+        String url    = parts[1];
+        String version = parts.length > 2 ? parts[2] : "HTTP/1.1";
+
+        String host;
+        int    port;
+        String path;
+
+        if (url.startsWith("http://")) {
+            String without = url.substring(7);
+            int slash = without.indexOf('/');
+            String hostPort = slash >= 0 ? without.substring(0, slash) : without;
+            path = slash >= 0 ? without.substring(slash) : "/";
+            int colon = hostPort.lastIndexOf(':');
+            host = colon >= 0 ? hostPort.substring(0, colon) : hostPort;
+            port = colon >= 0 ? parsePort(hostPort.substring(colon + 1), 80) : 80;
+        } else {
+            // URL relativa — usar Host header
+            String hostHeader = extractHeader(hdrs, "Host:");
+            int colon = hostHeader.lastIndexOf(':');
+            host = colon >= 0 ? hostHeader.substring(0, colon) : hostHeader;
+            port = colon >= 0 ? parsePort(hostHeader.substring(colon + 1), 80) : 80;
+            path = url;
+        }
+
+        if (host.isEmpty()) return false;
+
+        // Leer body si hay Content-Length
+        byte[] body = readBody(hdrs, ci);
+
+        try (Socket motor = new Socket("127.0.0.1", BtProxy.SOCKS5_PORT)) {
+            motor.setTcpNoDelay(true);
+            InputStream  mi = motor.getInputStream();
+            OutputStream mo = motor.getOutputStream();
+
+            if (!socks5Connect(mi, mo, host, port)) return false;
+
+            // Reconstruir request con path relativo (no URL absoluta)
+            StringBuilder req = new StringBuilder();
+            req.append(method).append(' ').append(path).append(' ').append(version).append("\r\n");
+
+            // Reenviar headers limpiando Proxy-Connection
+            for (String h : hdrs.split("\r\n")) {
+                if (h.toLowerCase(Locale.ROOT).startsWith("proxy-connection:")) continue;
+                req.append(h).append("\r\n");
+            }
+            req.append("\r\n");
+            mo.write(req.toString().getBytes(StandardCharsets.UTF_8));
+            if (body != null) mo.write(body);
+            mo.flush();
+
+            // Leer y reenviar response completa
+            pipeResponse(mi, co);
+        }
+        return true;
+    }
+
+    // Handshake SOCKS5 con el motor — retorna true si ok
+    private static boolean socks5Connect(InputStream mi, OutputStream mo, String host, int port) throws Exception {
+        // Saludo
+        mo.write(new byte[]{0x05, 0x01, 0x00});
+        mo.flush();
+        byte[] resp = new byte[2];
+        readFully(mi, resp);
+        if (resp[0] != 0x05 || resp[1] != 0x00) return false;
+
+        // Request CONNECT con nombre de dominio (tipo 0x03)
+        byte[] hostBytes = host.getBytes(StandardCharsets.UTF_8);
+        byte[] req = new byte[7 + hostBytes.length];
+        req[0] = 0x05; req[1] = 0x01; req[2] = 0x00;
+        req[3] = 0x03; req[4] = (byte) hostBytes.length;
+        System.arraycopy(hostBytes, 0, req, 5, hostBytes.length);
+        req[5 + hostBytes.length] = (byte) ((port >> 8) & 0xFF);
+        req[6 + hostBytes.length] = (byte) (port & 0xFF);
+        mo.write(req); mo.flush();
+
+        // Respuesta variable según tipo de dirección
+        byte[] shead = new byte[4];
+        readFully(mi, shead);
+        if (shead[1] != 0x00) return false;
+        switch (shead[3]) {
+            case 0x01: { byte[] skip = new byte[6];            readFully(mi, skip); break; }
+            case 0x04: { byte[] skip = new byte[18];           readFully(mi, skip); break; }
+            case 0x03: {
+                int len = mi.read() & 0xFF;
+                byte[] skip = new byte[len + 2];
+                readFully(mi, skip);
+                break;
+            }
+            default: return false;
+        }
+        return true;
+    }
+
+    // Lee body según Content-Length
+    private static byte[] readBody(String hdrs, InputStream in) throws Exception {
+        String cl = extractHeader(hdrs, "Content-Length:");
+        if (cl.isEmpty()) return null;
+        try {
+            int len = Integer.parseInt(cl.trim());
+            if (len <= 0) return null;
+            byte[] buf = new byte[len];
+            readFully(in, buf);
+            return buf;
+        } catch (Exception ignored) { return null; }
+    }
+
+    // Lee y reenvía response HTTP completa incluyendo body
+    private static void pipeResponse(InputStream in, OutputStream out) throws Exception {
+        // Leer status line
+        String status = readLine(in);
+        if (status == null || status.isEmpty()) return;
+        out.write((status + "\r\n").getBytes(StandardCharsets.UTF_8));
+
+        // Leer headers de response
+        int contentLength = -1;
+        boolean chunked   = false;
+        StringBuilder respHdrs = new StringBuilder();
+        String line;
+        while (!(line = readLine(in)).isEmpty()) {
+            respHdrs.append(line).append("\r\n");
+            String lower = line.toLowerCase(Locale.ROOT);
+            if (lower.startsWith("content-length:")) {
+                try { contentLength = Integer.parseInt(line.substring(15).trim()); } catch (Exception ignored) {}
+            }
+            if (lower.contains("transfer-encoding:") && lower.contains("chunked")) {
+                chunked = true;
+            }
+        }
+        out.write((respHdrs + "\r\n").getBytes(StandardCharsets.UTF_8));
+        out.flush();
+
+        if (chunked) {
+            // Chunked transfer
+            pipeChunked(in, out);
+        } else if (contentLength > 0) {
+            byte[] buf = new byte[contentLength];
+            readFully(in, buf);
+            out.write(buf);
+            out.flush();
+        } else if (contentLength == 0) {
+            // Sin body
+        } else {
+            // Sin Content-Length — pipe hasta cierre
+            pipe(in, out);
+        }
+    }
+
+    private static void pipeChunked(InputStream in, OutputStream out) throws Exception {
+        byte[] buf = new byte[8192];
+        while (true) {
+            String sizeLine = readLine(in);
+            if (sizeLine == null || sizeLine.isEmpty()) break;
+            out.write((sizeLine + "\r\n").getBytes(StandardCharsets.UTF_8));
+            int chunkSize;
+            try { chunkSize = Integer.parseInt(sizeLine.trim().split(";")[0], 16); }
+            catch (Exception e) { break; }
+            if (chunkSize == 0) {
+                readLine(in); // CRLF final
+                out.write("\r\n".getBytes(StandardCharsets.UTF_8));
+                out.flush();
+                break;
+            }
+            int remaining = chunkSize;
+            while (remaining > 0) {
+                int toRead = Math.min(remaining, buf.length);
+                int n = in.read(buf, 0, toRead);
+                if (n < 0) return;
+                out.write(buf, 0, n);
+                remaining -= n;
+            }
+            readLine(in); // CRLF tras chunk
+            out.write("\r\n".getBytes(StandardCharsets.UTF_8));
+            out.flush();
+        }
+    }
+
+    // Lee una línea con un byte ya leído como prefijo
+    private static String readLineWithPrefix(InputStream in, byte[] prefix) throws Exception {
+        StringBuilder sb = new StringBuilder();
+        if (prefix != null) for (byte b : prefix) sb.append((char)(b & 0xFF));
+        int b;
+        while ((b = in.read()) >= 0) {
+            if (b == '\n') break;
+            if (b != '\r') sb.append((char) b);
+        }
+        return b < 0 && sb.length() == 0 ? null : sb.toString().trim();
     }
 
     private static String readLine(InputStream in) throws Exception {
@@ -254,6 +431,10 @@ public class BtVpnService extends VpnService {
         return "";
     }
 
+    private static int parsePort(String s, int def) {
+        try { return Integer.parseInt(s.trim()); } catch (Exception e) { return def; }
+    }
+
     private static void readFully(InputStream in, byte[] buf) throws Exception {
         int off = 0;
         while (off < buf.length) {
@@ -266,8 +447,10 @@ public class BtVpnService extends VpnService {
     private static void pipe(InputStream in, OutputStream out) throws Exception {
         byte[] buf = new byte[8192];
         int n;
-        while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+        while ((n = in.read(buf)) != -1) { out.write(buf, 0, n); out.flush(); }
     }
+
+    // ── Detección IP hotspot ─────────────────────────────────────
 
     public static String getHotspotIp() {
         try {
@@ -300,6 +483,8 @@ public class BtVpnService extends VpnService {
         } catch (Exception ignored) {}
         return null;
     }
+
+    // ── Ciclo de vida del servicio ───────────────────────────────
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
