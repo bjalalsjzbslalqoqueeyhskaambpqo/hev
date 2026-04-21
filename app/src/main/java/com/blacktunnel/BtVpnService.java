@@ -96,24 +96,7 @@ public class BtVpnService extends VpnService {
                     Socket client;
                     try { client = ss.accept(); }
                     catch (Exception e) { break; }
-                    Thread relay = new Thread(() -> {
-                        try (Socket dst = new Socket("127.0.0.1", BtProxy.SOCKS5_PORT)) {
-                            dst.setTcpNoDelay(true);
-                            client.setTcpNoDelay(true);
-                            Thread r = new Thread(() -> {
-                                try { pipe(dst.getInputStream(), client.getOutputStream()); }
-                                catch (Exception ignored) {}
-                                try { client.close(); } catch (Exception ignored) {}
-                            });
-                            r.setDaemon(true);
-                            r.start();
-                            try { pipe(client.getInputStream(), dst.getOutputStream()); }
-                            catch (Exception ignored) {}
-                            try { dst.close(); } catch (Exception ignored) {}
-                        } catch (Exception ignored) {
-                            try { client.close(); } catch (Exception ignored2) {}
-                        }
-                    });
+                    Thread relay = new Thread(() -> handleClient(client));
                     relay.setDaemon(true);
                     relay.start();
                 }
@@ -129,6 +112,184 @@ public class BtVpnService extends VpnService {
         Thread t = localProxyThread;
         if (t != null) { t.interrupt(); localProxyThread = null; }
         proxyStarted.set(false);
+    }
+
+    private static void handleClient(Socket client) {
+        try {
+            client.setTcpNoDelay(true);
+            InputStream  ci = client.getInputStream();
+            OutputStream co = client.getOutputStream();
+            // Leer primer byte para detectar protocolo
+            int first = ci.read();
+            if (first < 0) return;
+            if (first == 0x05) {
+                // SOCKS5 directo — pasar todo al motor sin traducir
+                handleSocks5Direct(client, ci, co, (byte) first);
+            } else {
+                // HTTP — leer el resto de la primera línea y traducir
+                handleHttpProxy(client, ci, co, (byte) first);
+            }
+        } catch (Exception ignored) {
+        } finally {
+            try { client.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    // SOCKS5 directo — el cliente ya habla SOCKS5, relay puro al motor
+    private static void handleSocks5Direct(Socket client, InputStream ci, OutputStream co, byte firstByte) throws Exception {
+        try (Socket motor = new Socket("127.0.0.1", BtProxy.SOCKS5_PORT)) {
+            motor.setTcpNoDelay(true);
+            InputStream  mi = motor.getInputStream();
+            OutputStream mo = motor.getOutputStream();
+            // Reenviar el primer byte ya leído y luego relay completo
+            mo.write(firstByte);
+            Thread r = new Thread(() -> {
+                try { pipe(mi, co); } catch (Exception ignored) {}
+                try { client.close(); } catch (Exception ignored) {}
+            });
+            r.setDaemon(true);
+            r.start();
+            pipe(ci, mo);
+        }
+    }
+
+    // HTTP proxy — traduce HTTP/HTTPS a SOCKS5
+    private static void handleHttpProxy(Socket client, InputStream ci, OutputStream co, byte firstByte) throws Exception {
+        // Leer la primera línea completa (método + URL + versión)
+        StringBuilder sb = new StringBuilder();
+        sb.append((char) firstByte);
+        int b;
+        while ((b = ci.read()) >= 0) {
+            sb.append((char) b);
+            if (sb.length() >= 2 && sb.charAt(sb.length()-2) == '
+' && sb.charAt(sb.length()-1) == '
+') break;
+        }
+        String firstLine = sb.toString().trim();
+
+        // Leer y descartar el resto de headers hasta 
+
+
+        // Para CONNECT los descartamos, para GET los guardamos
+        StringBuilder headers = new StringBuilder();
+        String line;
+        while (!(line = readLine(ci)).isEmpty()) {
+            headers.append(line).append("
+");
+        }
+
+        String host;
+        int    port;
+        boolean isConnect = firstLine.startsWith("CONNECT ");
+
+        if (isConnect) {
+            // CONNECT host:port HTTP/1.1
+            String hostPort = firstLine.split(" ")[1];
+            int colon = hostPort.lastIndexOf(':');
+            host = colon >= 0 ? hostPort.substring(0, colon) : hostPort;
+            port = colon >= 0 ? Integer.parseInt(hostPort.substring(colon + 1)) : 443;
+        } else {
+            // GET http://host/path HTTP/1.1  o  GET /path HTTP/1.1
+            String url = firstLine.split(" ").length > 1 ? firstLine.split(" ")[1] : "";
+            if (url.startsWith("http://")) {
+                String withoutScheme = url.substring(7);
+                int slash = withoutScheme.indexOf('/');
+                String hostPort = slash >= 0 ? withoutScheme.substring(0, slash) : withoutScheme;
+                int colon = hostPort.lastIndexOf(':');
+                host = colon >= 0 ? hostPort.substring(0, colon) : hostPort;
+                port = colon >= 0 ? Integer.parseInt(hostPort.substring(colon + 1)) : 80;
+            } else {
+                // Ruta relativa — buscar Host header
+                host = extractHeader(headers.toString(), "Host:");
+                int colon = host.lastIndexOf(':');
+                if (colon >= 0) { port = Integer.parseInt(host.substring(colon + 1)); host = host.substring(0, colon); }
+                else port = 80;
+            }
+        }
+
+        // Handshake SOCKS5 con el motor
+        try (Socket motor = new Socket("127.0.0.1", BtProxy.SOCKS5_PORT)) {
+            motor.setTcpNoDelay(true);
+            InputStream  mi = motor.getInputStream();
+            OutputStream mo = motor.getOutputStream();
+
+            // Saludo sin auth
+            mo.write(new byte[]{0x05, 0x01, 0x00});
+            mo.flush();
+            byte[] resp = new byte[2];
+            readFully(mi, resp);
+            if (resp[0] != 0x05 || resp[1] != 0x00) return;
+
+            // Request CONNECT con dominio
+            byte[] hostBytes = host.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            byte[] req = new byte[7 + hostBytes.length];
+            req[0] = 0x05; req[1] = 0x01; req[2] = 0x00;
+            req[3] = 0x03; req[4] = (byte) hostBytes.length;
+            System.arraycopy(hostBytes, 0, req, 5, hostBytes.length);
+            req[5 + hostBytes.length] = (byte) ((port >> 8) & 0xFF);
+            req[6 + hostBytes.length] = (byte) (port & 0xFF);
+            mo.write(req); mo.flush();
+
+            // Respuesta del motor (10 bytes para IPv4)
+            byte[] sresp = new byte[10];
+            readFully(mi, sresp);
+            if (sresp[1] != 0x00) return;
+
+            if (isConnect) {
+                // HTTPS — responder 200 y relay puro
+                co.write("HTTP/1.1 200 Connection established
+
+".getBytes());
+                co.flush();
+            } else {
+                // HTTP plano — reenviar el request original al motor
+                String rebuiltRequest = firstLine + "
+" + headers + "
+";
+                mo.write(rebuiltRequest.getBytes());
+                mo.flush();
+            }
+
+            // Relay bidireccional
+            Thread r = new Thread(() -> {
+                try { pipe(mi, co); } catch (Exception ignored) {}
+                try { client.close(); } catch (Exception ignored) {}
+            });
+            r.setDaemon(true);
+            r.start();
+            pipe(ci, mo);
+        }
+    }
+
+    private static String readLine(InputStream in) throws Exception {
+        StringBuilder sb = new StringBuilder();
+        int b;
+        while ((b = in.read()) >= 0) {
+            if (b == '
+') break;
+            if (b != '
+') sb.append((char) b);
+        }
+        return sb.toString();
+    }
+
+    private static String extractHeader(String headers, String name) {
+        for (String line : headers.split("
+")) {
+            if (line.toLowerCase(java.util.Locale.ROOT).startsWith(name.toLowerCase(java.util.Locale.ROOT))) {
+                return line.substring(name.length()).trim();
+            }
+        }
+        return "";
+    }
+
+    private static void readFully(InputStream in, byte[] buf) throws Exception {
+        int off = 0;
+        while (off < buf.length) {
+            int n = in.read(buf, off, buf.length - off);
+            if (n < 0) throw new java.io.EOFException();
+            off += n;
+        }
     }
 
     private static void pipe(InputStream in, OutputStream out) throws Exception {
