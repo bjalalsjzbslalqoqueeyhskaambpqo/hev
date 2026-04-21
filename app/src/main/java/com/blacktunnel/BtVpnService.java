@@ -371,9 +371,10 @@ public class BtVpnService extends VpnService {
             for (String pkg : pkgs)
                 if (pkg != null && !pkg.isBlank())
                     try { builder.addAllowedApplication(pkg); } catch (Exception ignored) {}
-        } else {
-            try { builder.addDisallowedApplication(getPackageName()); } catch (Exception ignored) {}
         }
+        // No excluimos nuestra app — btproxy.c protege sus propios sockets
+        // hacia el servidor con protect_fd(), evitando el bucle.
+        // El proxy local del hotspot necesita pasar por el TUN para funcionar.
     }
 
     private File writeHevCfg(boolean gaming) {
