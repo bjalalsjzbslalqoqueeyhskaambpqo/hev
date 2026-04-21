@@ -121,7 +121,6 @@ public class BtVpnService extends VpnService {
     private static void handleClient(Socket client) {
         try {
             client.setTcpNoDelay(true);
-            client.setSoTimeout(60000);
             InputStream  ci = client.getInputStream();
             OutputStream co = client.getOutputStream();
             int first = ci.read();
