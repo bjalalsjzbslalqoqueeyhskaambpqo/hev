@@ -7,6 +7,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.ConnectivityManager;
+import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
@@ -481,6 +482,23 @@ public class BtVpnService extends VpnService {
         while ((n = in.read(buf)) != -1) { out.write(buf, 0, n); out.flush(); }
     }
 
+    private List<String> getIspDnsServers() {
+        List<String> dns = new ArrayList<>();
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            if (cm == null) return dns;
+            Network active = cm.getActiveNetwork();
+            if (active == null) return dns;
+            LinkProperties lp = cm.getLinkProperties(active);
+            if (lp == null) return dns;
+            for (InetAddress addr : lp.getDnsServers()) {
+                String ip = addr.getHostAddress();
+                if (ip != null && !ip.isEmpty()) dns.add(ip);
+            }
+        } catch (Exception ignored) {}
+        return dns;
+    }
+
     public static String getHotspotIp() {
         try {
             Enumeration<NetworkInterface> ifaces =
@@ -617,8 +635,13 @@ public class BtVpnService extends VpnService {
                     .setMtu(1500)
                     .addAddress("198.18.0.1", 15)
                     .addAddress("fd40::1", 128)
-                    .addDnsServer("198.18.0.2")
-                    .addDnsServer("8.8.8.8");
+                    .addDnsServer("198.18.0.2");
+            // Agregar DNS del ISP como fallback — resuelve localmente sin pasar por el VPS
+            List<String> ispDns = getIspDnsServers();
+            for (String d : ispDns) {
+                try { builder.addDnsServer(d); } catch (Exception ignored) {}
+            }
+            if (ispDns.isEmpty()) builder.addDnsServer("8.8.8.8");
             addPublicRoutes(builder);
             applyPerAppVpnPolicy(builder);
             return builder.establish();
@@ -727,8 +750,10 @@ public class BtVpnService extends VpnService {
             "socks5:\n  address: 127.0.0.1\n  port: " + BtProxy.SOCKS5_PORT + "\n" +
             "  udp: 'tcp'\n  pipeline: true\n" +
             "mapdns:\n  address: 198.18.0.2\n  port: 53\n" +
-            "  network: 198.18.0.0\n  netmask: 255.254.0.0\n  cache-size: 8192\n" +
+            "  network: 100.64.0.0\n  netmask: 255.192.0.0\n  cache-size: 65536\n" +
             "misc:\n" +
+            "  task-stack-size: 49152\n" +
+            "  tcp-buffer-size: 16384\n" +
             "  connect-timeout: 5000\n" +
             "  tcp-read-write-timeout: 180000\n" +
             "  udp-read-write-timeout: 30000\n" +
