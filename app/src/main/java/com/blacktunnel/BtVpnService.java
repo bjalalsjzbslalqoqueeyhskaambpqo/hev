@@ -708,17 +708,43 @@ final class BtProxy {
     private static final String KEY_INTERNAL_ID = "internal_id";
     private static final String KEY_GAMING_MODE = "gaming_mode";
     private static final String KEY_GAMING_APPS = "gaming_apps";
+    private static final boolean NATIVE_READY;
+    private static final String NATIVE_LOAD_ERROR;
 
-    static { System.loadLibrary("btproxy"); }
+    static {
+        boolean ready = false;
+        String error = "";
+        try {
+            System.loadLibrary("btproxy");
+            ready = true;
+        } catch (Throwable t) {
+            error = t.getClass().getSimpleName() + ": " + String.valueOf(t.getMessage());
+            android.util.Log.e("BtProxy", "No se pudo cargar btproxy", t);
+        }
+        NATIVE_READY = ready;
+        NATIVE_LOAD_ERROR = error;
+    }
 
-    static int    start(VpnService svc, String id) { return nativeStart(SOCKS5_PORT, svc, id); }
-    static void   stop()                           { nativeStop(); }
-    static String drainLogs()                      { return nativeDrainLogs(); }
+    static boolean isNativeReady() { return NATIVE_READY; }
+    static String getNativeLoadError() { return NATIVE_LOAD_ERROR; }
+
+    static int start(VpnService svc, String id) {
+        if (!NATIVE_READY) return -1;
+        return nativeStart(SOCKS5_PORT, svc, id);
+    }
+    static void stop() {
+        if (!NATIVE_READY) return;
+        nativeStop();
+    }
+    static String drainLogs() {
+        if (!NATIVE_READY) return "";
+        return nativeDrainLogs();
+    }
 
     static void setGamingMode(Context ctx, boolean enabled) {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
            .edit().putBoolean(KEY_GAMING_MODE, enabled).apply();
-        nativeSetGamingMode(enabled);
+        if (NATIVE_READY) nativeSetGamingMode(enabled);
     }
 
     static boolean isGamingMode(Context ctx) {
@@ -726,8 +752,14 @@ final class BtProxy {
                   .getBoolean(KEY_GAMING_MODE, false);
     }
 
-    static void applyStoredGamingMode(Context ctx) { nativeSetGamingMode(isGamingMode(ctx)); }
-    static void applyRuntimeMode(Context ctx)      { nativeApplyMode(isGamingMode(ctx)); }
+    static void applyStoredGamingMode(Context ctx) {
+        if (!NATIVE_READY) return;
+        nativeSetGamingMode(isGamingMode(ctx));
+    }
+    static void applyRuntimeMode(Context ctx) {
+        if (!NATIVE_READY) return;
+        nativeApplyMode(isGamingMode(ctx));
+    }
 
     static List<String> getGamingSelectedPackages(Context ctx) {
         Set<String> set = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

@@ -151,8 +151,23 @@ public class SimpleModeActivity extends ComponentActivity {
         setUiState(running ? UiState.CONNECTED : UiState.DISCONNECTED);
         lastRunning = running;
         refreshServiceState();
+        if (!BtProxy.isNativeReady()) {
+            setUiState(UiState.DISCONNECTED);
+            connectBtn.setEnabled(false);
+            String reason = BtProxy.getNativeLoadError();
+            if (statusDetailsView != null) {
+                statusDetailsView.setText(
+                    "Error al iniciar motor nativo. Reinstalá la app para tu arquitectura.\n" + reason
+                );
+            }
+            Toast.makeText(this, "No se pudo cargar el motor nativo", Toast.LENGTH_LONG).show();
+        }
 
         connectBtn.setOnClickListener(v -> {
+            if (!BtProxy.isNativeReady()) {
+                Toast.makeText(this, "Motor nativo no disponible", Toast.LENGTH_SHORT).show();
+                return;
+            }
             if (uiState == UiState.CONNECTING) return;
             if (uiState == UiState.CONNECTED) stopVpn();
             else startVpnWithPermission();
