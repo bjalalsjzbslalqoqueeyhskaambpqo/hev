@@ -25,10 +25,6 @@ android {
         versionName = "0.1.0"
         resourceConfigurations += listOf("en", "es")
 
-        ndk {
-            abiFilters += listOf("arm64-v8a")
-        }
-
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"
@@ -87,13 +83,6 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
-            excludes += setOf(
-                "**/armeabi-v7a/**",
-                "**/x86/**",
-                "**/x86_64/**",
-                "**/mips/**",
-                "**/mips64/**"
-            )
         }
         resources {
             excludes += setOf(
