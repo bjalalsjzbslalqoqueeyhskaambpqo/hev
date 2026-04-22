@@ -750,7 +750,7 @@ public class BtVpnService extends VpnService {
             "socks5:\n  address: 127.0.0.1\n  port: " + BtProxy.SOCKS5_PORT + "\n" +
             "  udp: 'tcp'\n  pipeline: true\n" +
             "mapdns:\n  address: 198.18.0.2\n  port: 53\n" +
-            "  network: 100.64.0.0\n  netmask: 255.192.0.0\n  cache-size: 65536\n" +
+            "  network: 198.19.0.0\n  netmask: 255.255.0.0\n  cache-size: 65536\n" +
             "misc:\n" +
             "  task-stack-size: 49152\n" +
             "  tcp-buffer-size: 16384\n" +
