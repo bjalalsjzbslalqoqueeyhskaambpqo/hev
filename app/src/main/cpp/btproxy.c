@@ -68,6 +68,7 @@ static pthread_mutex_t g_ready_mu       = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_ready_cv       = PTHREAD_COND_INITIALIZER;
 static int             g_ready_st       = 0;
 static int             g_ht_inited      = 0;
+static int             g_gaming_mode    = 0;
 
 /* ── Hashtable sid → cfd ──────────────────────────────────────
  * Hev maneja sus propias sesiones internamente.
@@ -692,6 +693,28 @@ Java_com_blacktunnel_BtProxy_nativeSetNetwork(JNIEnv *e,jclass c,jlong net) {
     pthread_mutex_lock(&g_mu); g_net=(net_handle_t)net; pthread_mutex_unlock(&g_mu);
 }
 
+JNIEXPORT void JNICALL
+Java_com_blacktunnel_BtProxy_nativeSetGamingMode(JNIEnv *env, jclass clazz, jboolean enabled) {
+    (void)env; (void)clazz;
+    pthread_mutex_lock(&g_mu);
+    g_gaming_mode = enabled ? 1 : 0;
+    pthread_mutex_unlock(&g_mu);
+}
+
+JNIEXPORT void JNICALL
+Java_com_blacktunnel_BtProxy_nativeApplyMode(JNIEnv *env, jclass clazz, jboolean enabled) {
+    Java_com_blacktunnel_BtProxy_nativeSetGamingMode(env, clazz, enabled);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_blacktunnel_BtProxy_nativeGetGamingMode(JNIEnv *env, jclass clazz) {
+    (void)env; (void)clazz;
+    pthread_mutex_lock(&g_mu);
+    int gaming = g_gaming_mode;
+    pthread_mutex_unlock(&g_mu);
+    return gaming;
+}
+
 static JNINativeMethod g_methods[]={
     {"nativeStart","(ILandroid/net/VpnService;Ljava/lang/String;)I",
                    (void*)Java_com_blacktunnel_BtProxy_nativeStart},
@@ -699,6 +722,9 @@ static JNINativeMethod g_methods[]={
     {"nativeDrainLogs","()Ljava/lang/String;",
                        (void*)Java_com_blacktunnel_BtProxy_nativeDrainLogs},
     {"nativeSetNetwork","(J)V",(void*)Java_com_blacktunnel_BtProxy_nativeSetNetwork},
+    {"nativeSetGamingMode","(Z)V",(void*)Java_com_blacktunnel_BtProxy_nativeSetGamingMode},
+    {"nativeApplyMode","(Z)V",(void*)Java_com_blacktunnel_BtProxy_nativeApplyMode},
+    {"nativeGetGamingMode","()I",(void*)Java_com_blacktunnel_BtProxy_nativeGetGamingMode},
 };
 
 JNIEXPORT jint JNI_OnLoad(JavaVM *vm,void *r) {
