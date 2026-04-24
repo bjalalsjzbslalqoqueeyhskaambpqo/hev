@@ -464,7 +464,7 @@ public class BtVpnService extends VpnService {
         if (oldFd >= 0) try { ParcelFileDescriptor.adoptFd(oldFd).close(); } catch (Exception ignored) {}
         Builder builder = new Builder()
                 .setSession("bt-hev").setMtu(1500)
-                .addAddress("198.18.0.1", 15).addAddress("fd40::1", 128)
+                .addAddress("198.18.0.1", 15).addAddress("fc00::1", 128)
                 .addDnsServer("198.18.0.2");
         addPublicRoutes(builder);
         applyPerAppVpnPolicy(builder);
@@ -506,7 +506,7 @@ public class BtVpnService extends VpnService {
         registerNet();
         Builder builder = new Builder()
                 .setSession("bt-hev").setMtu(1500)
-                .addAddress("198.18.0.1", 15).addAddress("fd40::1", 128)
+                .addAddress("198.18.0.1", 15).addAddress("fc00::1", 128)
                 .addDnsServer("198.18.0.2");
         addPublicRoutes(builder);
         applyPerAppVpnPolicy(builder);
@@ -626,7 +626,7 @@ public class BtVpnService extends VpnService {
         }
         if (cur <= 0xFFFFFFFEL) addCIDRs(builder, cur, 0xFFFFFFFEL);
         builder.addRoute("2000::", 3);
-        builder.addRoute("fd40::", 128);
+        builder.addRoute("fc00::", 7);
     }
 
     private void addCIDRs(Builder builder, long start, long end) {
@@ -666,8 +666,8 @@ public class BtVpnService extends VpnService {
 
     private File writeHevCfg() {
         String yml =
-            "tunnel:\n  name: bt-hev\n  mtu: 1500\n  ipv4: 198.18.0.1\n  ipv6: 'fd40::1'\n" +
-            "socks5:\n  address: 127.0.0.1\n  port: " + BtProxy.SOCKS5_PORT + "\n  udp: 'tcp'\n  pipeline: true\n" +
+            "tunnel:\n  name: bt-hev\n  mtu: 1500\n  ipv4: 198.18.0.1\n  ipv6: 'fc00::1'\n" +
+            "socks5:\n  address: 127.0.0.1\n  port: " + BtProxy.SOCKS5_PORT + "\n  udp: 'udp'\n  pipeline: true\n" +
             "mapdns:\n  address: 198.18.0.2\n  port: 53\n  network: 198.18.0.0\n  netmask: 255.254.0.0\n  cache-size: 8192\n" +
             "misc:\n" +
             "  connect-timeout: 5000\n" +
