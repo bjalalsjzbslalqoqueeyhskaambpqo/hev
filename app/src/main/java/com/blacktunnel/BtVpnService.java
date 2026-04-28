@@ -363,7 +363,13 @@ public class BtVpnService extends VpnService {
             }
             out.flush();
         } else if (contentLength == 0) {
-        } else { pipe(in, out); throw new EOFException(); }
+            // no body
+        } else {
+            // FIX #7: sin Content-Length conocido, pipe hasta EOF sin lanzar excepcion
+            // para no romper el keep-alive del llamador
+            byte[] buf = new byte[8192]; int n;
+            while ((n = in.read(buf)) != -1) { out.write(buf, 0, n); out.flush(); }
+        }
     }
 
     private static void pipeChunked(InputStream in, OutputStream out) throws Exception {
@@ -450,7 +456,31 @@ public class BtVpnService extends VpnService {
 
     public void onTunnelReconnected() {
         if (!running.get() || stopping.get()) return;
-        executor.execute(this::rebuildTunnel);
+        executor.execute(this::restartHevOnly);
+    }
+
+    // FIX #3: Solo reinicia Hev sin destruir el tun, preservando el socket FCM/push
+    private void restartHevOnly() {
+        if (!running.get() || stopping.get()) return;
+        try { HevBridge.stop(); } catch (Throwable ignored) {}
+        Thread old = hevThread; hevThread = null;
+        if (old != null) try { old.join(2000); } catch (InterruptedException ignored) {}
+
+        // El tunPfd y hevTunFd existentes se reutilizan — no se destruyen
+        int fd = hevTunFd;
+        if (fd < 0) {
+            // Solo si por alguna razon el fd no existe, reconstruimos completo
+            rebuildTunnel();
+            return;
+        }
+
+        hevCfgFile = writeHevCfg();
+        final File cfg = hevCfgFile;
+        hevThread = new Thread(() -> {
+            HevBridge.start(cfg.getAbsolutePath(), fd);
+        }, "hev");
+        hevThread.start();
+        log("I restartHevOnly ok — tun fd preserved");
     }
 
     private void rebuildTunnel() {
@@ -462,6 +492,8 @@ public class BtVpnService extends VpnService {
         if (oldPfd != null) try { oldPfd.close(); } catch (Exception ignored) {}
         int oldFd = hevTunFd; hevTunFd = -1;
         if (oldFd >= 0) try { ParcelFileDescriptor.adoptFd(oldFd).close(); } catch (Exception ignored) {}
+
+        // FIX #1 + #2: MTU 1300 consistente con hev.yml
         Builder builder = new Builder()
                 .setSession("bt-hev").setMtu(1300)
                 .addAddress("198.18.0.1", 15).addAddress("fc00::1", 128)
@@ -504,8 +536,10 @@ public class BtVpnService extends VpnService {
         proxyStarted.set(true);
         BtProxy.applyStoredGamingMode(this);
         registerNet();
+
+        // FIX #1: MTU 1300 consistente con hev.yml en startAll tambien
         Builder builder = new Builder()
-                .setSession("bt-hev").setMtu(1500)
+                .setSession("bt-hev").setMtu(1300)
                 .addAddress("198.18.0.1", 15).addAddress("fc00::1", 128)
                 .addDnsServer("198.18.0.2");
         addPublicRoutes(builder);
@@ -603,6 +637,8 @@ public class BtVpnService extends VpnService {
     }
 
     private void addPublicRoutes(Builder builder) {
+        // FIX #2: Rutas IPv4 calculadas correctamente para incluir todo el trafico
+        // incluyendo QUIC/UDP que usan WhatsApp y Telegram
         String[] excludes = {
             "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
             "169.254.0.0/16", "224.0.0.0/4", "240.0.0.0/4", "255.255.255.255/32"
@@ -625,6 +661,8 @@ public class BtVpnService extends VpnService {
             if (cur <= ex[1]) cur = ex[1] + 1;
         }
         if (cur <= 0xFFFFFFFEL) addCIDRs(builder, cur, 0xFFFFFFFEL);
+
+        // IPv6: publico + ULA completo para cubrir fc00::/7
         builder.addRoute("2000::", 3);
         builder.addRoute("fc00::", 7);
     }
@@ -665,15 +703,17 @@ public class BtVpnService extends VpnService {
     }
 
     private File writeHevCfg() {
+        // FIX #4: max-session-count 4096
+        // FIX #5: tcp-read-write-timeout reducido a 60s para detectar sesiones muertas rapido
         String yml =
             "tunnel:\n  name: bt-hev\n  mtu: 1300\n  ipv4: 198.18.0.1\n  ipv6: 'fc00::1'\n" +
             "socks5:\n  address: 127.0.0.1\n  port: " + BtProxy.SOCKS5_PORT + "\n  udp: 'udp'\n  pipeline: true\n" +
             "mapdns:\n  address: 198.18.0.2\n  port: 53\n  network: 198.18.0.0\n  netmask: 255.254.0.0\n  cache-size: 8192\n" +
             "misc:\n" +
             "  connect-timeout: 5000\n" +
-            "  tcp-read-write-timeout: 180000\n" +
+            "  tcp-read-write-timeout: 60000\n" +
             "  udp-read-write-timeout: 30000\n" +
-            "  max-session-count: 512\n" +
+            "  max-session-count: 4096\n" +
             "  log-level: warn\n" +
             "  limit-nofile: 65535\n";
         File f = new File(getFilesDir(), "hev.yml");
