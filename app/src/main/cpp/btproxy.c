@@ -34,7 +34,13 @@
 #define FRAME_HDR             7
 #define MAX_PAYLOAD           16384
 #define RELAY_BACKLOG         512
-#define PONG_TIMEOUT_SEC      180
+
+// FIX #5: pong timeout reducido a 60s para detectar caida del tunel rapido
+#define PONG_TIMEOUT_SEC      60
+
+// FIX #5: keepalive interval reducido a 10s para mantener sesiones de mensajeria vivas
+#define KEEPALIVE_INTERVAL_SEC 10
+
 #define RECONNECT_DELAY_MIN   2
 #define RECONNECT_DELAY_MAX   30
 #define CONNECT_TIMEOUT_SEC   10
@@ -70,11 +76,6 @@ static int             g_ready_st       = 0;
 static int             g_ht_inited      = 0;
 static int             g_gaming_mode    = 0;
 
-/* ── Hashtable sid → cfd ──────────────────────────────────────
- * Hev maneja sus propias sesiones internamente.
- * Nosotros solo necesitamos saber a qué socket local (cfd)
- * pertenece cada stream ID (sid) para devolver datos.
- */
 #define HT_SIZE 4096
 #define HT_MASK (HT_SIZE - 1)
 
@@ -148,7 +149,6 @@ static void ht_clear(void) {
     }
 }
 
-/* ── Logging ─────────────────────────────────────────────────── */
 static void push_log(const char *lvl, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     char msg[512]; vsnprintf(msg, sizeof(msg), fmt, ap); va_end(ap);
@@ -167,7 +167,6 @@ static void push_log(const char *lvl, const char *fmt, ...) {
     pthread_mutex_unlock(&g_log_mu);
 }
 
-/* ── JNI ─────────────────────────────────────────────────────── */
 static void protect_fd(int fd) {
     pthread_mutex_lock(&g_mu);
     net_handle_t net = g_net;
@@ -200,7 +199,6 @@ static void notify_reconnected(void) {
     if (att) (*jvm)->DetachCurrentThread(jvm);
 }
 
-/* ── Sockets ─────────────────────────────────────────────────── */
 static void tune_tun(int fd) {
     int v;
     v=1;       setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,  &v,sizeof(v));
@@ -227,7 +225,6 @@ static int nb_connect(int fd, const struct sockaddr *a, socklen_t l, int sec) {
     return (getsockopt(fd,SOL_SOCKET,SO_ERROR,&e,&el)<0||e)?-1:0;
 }
 
-/* ── Mux write ───────────────────────────────────────────────── */
 static int tun_send(int tfd, uint8_t type, uint32_t sid,
                     const uint8_t *data, uint16_t dlen) {
     uint8_t hdr[FRAME_HDR];
@@ -261,7 +258,6 @@ static int tun_send(int tfd, uint8_t type, uint32_t sid,
     return 0;
 }
 
-/* ── Mux read ────────────────────────────────────────────────── */
 static int tun_recv_full(int fd, uint8_t *buf, int len, int ms) {
     int off=0;
     while (off<len) {
@@ -278,7 +274,6 @@ static int tun_recv_full(int fd, uint8_t *buf, int len, int ms) {
     return 0;
 }
 
-/* ── HTTP handshake ──────────────────────────────────────────── */
 static int recv_eoh(int fd, char *buf, int cap, int sec) {
     struct timeval tv={sec,0};
     setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&tv,sizeof(tv));
@@ -301,7 +296,6 @@ static void parse_hdr(const char *buf, const char *key, char *out, int cap) {
     memcpy(out,p,n); out[n]=0;
 }
 
-/* ── Abrir túnel ─────────────────────────────────────────────── */
 static int open_tunnel(void) {
     int fd=-1;
     struct sockaddr_in6 a6={0};
@@ -368,7 +362,6 @@ static int open_tunnel(void) {
     return fd;
 }
 
-/* ── tunnel_reader: lee frames del servidor, entrega a hev ───── */
 typedef struct { int tfd; int epoch; int epfd; } thr_t;
 
 static void *tunnel_reader(void *arg) {
@@ -379,6 +372,7 @@ static void *tunnel_reader(void *arg) {
     uint8_t hdr[FRAME_HDR], payload[MAX_PAYLOAD];
 
     while (g_running && atomic_load(&g_tunnel_epoch)==epoch) {
+        // FIX #5: poll timeout alineado con PONG_TIMEOUT_SEC (60s) para no bloquear
         int rc=tun_recv_full(tfd,hdr,FRAME_HDR,60000);
         if (!g_running||atomic_load(&g_tunnel_epoch)!=epoch) break;
         if (rc==-2) {
@@ -399,7 +393,6 @@ static void *tunnel_reader(void *arg) {
 
         switch (ft) {
         case T_DATA: {
-            /* Entregar directo a hev — loopback, nunca EAGAIN */
             int cfd=ht_get(sid);
             if (cfd>=0&&len>0) send(cfd,payload,len,MSG_NOSIGNAL);
             break;
@@ -422,18 +415,18 @@ static void *tunnel_reader(void *arg) {
     return NULL;
 }
 
-/* ── Keepalive ───────────────────────────────────────────────── */
 static void *keepalive(void *arg) {
     thr_t *ta=(thr_t*)arg; int tfd=ta->tfd,epoch=ta->epoch; free(ta);
     atomic_store(&g_last_pong,(long)time(NULL));
-    int interval=15;
+
+    // FIX #5: intervalo reducido a KEEPALIVE_INTERVAL_SEC (10s)
     long last=time(NULL);
     while (g_running&&atomic_load(&g_tunnel_epoch)==epoch) {
         sleep(1);
         if (!g_running||atomic_load(&g_tunnel_epoch)!=epoch) break;
         long now=time(NULL),pong=atomic_load(&g_last_pong);
         if (pong>0&&now-pong>PONG_TIMEOUT_SEC) { push_log("E","pong timeout"); break; }
-        if (now-last<interval) continue;
+        if (now-last<KEEPALIVE_INTERVAL_SEC) continue;
         last=now;
         struct timespec t0,t1; clock_gettime(CLOCK_MONOTONIC,&t0);
         if (tun_send(tfd,T_PING,0,NULL,0)<0) break;
@@ -449,7 +442,6 @@ static void *keepalive(void *arg) {
     return NULL;
 }
 
-/* ── Main thread: loop epoll ─────────────────────────────────── */
 static void *main_thread(void *arg) {
     int port=(int)(intptr_t)arg;
     int is_first=1;
@@ -469,7 +461,6 @@ static void *main_thread(void *arg) {
         }
         g_reconnect_delay=RECONNECT_DELAY_MIN;
 
-        /* Relay local para hev */
         int rfd=socket(AF_INET,SOCK_STREAM,0);
         if (rfd<0){close(tfd);sleep(1);continue;}
         int one=1; setsockopt(rfd,SOL_SOCKET,SO_REUSEADDR,&one,sizeof(one));
@@ -480,7 +471,6 @@ static void *main_thread(void *arg) {
         if (bind(rfd,(struct sockaddr*)&la,sizeof(la))<0||listen(rfd,RELAY_BACKLOG)<0) {
             close(rfd);close(tfd);push_log("E","relay bind failed");sleep(2);continue;
         }
-        /* relay en non-blocking para epoll */
         fl=fcntl(rfd,F_GETFL,0); fcntl(rfd,F_SETFL,fl|O_NONBLOCK);
 
         int epfd=epoll_create1(EPOLL_CLOEXEC);
@@ -489,7 +479,6 @@ static void *main_thread(void *arg) {
         struct epoll_event ev;
         ev.events=EPOLLIN; ev.data.fd=rfd;
         epoll_ctl(epfd,EPOLL_CTL_ADD,rfd,&ev);
-        /* tfd NO va en epoll — tunnel_reader lo lee en su thread */
 
         int epoch=atomic_fetch_add(&g_tunnel_epoch,1)+1;
         pthread_mutex_lock(&g_mu);
@@ -514,7 +503,6 @@ static void *main_thread(void *arg) {
         if(ta){pthread_create(&tr,NULL,tunnel_reader,ta);pthread_detach(tr);}else free(ta);
         if(tb){pthread_create(&tk,NULL,keepalive,tb);pthread_detach(tk);}else free(tb);
 
-        /* ── Loop epoll ── */
         struct epoll_event events[MAX_EPOLL_EVENTS];
         int dead=0;
 
@@ -545,7 +533,6 @@ static void *main_thread(void *arg) {
                     do { sid=(uint32_t)atomic_fetch_add(&g_next_sid,1)&0x7FFFFFFF; }
                     while (!sid||ht_get(sid)!=-1);
 
-                    /* Leer primer paquete y registrar sid */
                     uint8_t buf[MAX_PAYLOAD];
                     ssize_t first=recv(cfd,buf,sizeof(buf),0);
                     if (first<=0) { close(cfd); continue; }
@@ -555,7 +542,6 @@ static void *main_thread(void *arg) {
                     if (tun_send(tfd,T_OPEN,sid,buf,(uint16_t)first)<0)
                         { ht_del(sid); close(cfd); dead=1; break; }
 
-                    /* Level-triggered: epoll notifica mientras haya datos */
                     struct epoll_event cev;
                     cev.events=EPOLLIN;
                     cev.data.u64=((uint64_t)sid<<32)|(uint32_t)cfd;
@@ -564,7 +550,6 @@ static void *main_thread(void *arg) {
                     continue;
                 }
 
-                /* Datos de hev → servidor */
                 uint32_t sid=(uint32_t)(events[i].data.u64>>32);
                 int cfd=(int)(uint32_t)events[i].data.u64;
 
@@ -607,7 +592,6 @@ static void *main_thread(void *arg) {
     return NULL;
 }
 
-/* ── JNI exports ─────────────────────────────────────────────── */
 JNIEXPORT void JNICALL Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv*,jclass);
 
 JNIEXPORT jint JNICALL
