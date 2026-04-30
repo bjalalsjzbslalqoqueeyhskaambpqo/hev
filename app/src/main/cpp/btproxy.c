@@ -31,50 +31,51 @@
 #define T_PING  0x04
 #define T_PONG  0x05
 
-#define FRAME_HDR             7
-#define MAX_PAYLOAD           16384
-#define RELAY_BACKLOG         512
-
-// FIX #5: pong timeout reducido a 60s para detectar caida del tunel rapido
-#define PONG_TIMEOUT_SEC      60
-
-// FIX #5: keepalive interval reducido a 10s para mantener sesiones de mensajeria vivas
+#define FRAME_HDR              7
+#define MAX_PAYLOAD            16384
+#define RELAY_BACKLOG          512
+#define PONG_TIMEOUT_SEC       60
 #define KEEPALIVE_INTERVAL_SEC 10
+#define RECONNECT_DELAY_MIN    2
+#define RECONNECT_DELAY_MAX    30
+#define CONNECT_TIMEOUT_SEC    10
+#define HANDSHAKE_TIMEOUT_SEC  1
+#define MAX_EPOLL_EVENTS       32
+#define HAPPY_DELAY_MS         150
 
-#define RECONNECT_DELAY_MIN   2
-#define RECONNECT_DELAY_MAX   30
-#define CONNECT_TIMEOUT_SEC   10
-#define HANDSHAKE_TIMEOUT_SEC 1
-#define MAX_EPOLL_EVENTS      32
+#define PROXY_HOST  "emailmarketing.personal.com.ar"
+#define PROXY_PORT  80
+#define TUNNEL_HOST "2.brawlpass.com.ar"
 
-#define PROXY_HOST_IPV6  "2606:4700::6812:16b7"
-#define PROXY_HOST       "emailmarketing.personal.com.ar"
-#define PROXY_PORT       80
-#define TUNNEL_HOST      "2.brawlpass.com.ar"
+static const char *PROXY_IPS[] = {
+    "2606:4700::6812:16b7",
+    "2606:4700::6812:17b7",
+};
+#define PROXY_IP_COUNT 2
 
-static volatile int    g_running        = 0;
-static volatile int    g_started        = 0;
-static int             g_relay_fd       = -1;
-static int             g_tun_fd         = -1;
-static int             g_epoll_fd       = -1;
-static atomic_int      g_next_sid       = 1;
-static atomic_int      g_tunnel_epoch   = 0;
-static atomic_long     g_last_pong      = 0;
+static volatile int    g_running         = 0;
+static volatile int    g_started         = 0;
+static int             g_relay_fd        = -1;
+static int             g_tun_fd          = -1;
+static int             g_epoll_fd        = -1;
+static atomic_int      g_next_sid        = 1;
+static atomic_int      g_tunnel_epoch    = 0;
+static atomic_long     g_last_pong       = 0;
 static int             g_reconnect_delay = RECONNECT_DELAY_MIN;
 static char            g_internal_id[160] = {0};
-static JavaVM         *g_jvm            = NULL;
-static jobject         g_svc            = NULL;
-static net_handle_t    g_net            = NETWORK_UNSPECIFIED;
-static pthread_mutex_t g_mu             = PTHREAD_MUTEX_INITIALIZER;
-static pthread_mutex_t g_wmu            = PTHREAD_MUTEX_INITIALIZER;
-static pthread_mutex_t g_log_mu         = PTHREAD_MUTEX_INITIALIZER;
+static JavaVM         *g_jvm             = NULL;
+static jobject         g_svc             = NULL;
+static net_handle_t    g_net             = NETWORK_UNSPECIFIED;
+static pthread_mutex_t g_mu              = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_wmu             = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_log_mu          = PTHREAD_MUTEX_INITIALIZER;
 static char            g_logbuf[32768];
-static size_t          g_loglen         = 0;
-static pthread_mutex_t g_ready_mu       = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t  g_ready_cv       = PTHREAD_COND_INITIALIZER;
-static int             g_ready_st       = 0;
-static int             g_ht_inited      = 0;
-static int             g_gaming_mode    = 0;
+static size_t          g_loglen          = 0;
+static pthread_mutex_t g_ready_mu        = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_ready_cv        = PTHREAD_COND_INITIALIZER;
+static int             g_ready_st        = 0;
+static int             g_ht_inited       = 0;
+static int             g_gaming_mode     = 0;
 
 #define HT_SIZE 4096
 #define HT_MASK (HT_SIZE - 1)
@@ -201,28 +202,16 @@ static void notify_reconnected(void) {
 
 static void tune_tun(int fd) {
     int v;
-    v=1;       setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,  &v,sizeof(v));
-    v=1;       setsockopt(fd,IPPROTO_TCP,TCP_QUICKACK, &v,sizeof(v));
-    v=0x10;    setsockopt(fd,IPPROTO_IP, IP_TOS,       &v,sizeof(v));
-    v=524288;  setsockopt(fd,SOL_SOCKET, SO_SNDBUF,    &v,sizeof(v));
-    v=524288;  setsockopt(fd,SOL_SOCKET, SO_RCVBUF,    &v,sizeof(v));
-    v=1;       setsockopt(fd,SOL_SOCKET, SO_KEEPALIVE, &v,sizeof(v));
-    v=20; setsockopt(fd,IPPROTO_TCP,TCP_KEEPIDLE, &v,sizeof(v));
-    v=5;  setsockopt(fd,IPPROTO_TCP,TCP_KEEPINTVL,&v,sizeof(v));
-    v=3;  setsockopt(fd,IPPROTO_TCP,TCP_KEEPCNT,  &v,sizeof(v));
+    v=1;      setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,   &v,sizeof(v));
+    v=1;      setsockopt(fd,IPPROTO_TCP,TCP_QUICKACK,  &v,sizeof(v));
+    v=0x10;   setsockopt(fd,IPPROTO_IP, IP_TOS,        &v,sizeof(v));
+    v=524288; setsockopt(fd,SOL_SOCKET, SO_SNDBUF,     &v,sizeof(v));
+    v=524288; setsockopt(fd,SOL_SOCKET, SO_RCVBUF,     &v,sizeof(v));
+    v=1;      setsockopt(fd,SOL_SOCKET, SO_KEEPALIVE,  &v,sizeof(v));
+    v=20;     setsockopt(fd,IPPROTO_TCP,TCP_KEEPIDLE,  &v,sizeof(v));
+    v=5;      setsockopt(fd,IPPROTO_TCP,TCP_KEEPINTVL, &v,sizeof(v));
+    v=3;      setsockopt(fd,IPPROTO_TCP,TCP_KEEPCNT,   &v,sizeof(v));
     int fl=fcntl(fd,F_GETFD,0); if(fl>=0) fcntl(fd,F_SETFD,fl|FD_CLOEXEC);
-}
-
-static int nb_connect(int fd, const struct sockaddr *a, socklen_t l, int sec) {
-    int fl=fcntl(fd,F_GETFL,0); fcntl(fd,F_SETFL,fl|O_NONBLOCK);
-    int r=connect(fd,a,l);
-    if (r==0) { fcntl(fd,F_SETFL,fl); return 0; }
-    if (errno!=EINPROGRESS) { fcntl(fd,F_SETFL,fl); return -1; }
-    struct pollfd p={fd,POLLOUT,0};
-    int pr=poll(&p,1,sec*1000); fcntl(fd,F_SETFL,fl);
-    if (pr<=0) return -1;
-    int e=0; socklen_t el=sizeof(e);
-    return (getsockopt(fd,SOL_SOCKET,SO_ERROR,&e,&el)<0||e)?-1:0;
 }
 
 static int tun_send(int tfd, uint8_t type, uint32_t sid,
@@ -296,34 +285,44 @@ static void parse_hdr(const char *buf, const char *key, char *out, int cap) {
     memcpy(out,p,n); out[n]=0;
 }
 
+static int try_connect_ip(const char *ip, int timeout_ms) {
+    struct sockaddr_in6 a={0};
+    a.sin6_family=AF_INET6; a.sin6_port=htons(PROXY_PORT);
+    if (inet_pton(AF_INET6,ip,&a.sin6_addr)!=1) return -1;
+    int fd=socket(AF_INET6,SOCK_STREAM,0);
+    if (fd<0) return -1;
+    protect_fd(fd); tune_tun(fd);
+    int fl=fcntl(fd,F_GETFL,0); fcntl(fd,F_SETFL,fl|O_NONBLOCK);
+    int r=connect(fd,(struct sockaddr*)&a,sizeof(a));
+    if (r==0) { fcntl(fd,F_SETFL,fl); return fd; }
+    if (errno!=EINPROGRESS) { close(fd); return -1; }
+    struct pollfd p={fd,POLLOUT,0};
+    int pr=poll(&p,1,timeout_ms);
+    if (pr<=0) { close(fd); return -1; }
+    int e=0; socklen_t el=sizeof(e);
+    if (getsockopt(fd,SOL_SOCKET,SO_ERROR,&e,&el)<0||e!=0) { close(fd); return -1; }
+    fcntl(fd,F_SETFL,fl);
+    return fd;
+}
+
 static int open_tunnel(void) {
+    push_log("I","resolviendo conexion...");
+
+    int order[PROXY_IP_COUNT];
+    for (int i=0;i<PROXY_IP_COUNT;i++) order[i]=i;
+    if ((time(NULL)&1)==0) { int tmp=order[0]; order[0]=order[1]; order[1]=tmp; }
+
     int fd=-1;
-    struct sockaddr_in6 a6={0};
-    a6.sin6_family=AF_INET6; a6.sin6_port=htons(PROXY_PORT);
-    if (inet_pton(AF_INET6,PROXY_HOST_IPV6,&a6.sin6_addr)==1) {
-        fd=socket(AF_INET6,SOCK_STREAM,0);
-        if (fd>=0) {
-            protect_fd(fd); tune_tun(fd);
-            if (nb_connect(fd,(struct sockaddr*)&a6,sizeof(a6),CONNECT_TIMEOUT_SEC)!=0)
-                { close(fd); fd=-1; }
-        }
+    for (int i=0;i<PROXY_IP_COUNT&&fd<0;i++) {
+        const char *ip=PROXY_IPS[order[i]];
+        push_log("I","probando ip=%s",ip);
+        fd=try_connect_ip(ip, HAPPY_DELAY_MS);
+        if (fd<0 && i<PROXY_IP_COUNT-1)
+            push_log("I","sin respuesta en %dms, probando siguiente",HAPPY_DELAY_MS);
     }
-    if (fd<0) {
-        struct addrinfo hints={0},*res=NULL;
-        hints.ai_family=AF_UNSPEC; hints.ai_socktype=SOCK_STREAM;
-        char ps[8]; snprintf(ps,sizeof(ps),"%d",PROXY_PORT);
-        if (getaddrinfo(PROXY_HOST,ps,&hints,&res)==0) {
-            for (struct addrinfo *r=res;r&&fd<0;r=r->ai_next) {
-                int s=socket(r->ai_family,SOCK_STREAM,0);
-                if (s<0) continue;
-                protect_fd(s); tune_tun(s);
-                if (nb_connect(s,r->ai_addr,r->ai_addrlen,CONNECT_TIMEOUT_SEC)==0) fd=s;
-                else close(s);
-            }
-            freeaddrinfo(res);
-        }
-    }
+
     if (fd<0) { push_log("E","tunnel connect failed"); return -1; }
+    push_log("I","conexion establecida");
 
     atomic_store(&g_last_pong,(long)time(NULL));
 
@@ -372,7 +371,6 @@ static void *tunnel_reader(void *arg) {
     uint8_t hdr[FRAME_HDR], payload[MAX_PAYLOAD];
 
     while (g_running && atomic_load(&g_tunnel_epoch)==epoch) {
-        // FIX #5: poll timeout alineado con PONG_TIMEOUT_SEC (60s) para no bloquear
         int rc=tun_recv_full(tfd,hdr,FRAME_HDR,60000);
         if (!g_running||atomic_load(&g_tunnel_epoch)!=epoch) break;
         if (rc==-2) {
@@ -418,8 +416,6 @@ static void *tunnel_reader(void *arg) {
 static void *keepalive(void *arg) {
     thr_t *ta=(thr_t*)arg; int tfd=ta->tfd,epoch=ta->epoch; free(ta);
     atomic_store(&g_last_pong,(long)time(NULL));
-
-    // FIX #5: intervalo reducido a KEEPALIVE_INTERVAL_SEC (10s)
     long last=time(NULL);
     while (g_running&&atomic_load(&g_tunnel_epoch)==epoch) {
         sleep(1);
