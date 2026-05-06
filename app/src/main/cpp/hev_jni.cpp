@@ -1,5 +1,3 @@
-#include <dlfcn.h>
-#include <jni.h>
 
 typedef int (*hev_main_t)(const char *, int);
 typedef void (*hev_quit_t)(void);
