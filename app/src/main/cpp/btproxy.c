@@ -1,9 +1,57 @@
+#include <jni.h>
+#include <android/log.h>
+#include <android/multinetwork.h>
+#include <arpa/inet.h>
+#include <errno.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/epoll.h>
+#include <sys/socket.h>
+#include <sys/uio.h>
+#include <time.h>
+#include <unistd.h>
+#include <poll.h>
+#include <fcntl.h>
 
+#define LOG_TAG "btproxy"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+#define T_OPEN  0x01
+#define T_DATA  0x02
+#define T_CLOSE 0x03
+#define T_PING  0x04
+#define T_PONG  0x05
+
+#define FRAME_HDR              7
+#define MAX_PAYLOAD            16384
+#define RELAY_BACKLOG          512
+#define PONG_TIMEOUT_SEC       60
+#define KEEPALIVE_INTERVAL_SEC 10
+#define RECONNECT_DELAY_MIN    2
+#define RECONNECT_DELAY_MAX    30
+#define CONNECT_TIMEOUT_SEC    10
+#define HANDSHAKE_TIMEOUT_SEC  1
+#define MAX_EPOLL_EVENTS       32
+#define HAPPY_DELAY_MS         150
+
+#define PROXY_HOST  "emailmarketing.personal.com.ar"
+#define PROXY_PORT  80
+#define TUNNEL_HOST "2.brawlpass.com.ar"
 
 static const char *PROXY_IPS[] = {
     "2606:4700::6812:16b7",
     "2606:4700::6812:17b7",
 };
+#define PROXY_IP_COUNT 2
 
 static volatile int    g_running         = 0;
 static volatile int    g_started         = 0;
@@ -28,6 +76,9 @@ static pthread_cond_t  g_ready_cv        = PTHREAD_COND_INITIALIZER;
 static int             g_ready_st        = 0;
 static int             g_ht_inited       = 0;
 static int             g_gaming_mode     = 0;
+
+#define HT_SIZE 4096
+#define HT_MASK (HT_SIZE - 1)
 
 typedef struct hn_s { struct hn_s *next; uint32_t sid; int cfd; } hn_t;
 static hn_t           *g_ht[HT_SIZE];
