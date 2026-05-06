@@ -89,6 +89,8 @@ public class SimpleModeActivity extends ComponentActivity {
     private String  authState            = "";
     private boolean hideInternalId       = false;
     private boolean applyingRuntimeChanges = false;
+    private int     authLogCursor          = 0;
+    private boolean awaitingFreshAuth      = false;
     private int     lastPingMs           = -1;
 
     private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
@@ -522,9 +524,21 @@ public class SimpleModeActivity extends ComponentActivity {
         }
     }
 
+
+    private int currentLogSize() {
+        String logs = BtVpnService.dumpLogs();
+        return logs == null ? 0 : logs.length();
+    }
+
+    private void markAuthCursorNow() {
+        authLogCursor = currentLogSize();
+        awaitingFreshAuth = true;
+    }
+
     private void startVpnWithPermission() {
         setUiState(UiState.CONNECTING);
         authState = "";
+        markAuthCursorNow();
         Intent prepare = VpnService.prepare(this);
         if (prepare != null) vpnPermissionLauncher.launch(prepare);
         else startVpn();
@@ -546,6 +560,7 @@ public class SimpleModeActivity extends ComponentActivity {
         setUiState(UiState.DISCONNECTED);
         handler.removeCallbacks(autoDisconnectRunnable);
         autoDisconnectAtMs = -1L;
+        awaitingFreshAuth = false;
     }
 
     private void applyGamingChangesIfRunning() {
@@ -601,13 +616,16 @@ public class SimpleModeActivity extends ComponentActivity {
 
     private void refreshServiceState() {
         String logs = BtVpnService.dumpLogs();
-        updateServerAuthStatus(logs);
+        updateServerAuthStatus(logs, BtVpnService.isRunningState());
         updateUserMetadata(logs);
     }
 
-    private void updateServerAuthStatus(String logs) {
+    private void updateServerAuthStatus(String logs, boolean running) {
         if (logs == null || statusDetailsView == null) return;
-        String latestAuth = findLatestAuthState(logs);
+        int safeCursor = Math.max(0, Math.min(authLogCursor, logs.length()));
+        String window = logs.substring(safeCursor);
+        String latestAuth = findLatestAuthState(window);
+        if (latestAuth.isEmpty() && awaitingFreshAuth) return;
         if ("not_registered".equals(latestAuth)) {
             if ("not_registered".equals(authState)) return;
             authState = "not_registered";
@@ -618,6 +636,8 @@ public class SimpleModeActivity extends ComponentActivity {
             statusDetailsView.setText("✖ Usuario no registrado\nComparte tu ID interno para habilitación\nID: " + internalId);
             statusDetailsView.setTextColor(c(R.color.color_disconnected));
             if (connectBtn != null) connectBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
+            awaitingFreshAuth = false;
+            authLogCursor = logs.length();
         } else if ("expired".equals(latestAuth)) {
             if ("expired".equals(authState)) return;
             authState = "expired";
@@ -628,8 +648,15 @@ public class SimpleModeActivity extends ComponentActivity {
             statusDetailsView.setText("✖ Usuario expirado\nRenueva tu acceso con soporte\nID: " + internalId);
             statusDetailsView.setTextColor(c(R.color.color_connecting));
             if (connectBtn != null) connectBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
+            awaitingFreshAuth = false;
+            authLogCursor = logs.length();
         } else if ("ok".equals(latestAuth)) {
-            authState = ""; setHideInternalId(true);
+            authState = "";
+            setHideInternalId(true);
+            awaitingFreshAuth = false;
+            authLogCursor = logs.length();
+        } else if (!running) {
+            authLogCursor = logs.length();
         }
     }
 
