@@ -535,9 +535,20 @@ public class SimpleModeActivity extends ComponentActivity {
         awaitingFreshAuth = true;
     }
 
+    private void resetTransientUiStateForNewAttempt() {
+        handler.removeCallbacks(autoDisconnectRunnable);
+        autoDisconnectAtMs = -1L;
+        lastPingMs = -1;
+        if (pingValueView != null) {
+            pingValueView.setText("--");
+            pingValueView.setTextColor(c(R.color.color_text_disabled));
+        }
+    }
+
     private void startVpnWithPermission() {
         setUiState(UiState.CONNECTING);
         authState = "";
+        resetTransientUiStateForNewAttempt();
         markAuthCursorNow();
         Intent prepare = VpnService.prepare(this);
         if (prepare != null) vpnPermissionLauncher.launch(prepare);
@@ -607,6 +618,8 @@ public class SimpleModeActivity extends ComponentActivity {
         } else if (!running && uiState == UiState.CONNECTING) {
             if (SystemClock.elapsedRealtime() - connectingSinceMs > 9000) {
                 applyingRuntimeChanges = false; setUiState(UiState.DISCONNECTED);
+                awaitingFreshAuth = false;
+                authLogCursor = currentLogSize();
             }
         } else if (running && applyingRuntimeChanges) {
             applyingRuntimeChanges = false; setUiState(UiState.CONNECTED);
