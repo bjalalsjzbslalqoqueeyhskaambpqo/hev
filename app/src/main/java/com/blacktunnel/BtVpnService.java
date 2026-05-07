@@ -577,6 +577,7 @@ public class BtVpnService extends VpnService {
             if (proxyStarted.compareAndSet(true, false)) BtProxy.stop();
             unregisterNet();
             stopForeground(STOP_FOREGROUND_REMOVE);
+            stopSelf();
             log("I stopAll ok");
         } finally {
             stopping.set(false);
