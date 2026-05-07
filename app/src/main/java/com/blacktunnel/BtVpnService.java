@@ -484,7 +484,7 @@ public class BtVpnService extends VpnService {
         if (oldFd >= 0) try { ParcelFileDescriptor.adoptFd(oldFd).close(); } catch (Exception ignored) {}
 
         Builder builder = new Builder()
-                .setSession("bt-hev").setMtu(1300)
+                .setSession("bt-hev").setMtu(1380)
                 .addAddress("198.18.0.1", 15).addAddress("fc00::1", 128)
                 .addDnsServer("198.18.0.2");
         addPublicRoutes(builder);
@@ -527,7 +527,7 @@ public class BtVpnService extends VpnService {
         registerNet();
 
         Builder builder = new Builder()
-                .setSession("bt-hev").setMtu(1300)
+                .setSession("bt-hev").setMtu(1380)
                 .addAddress("198.18.0.1", 15).addAddress("fc00::1", 128)
                 .addDnsServer("198.18.0.2");
         addPublicRoutes(builder);
@@ -689,13 +689,13 @@ public class BtVpnService extends VpnService {
 
     private File writeHevCfg() {
         String yml =
-            "tunnel:\n  name: bt-hev\n  mtu: 1300\n  ipv4: 198.18.0.1\n  ipv6: 'fc00::1'\n" +
+            "tunnel:\n  name: bt-hev\n  mtu: 1380\n  ipv4: 198.18.0.1\n  ipv6: 'fc00::1'\n" +
             "socks5:\n  address: 127.0.0.1\n  port: " + BtProxy.SOCKS5_PORT + "\n  udp: 'udp'\n  pipeline: false\n" +
             "mapdns:\n  address: 198.18.0.2\n  port: 53\n  network: 198.18.0.0\n  netmask: 255.254.0.0\n  cache-size: 8192\n" +
             "misc:\n" +
             "  connect-timeout: 5000\n" +
-            "  tcp-read-write-timeout: 600000\n" +
-            "  udp-read-write-timeout: 300000\n" +
+            "  tcp-read-write-timeout: 1800000\n" +
+            "  udp-read-write-timeout: 900000\n" +
             "  max-session-count: 4096\n" +
             "  log-level: warn\n" +
             "  limit-nofile: 65535\n";

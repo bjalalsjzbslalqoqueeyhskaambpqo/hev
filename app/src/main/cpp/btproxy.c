@@ -34,14 +34,15 @@
 #define FRAME_HDR              7
 #define MAX_PAYLOAD            16384
 #define RELAY_BACKLOG          512
-#define PONG_TIMEOUT_SEC       60
+#define PONG_TIMEOUT_SEC       120
 #define KEEPALIVE_INTERVAL_SEC 10
 #define RECONNECT_DELAY_MIN    2
 #define RECONNECT_DELAY_MAX    30
-#define CONNECT_TIMEOUT_SEC    10
-#define HANDSHAKE_TIMEOUT_SEC  1
+#define CONNECT_TIMEOUT_SEC    15
+#define HANDSHAKE_TIMEOUT_SEC  4
 #define MAX_EPOLL_EVENTS       32
-#define HAPPY_DELAY_MS         150
+#define HAPPY_DELAY_MS         700
+#define RESOLVED_IP_MAX        8
 
 #define PROXY_HOST  "emailmarketing.personal.com.ar"
 #define PROXY_PORT  80
@@ -52,6 +53,28 @@ static const char *PROXY_IPS[] = {
     "2606:4700::6812:17b7",
 };
 #define PROXY_IP_COUNT 2
+
+static int resolve_proxy_ipv6(char out[][INET6_ADDRSTRLEN], int cap) {
+    struct addrinfo hints = {0}, *res = NULL;
+    hints.ai_family = AF_INET6;
+    hints.ai_socktype = SOCK_STREAM;
+    int rc = getaddrinfo(PROXY_HOST, "80", &hints, &res);
+    if (rc != 0 || !res) return 0;
+    int n = 0;
+    for (struct addrinfo *it = res; it && n < cap; it = it->ai_next) {
+        if (it->ai_family != AF_INET6 || !it->ai_addr) continue;
+        struct sockaddr_in6 *sa = (struct sockaddr_in6 *)it->ai_addr;
+        char ip[INET6_ADDRSTRLEN] = {0};
+        if (!inet_ntop(AF_INET6, &sa->sin6_addr, ip, sizeof(ip))) continue;
+        int dup = 0;
+        for (int i = 0; i < n; i++) if (strcmp(out[i], ip) == 0) { dup = 1; break; }
+        if (dup) continue;
+        snprintf(out[n], INET6_ADDRSTRLEN, "%s", ip);
+        n++;
+    }
+    freeaddrinfo(res);
+    return n;
+}
 
 static volatile int    g_running         = 0;
 static volatile int    g_started         = 0;
@@ -319,6 +342,18 @@ static int open_tunnel(void) {
         fd=try_connect_ip(ip, HAPPY_DELAY_MS);
         if (fd<0 && i<PROXY_IP_COUNT-1)
             push_log("I","sin respuesta en %dms, probando siguiente",HAPPY_DELAY_MS);
+    }
+
+    if (fd < 0) {
+        char dyn[RESOLVED_IP_MAX][INET6_ADDRSTRLEN] = {{0}};
+        int dn = resolve_proxy_ipv6(dyn, RESOLVED_IP_MAX);
+        if (dn > 0) {
+            push_log("I","fallback dns ipv6 count=%d", dn);
+            for (int i = 0; i < dn && fd < 0; i++) {
+                push_log("I","probando dns ip=%s", dyn[i]);
+                fd = try_connect_ip(dyn[i], CONNECT_TIMEOUT_SEC * 1000);
+            }
+        }
     }
 
     if (fd<0) { push_log("E","tunnel connect failed"); return -1; }
