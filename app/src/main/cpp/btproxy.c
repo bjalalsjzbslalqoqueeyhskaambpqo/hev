@@ -99,6 +99,8 @@ static pthread_cond_t  g_ready_cv        = PTHREAD_COND_INITIALIZER;
 static int             g_ready_st        = 0;
 static int             g_ht_inited       = 0;
 static int             g_gaming_mode     = 0;
+static pthread_t       g_main_thr;
+static int             g_main_thr_valid  = 0;
 
 #define HT_SIZE 4096
 #define HT_MASK (HT_SIZE - 1)
@@ -264,7 +266,7 @@ static int tun_send(int tfd, uint8_t type, uint32_t sid,
         } else if (errno==EAGAIN||errno==EWOULDBLOCK) {
             pthread_mutex_unlock(&g_wmu);
             struct pollfd wp={tfd,POLLOUT,0};
-            if (poll(&wp,1,15)<=0) return -1;
+            if (poll(&wp,1,500)<=0) return -1;
         } else { pthread_mutex_unlock(&g_wmu); return -1; }
     }
     return 0;
@@ -608,7 +610,6 @@ static void *main_thread(void *arg) {
 
         push_log("E","tunnel dropped");
         ht_close_all(epfd);
-        ht_clear();
         if(rfd>=0) close(rfd);
         if(tfd>=0) close(tfd);
         if(epfd>=0) close(epfd);
@@ -620,6 +621,9 @@ static void *main_thread(void *arg) {
     }
 
     g_started=0;
+    pthread_mutex_lock(&g_mu);
+    g_main_thr_valid = 0;
+    pthread_mutex_unlock(&g_mu);
     return NULL;
 }
 
@@ -628,8 +632,11 @@ JNIEXPORT void JNICALL Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv*,jclass);
 JNIEXPORT jint JNICALL
 Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
                                           jint port, jobject svc, jstring iid) {
+    pthread_t old_thr = 0;
+    int join_old = 0;
     pthread_mutex_lock(&g_mu);
     if (g_running){pthread_mutex_unlock(&g_mu);return 0;}
+    if (g_main_thr_valid) { old_thr = g_main_thr; g_main_thr_valid = 0; join_old = 1; }
     (*env)->GetJavaVM(env,&g_jvm);
     g_svc=(*env)->NewGlobalRef(env,svc);
     g_internal_id[0]=0;
@@ -643,16 +650,17 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     g_reconnect_delay=RECONNECT_DELAY_MIN;
     atomic_store(&g_next_sid,1);
     pthread_mutex_unlock(&g_mu);
+    if (join_old) pthread_join(old_thr, NULL);
 
     pthread_mutex_lock(&g_ready_mu); g_ready_st=0; pthread_mutex_unlock(&g_ready_mu);
-
-    pthread_t thr;
-    if (pthread_create(&thr,NULL,main_thread,(void*)(intptr_t)port)!=0) {
+    if (pthread_create(&g_main_thr,NULL,main_thread,(void*)(intptr_t)port)!=0) {
         pthread_mutex_lock(&g_mu); g_running=0;
         (*env)->DeleteGlobalRef(env,g_svc); g_svc=NULL; g_jvm=NULL;
         pthread_mutex_unlock(&g_mu); return -1;
     }
-    pthread_detach(thr);
+    pthread_mutex_lock(&g_mu);
+    g_main_thr_valid = 1;
+    pthread_mutex_unlock(&g_mu);
 
     struct timespec ts; clock_gettime(CLOCK_REALTIME,&ts); ts.tv_sec+=12;
     pthread_mutex_lock(&g_ready_mu);
@@ -688,6 +696,11 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     pthread_mutex_unlock(&g_ready_mu);
 
     for (int i=0;i<50&&g_started;i++) usleep(10000);
+    pthread_t thr = 0; int do_join = 0;
+    pthread_mutex_lock(&g_mu);
+    if (g_main_thr_valid) { thr = g_main_thr; do_join = 1; }
+    pthread_mutex_unlock(&g_mu);
+    if (do_join) pthread_join(thr, NULL);
     ht_clear();
     if (svc) (*env)->DeleteGlobalRef(env,svc);
     g_started=0;
