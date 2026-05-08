@@ -42,18 +42,22 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class BtVpnService extends VpnService {
+
     public static final String ACTION_START = "com.blacktunnel.START";
     public static final String ACTION_STOP  = "com.blacktunnel.STOP";
     public static final String ACTION_APPLY = "com.blacktunnel.APPLY";
+
     private static final String CH_ID = "bt_vpn";
     private static final int    NF_ID = 33;
-    private static final AtomicBoolean runningState      = new AtomicBoolean(false);
-    private static final AtomicBoolean proxyStarted      = new AtomicBoolean(false);
-    private static volatile Thread     localProxyThread  = null;
-    private static final AtomicBoolean hotspotStarted    = new AtomicBoolean(false);
-    private static final Object        LOG_LOCK          = new Object();
-    private static final StringBuilder LOGS              = new StringBuilder(8192);
-    private static final int           MAX_LOG_CHARS     = 24000;
+
+    private static final AtomicBoolean runningState   = new AtomicBoolean(false);
+    private static final AtomicBoolean proxyStarted   = new AtomicBoolean(false);
+    private static volatile Thread     localProxyThread = null;
+    private static final AtomicBoolean hotspotStarted = new AtomicBoolean(false);
+
+    private static final Object        LOG_LOCK     = new Object();
+    private static final StringBuilder LOGS         = new StringBuilder(8192);
+    private static final int           MAX_LOG_CHARS = 24000;
 
     private final AtomicBoolean   running  = new AtomicBoolean(false);
     private final AtomicBoolean   stopping = new AtomicBoolean(false);
@@ -61,7 +65,7 @@ public class BtVpnService extends VpnService {
 
     private volatile ParcelFileDescriptor                tunPfd;
     private volatile Thread                              hevThread;
-    private volatile int                                 hevTunFd  = -1;
+    private volatile int                                 hevTunFd = -1;
     private volatile File                                hevCfgFile;
     private volatile ConnectivityManager.NetworkCallback netCallback;
 
@@ -92,8 +96,7 @@ public class BtVpnService extends VpnService {
     public static void startLocalProxy(int port) {
         if (hotspotStarted.getAndSet(true)) return;
         Thread t = new Thread(() -> {
-            try (ServerSocket ss = new ServerSocket(port, 128,
-                    InetAddress.getByName("0.0.0.0"))) {
+            try (ServerSocket ss = new ServerSocket(port, 128, InetAddress.getByName("0.0.0.0"))) {
                 ss.setReuseAddress(true);
                 while (!Thread.currentThread().isInterrupted()) {
                     Socket client;
@@ -143,6 +146,7 @@ public class BtVpnService extends VpnService {
 
     private static void handleClient(Socket client) {
         try {
+            client.setSoTimeout(30000);
             client.setTcpNoDelay(true);
             InputStream  ci = client.getInputStream();
             OutputStream co = client.getOutputStream();
@@ -194,7 +198,7 @@ public class BtVpnService extends VpnService {
             boolean isUpgrade = hdrsLower.contains("upgrade: websocket");
             boolean keepAlive = !firstLine.contains("HTTP/1.0")
                     && !hdrsLower.contains("connection: close");
-            if (isConnect) { handleConnect(firstLine, ci, co); return; }
+            if (isConnect)      { handleConnect(firstLine, ci, co); return; }
             else if (isUpgrade) { handleWebSocket(firstLine, hdrs, ci, co); return; }
             else {
                 boolean ok = handleHttpRequest(firstLine, hdrs, ci, co);
@@ -319,7 +323,7 @@ public class BtVpnService extends VpnService {
         switch (shead[3]) {
             case 0x01: { byte[] s = new byte[6];  readFully(mi, s); break; }
             case 0x04: { byte[] s = new byte[18]; readFully(mi, s); break; }
-            case 0x03: { int len = mi.read() & 0xFF; byte[] s = new byte[len+2]; readFully(mi,s); break; }
+            case 0x03: { int len = mi.read() & 0xFF; byte[] s = new byte[len + 2]; readFully(mi, s); break; }
             default: return false;
         }
         return true;
@@ -351,8 +355,9 @@ public class BtVpnService extends VpnService {
         }
         out.write((respHdrs + "\r\n").getBytes(StandardCharsets.UTF_8));
         out.flush();
-        if (chunked) { pipeChunked(in, out); }
-        else if (contentLength > 0) {
+        if (chunked) {
+            pipeChunked(in, out);
+        } else if (contentLength > 0) {
             byte[] buf = new byte[8192]; int remaining = contentLength;
             while (remaining > 0) {
                 int n = in.read(buf, 0, Math.min(remaining, buf.length));
@@ -360,8 +365,7 @@ public class BtVpnService extends VpnService {
                 out.write(buf, 0, n); remaining -= n;
             }
             out.flush();
-        } else if (contentLength == 0) {
-        } else {
+        } else if (contentLength != 0) {
             byte[] buf = new byte[8192]; int n;
             while ((n = in.read(buf)) != -1) { out.write(buf, 0, n); out.flush(); }
         }
@@ -376,14 +380,21 @@ public class BtVpnService extends VpnService {
             int chunkSize;
             try { chunkSize = Integer.parseInt(sizeLine.trim().split(";")[0], 16); }
             catch (Exception e) { break; }
-            if (chunkSize == 0) { readLine(in); out.write("\r\n".getBytes(StandardCharsets.UTF_8)); out.flush(); break; }
+            if (chunkSize == 0) {
+                readLine(in);
+                out.write("\r\n".getBytes(StandardCharsets.UTF_8));
+                out.flush();
+                break;
+            }
             int remaining = chunkSize;
             while (remaining > 0) {
                 int n = in.read(buf, 0, Math.min(remaining, buf.length));
                 if (n < 0) return;
                 out.write(buf, 0, n); remaining -= n;
             }
-            readLine(in); out.write("\r\n".getBytes(StandardCharsets.UTF_8)); out.flush();
+            readLine(in);
+            out.write("\r\n".getBytes(StandardCharsets.UTF_8));
+            out.flush();
         }
     }
 
@@ -413,7 +424,8 @@ public class BtVpnService extends VpnService {
     private static String extractHeader(String headers, String name) {
         String nameLower = name.toLowerCase(Locale.ROOT);
         for (String l : headers.split("\r\n"))
-            if (l.toLowerCase(Locale.ROOT).startsWith(nameLower)) return l.substring(name.length()).trim();
+            if (l.toLowerCase(Locale.ROOT).startsWith(nameLower))
+                return l.substring(name.length()).trim();
         return "";
     }
 
@@ -423,7 +435,11 @@ public class BtVpnService extends VpnService {
 
     private static void readFully(InputStream in, byte[] buf) throws Exception {
         int off = 0;
-        while (off < buf.length) { int n = in.read(buf, off, buf.length - off); if (n < 0) throw new EOFException(); off += n; }
+        while (off < buf.length) {
+            int n = in.read(buf, off, buf.length - off);
+            if (n < 0) throw new EOFException();
+            off += n;
+        }
     }
 
     private static void pipe(InputStream in, OutputStream out) throws Exception {
@@ -434,8 +450,8 @@ public class BtVpnService extends VpnService {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : null;
-        if (ACTION_STOP.equals(action)) { executor.execute(() -> stopAll()); return START_NOT_STICKY; }
-        if (ACTION_APPLY.equals(action)) { executor.execute(this::applyRuntimeChanges); return START_STICKY; }
+        if (ACTION_STOP.equals(action))  { executor.execute(this::stopAll);              return START_NOT_STICKY; }
+        if (ACTION_APPLY.equals(action)) { executor.execute(this::applyRuntimeChanges);  return START_STICKY; }
         executor.execute(this::startAll);
         return START_STICKY;
     }
@@ -449,73 +465,85 @@ public class BtVpnService extends VpnService {
 
     public void onTunnelReconnected() {
         if (!running.get() || stopping.get()) return;
-        executor.execute(this::restartHevOnly);
+        executor.execute(this::restartHev);
     }
 
-    private void restartHevOnly() {
+    private void restartHev() {
         if (!running.get() || stopping.get()) return;
-        try { HevBridge.stop(); } catch (Throwable ignored) {}
-        Thread old = hevThread; hevThread = null;
-        if (old != null) try { old.join(2000); } catch (InterruptedException ignored) {}
-        if (old != null && old.isAlive()) {
-            log("E restartHevOnly: previous hev thread still alive, rebuilding tunnel");
-            rebuildTunnel();
-            return;
-        }
+
+        stopHev();
 
         int fd = hevTunFd;
         if (fd < 0) {
+            log("E restartHev: tun fd invalid, rebuilding");
             rebuildTunnel();
             return;
         }
 
         hevCfgFile = writeHevCfg();
         final File cfg = hevCfgFile;
-        hevThread = new Thread(() -> {
-            HevBridge.start(cfg.getAbsolutePath(), fd);
-        }, "hev");
+        final int  tfd = fd;
+        hevThread = new Thread(() -> HevBridge.start(cfg.getAbsolutePath(), tfd), "hev");
         hevThread.start();
-        log("I restartHevOnly ok — tun fd preserved");
+        log("I restartHev ok");
+    }
+
+    private void stopHev() {
+        try { HevBridge.stop(); } catch (Throwable ignored) {}
+        Thread old = hevThread; hevThread = null;
+        if (old != null) try { old.join(2000); } catch (InterruptedException ignored) {}
     }
 
     private void rebuildTunnel() {
         if (!running.get() || stopping.get()) return;
-        try { HevBridge.stop(); } catch (Throwable ignored) {}
-        Thread old = hevThread; hevThread = null;
-        if (old != null) try { old.join(2000); } catch (InterruptedException ignored) {}
+
+        stopHev();
+
         ParcelFileDescriptor oldPfd = tunPfd; tunPfd = null;
         if (oldPfd != null) try { oldPfd.close(); } catch (Exception ignored) {}
         int oldFd = hevTunFd; hevTunFd = -1;
         if (oldFd >= 0) try { ParcelFileDescriptor.adoptFd(oldFd).close(); } catch (Exception ignored) {}
 
-        Builder builder = new Builder()
-                .setSession("bt-hev").setMtu(1380)
-                .addAddress("198.18.0.1", 15).addAddress("fc00::1", 128)
-                .addDnsServer("198.18.0.2");
-        addPublicRoutes(builder);
-        applyPerAppVpnPolicy(builder);
-        tunPfd = builder.establish();
-        if (tunPfd == null) { stopAll(); return; }
+        ParcelFileDescriptor pfd = buildTunInterface();
+        if (pfd == null) { stopAll(); return; }
+        tunPfd = pfd;
+
         try {
             hevTunFd = ParcelFileDescriptor.dup(tunPfd.getFileDescriptor()).detachFd();
         } catch (Exception e) {
             try { tunPfd.close(); } catch (Exception ignored) {}
             tunPfd = null; stopAll(); return;
         }
+
         hevCfgFile = writeHevCfg();
-        final int fd = hevTunFd; final File cfg = hevCfgFile;
-        hevThread = new Thread(() -> {
-            HevBridge.start(cfg.getAbsolutePath(), fd);
-        }, "hev");
+        final int  fd  = hevTunFd;
+        final File cfg = hevCfgFile;
+        hevThread = new Thread(() -> HevBridge.start(cfg.getAbsolutePath(), fd), "hev");
         hevThread.start();
+        log("I rebuildTunnel ok");
+    }
+
+    private ParcelFileDescriptor buildTunInterface() {
+        Builder builder = new Builder()
+                .setSession("bt-hev")
+                .setMtu(1380)
+                .addAddress("198.18.0.1", 15)
+                .addAddress("fc00::1", 128)
+                .addDnsServer("198.18.0.2");
+        addPublicRoutes(builder);
+        applyPerAppVpnPolicy(builder);
+        return builder.establish();
     }
 
     private void startAll() {
         if (running.get() || stopping.get()) return;
+
         createChannel();
         startForeground(NF_ID, buildNotif());
+
         BtProxy.stop();
         proxyStarted.set(false);
+
         String internalId = BtProxy.getOrCreateInternalId(this);
         if (BtProxy.start(this, internalId) < 0) {
             SystemClock.sleep(250);
@@ -529,19 +557,15 @@ public class BtVpnService extends VpnService {
         BtProxy.applyStoredGamingMode(this);
         registerNet();
 
-        Builder builder = new Builder()
-                .setSession("bt-hev").setMtu(1380)
-                .addAddress("198.18.0.1", 15).addAddress("fc00::1", 128)
-                .addDnsServer("198.18.0.2");
-        addPublicRoutes(builder);
-        applyPerAppVpnPolicy(builder);
-        tunPfd = builder.establish();
-        if (tunPfd == null) {
+        ParcelFileDescriptor pfd = buildTunInterface();
+        if (pfd == null) {
             unregisterNet();
             if (proxyStarted.compareAndSet(true, false)) BtProxy.stop();
             stopForeground(STOP_FOREGROUND_REMOVE);
             return;
         }
+        tunPfd = pfd;
+
         try {
             hevTunFd = ParcelFileDescriptor.dup(tunPfd.getFileDescriptor()).detachFd();
         } catch (Exception e) {
@@ -552,12 +576,13 @@ public class BtVpnService extends VpnService {
             stopForeground(STOP_FOREGROUND_REMOVE);
             return;
         }
+
         hevCfgFile = writeHevCfg();
-        final int fd = hevTunFd; final File cfg = hevCfgFile;
-        hevThread = new Thread(() -> {
-            HevBridge.start(cfg.getAbsolutePath(), fd);
-        }, "hev");
+        final int  fd  = hevTunFd;
+        final File cfg = hevCfgFile;
+        hevThread = new Thread(() -> HevBridge.start(cfg.getAbsolutePath(), fd), "hev");
         hevThread.start();
+
         running.set(true);
         runningState.set(true);
         log("I startAll ok");
@@ -568,13 +593,14 @@ public class BtVpnService extends VpnService {
         try {
             running.set(false);
             runningState.set(false);
-            try { HevBridge.stop(); } catch (Throwable ignored) {}
-            Thread ht = hevThread; hevThread = null;
-            if (ht != null) try { ht.join(2000); } catch (InterruptedException ignored) {}
+
+            stopHev();
+
             ParcelFileDescriptor pfd = tunPfd; tunPfd = null;
             if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
             int fd = hevTunFd; hevTunFd = -1;
             if (fd >= 0) try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
+
             if (proxyStarted.compareAndSet(true, false)) BtProxy.stop();
             unregisterNet();
             stopForeground(STOP_FOREGROUND_REMOVE);
@@ -649,7 +675,6 @@ public class BtVpnService extends VpnService {
             if (cur <= ex[1]) cur = ex[1] + 1;
         }
         if (cur <= 0xFFFFFFFEL) addCIDRs(builder, cur, 0xFFFFFFFEL);
-
         builder.addRoute("2000::", 3);
         builder.addRoute("fc00::", 7);
     }
@@ -690,10 +715,9 @@ public class BtVpnService extends VpnService {
     }
 
     private File writeHevCfg() {
-        boolean gamingPipeline = BtProxy.isGamingMode(this);
         String yml =
             "tunnel:\n  name: bt-hev\n  mtu: 1380\n  ipv4: 198.18.0.1\n  ipv6: 'fc00::1'\n" +
-            "socks5:\n  address: 127.0.0.1\n  port: " + BtProxy.SOCKS5_PORT + "\n  udp: 'udp'\n  pipeline: " + (gamingPipeline ? "true" : "false") + "\n" +
+            "socks5:\n  address: 127.0.0.1\n  port: " + BtProxy.SOCKS5_PORT + "\n  udp: 'udp'\n  pipeline: false\n" +
             "mapdns:\n  address: 198.18.0.2\n  port: 53\n  network: 198.18.0.0\n  netmask: 255.254.0.0\n  cache-size: 8192\n" +
             "misc:\n" +
             "  connect-timeout: 5000\n" +
@@ -720,7 +744,9 @@ public class BtVpnService extends VpnService {
     private Notification buildNotif() {
         return new NotificationCompat.Builder(this, CH_ID)
                 .setSmallIcon(android.R.drawable.stat_sys_warning)
-                .setContentTitle("BlackTunnel").setOngoing(true).build();
+                .setContentTitle("BlackTunnel")
+                .setOngoing(true)
+                .build();
     }
 
     static final class HevBridge {
@@ -731,25 +757,28 @@ public class BtVpnService extends VpnService {
 }
 
 final class BtProxy {
+
     static final int SOCKS5_PORT = 10809;
+
     private static final String PREFS           = "strike_prefs";
     private static final String KEY_INTERNAL_ID = "internal_id";
     private static final String KEY_GAMING_MODE = "gaming_mode";
     private static final String KEY_GAMING_APPS = "gaming_apps";
+
     private static final boolean NATIVE_READY;
     private static final String  NATIVE_LOAD_ERROR;
 
     static {
         boolean ready = false;
-        String error = "";
+        String  error = "";
         try {
             System.loadLibrary("btproxy");
             ready = true;
         } catch (Throwable t) {
-            error = t.getClass().getSimpleName() + ": " + String.valueOf(t.getMessage());
+            error = t.getClass().getSimpleName() + ": " + t.getMessage();
             android.util.Log.e("BtProxy", "No se pudo cargar btproxy", t);
         }
-        NATIVE_READY = ready;
+        NATIVE_READY      = ready;
         NATIVE_LOAD_ERROR = error;
     }
 
@@ -760,10 +789,12 @@ final class BtProxy {
         if (!NATIVE_READY) return -1;
         return nativeStart(SOCKS5_PORT, svc, id);
     }
+
     static void stop() {
         if (!NATIVE_READY) return;
         nativeStop();
     }
+
     static String drainLogs() {
         if (!NATIVE_READY) return "";
         return nativeDrainLogs();
@@ -784,6 +815,7 @@ final class BtProxy {
         if (!NATIVE_READY) return;
         nativeSetGamingMode(isGamingMode(ctx));
     }
+
     static void applyRuntimeMode(Context ctx) {
         if (!NATIVE_READY) return;
         nativeApplyMode(isGamingMode(ctx));
@@ -809,7 +841,7 @@ final class BtProxy {
         String existing = sp.getString(KEY_INTERNAL_ID, null);
         if (existing != null && !existing.isBlank()) return existing;
         String rawId = Settings.Secure.getString(ctx.getContentResolver(), Settings.Secure.ANDROID_ID);
-        if (rawId == null) rawId = "unknown";
+        if (rawId == null || rawId.isBlank()) rawId = "unknown";
         String seed = rawId + "|" + Build.BRAND + "|" + Build.MODEL + "|" +
                       ctx.getPackageName() + "|" + System.currentTimeMillis();
         String id = "STRK-" + sha256(seed).substring(0, 48);
@@ -819,12 +851,14 @@ final class BtProxy {
 
     private static String sha256(String v) {
         try {
-            byte[] d = MessageDigest.getInstance("SHA-256").digest(v.getBytes(StandardCharsets.UTF_8));
+            byte[] d = MessageDigest.getInstance("SHA-256")
+                                    .digest(v.getBytes(StandardCharsets.UTF_8));
             StringBuilder sb = new StringBuilder(d.length * 2);
             for (byte b : d) sb.append(String.format("%02x", b));
             return sb.toString();
         } catch (Exception e) {
-            return Long.toHexString(System.currentTimeMillis()) + Long.toHexString(System.nanoTime());
+            return Long.toHexString(System.currentTimeMillis()) +
+                   Long.toHexString(System.nanoTime());
         }
     }
 
@@ -833,6 +867,5 @@ final class BtProxy {
     private static native String nativeDrainLogs();
     public  static native void   nativeSetGamingMode(boolean enabled);
     public  static native void   nativeApplyMode(boolean enabled);
-    public  static native int    nativeGetGamingMode();
     public  static native void   nativeSetNetwork(long networkHandle);
 }
