@@ -33,6 +33,7 @@ public class BtVpnService extends VpnService {
 
     public static final String ACTION_START = "com.blacktunnel.START";
     public static final String ACTION_STOP  = "com.blacktunnel.STOP";
+    public static final String ACTION_APPLY = "com.blacktunnel.APPLY";
 
     private static final String CH_ID = "bt_vpn";
     private static final int    NF_ID = 33;
@@ -42,6 +43,9 @@ public class BtVpnService extends VpnService {
     private static final Object        LOG_LOCK      = new Object();
     private static final StringBuilder LOGS          = new StringBuilder(8192);
     private static final int           MAX_LOG_CHARS = 24000;
+
+    private static volatile boolean sLocalProxyRunning = false;
+    private static volatile int     sLocalProxyPort    = -1;
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
@@ -83,8 +87,30 @@ public class BtVpnService extends VpnService {
             executor.execute(this::stopAll);
             return START_NOT_STICKY;
         }
+        if (ACTION_APPLY.equals(action)) {
+            executor.execute(this::applyRuntimeChanges);
+            return START_STICKY;
+        }
         executor.execute(this::startAll);
         return START_STICKY;
+    }
+
+
+    public static String getHotspotIp() {
+        return "192.168.43.1";
+    }
+
+    public static void startLocalProxy(int port) {
+        sLocalProxyRunning = true;
+        sLocalProxyPort = port;
+        log("I local proxy start requested on port " + port);
+    }
+
+    public static void stopLocalProxy() {
+        if (!sLocalProxyRunning) return;
+        sLocalProxyRunning = false;
+        sLocalProxyPort = -1;
+        log("I local proxy stop requested");
     }
 
     @Override
@@ -92,6 +118,15 @@ public class BtVpnService extends VpnService {
         executor.execute(this::stopAll);
         executor.shutdown();
         super.onDestroy();
+    }
+
+    private void applyRuntimeChanges() {
+        if (!running) {
+            startAll();
+            return;
+        }
+        stopAll();
+        startAll();
     }
 
     private void startAll() {
@@ -327,8 +362,10 @@ final class BtProxy {
 
     static final int SOCKS5_PORT = 10809;
 
-    private static final String PREFS           = "strike_prefs";
-    private static final String KEY_INTERNAL_ID = "internal_id";
+    private static final String PREFS                = "strike_prefs";
+    private static final String KEY_INTERNAL_ID      = "internal_id";
+    private static final String KEY_GAMING_MODE      = "gaming_mode";
+    private static final String KEY_GAMING_PACKAGES  = "gaming_packages";
 
     private static final boolean NATIVE_READY;
     private static final String  NATIVE_LOAD_ERROR;
@@ -377,6 +414,48 @@ final class BtProxy {
         String id = "STRK-" + sha256(seed).substring(0, 48);
         sp.edit().putString(KEY_INTERNAL_ID, id).apply();
         return id;
+    }
+
+    static void applyStoredGamingMode(Context ctx) {
+        isGamingMode(ctx);
+    }
+
+    static boolean isGamingMode(Context ctx) {
+        SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        return sp.getBoolean(KEY_GAMING_MODE, false);
+    }
+
+    static void setGamingMode(Context ctx, boolean enabled) {
+        SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        sp.edit().putBoolean(KEY_GAMING_MODE, enabled).apply();
+    }
+
+    static List<String> getGamingSelectedPackages(Context ctx) {
+        SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        String raw = sp.getString(KEY_GAMING_PACKAGES, "");
+        List<String> out = new ArrayList<>();
+        if (raw == null || raw.isBlank()) return out;
+        String[] parts = raw.split("\n");
+        for (String part : parts) {
+            String pkg = part.trim();
+            if (!pkg.isEmpty()) out.add(pkg);
+        }
+        return out;
+    }
+
+    static void setGamingSelectedPackages(Context ctx, List<String> packages) {
+        SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        StringBuilder sb = new StringBuilder();
+        if (packages != null) {
+            for (String pkg : packages) {
+                if (pkg == null) continue;
+                String clean = pkg.trim();
+                if (clean.isEmpty()) continue;
+                if (sb.length() > 0) sb.append('\n');
+                sb.append(clean);
+            }
+        }
+        sp.edit().putString(KEY_GAMING_PACKAGES, sb.toString()).apply();
     }
 
     private static String sha256(String v) {
