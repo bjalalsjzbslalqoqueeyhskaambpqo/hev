@@ -31,6 +31,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class BtVpnService extends VpnService {
 
@@ -49,12 +50,12 @@ public class BtVpnService extends VpnService {
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
-    private volatile boolean              running  = false;
-    private volatile ParcelFileDescriptor tunPfd;
-    private volatile int                  hevTunFd = -1;
-    private volatile Thread               hevThread;
-    private volatile File                 hevCfgFile;
-    private volatile ConnectivityManager.NetworkCallback netCallback;
+    private volatile boolean              running     = false;
+    private volatile ParcelFileDescriptor tunPfd      = null;
+    private volatile int                  hevTunFd    = -1;
+    private volatile Thread               hevThread   = null;
+    private volatile File                 hevCfgFile  = null;
+    private volatile ConnectivityManager.NetworkCallback netCallback = null;
 
     public static boolean isRunningState() { return sRunning; }
 
@@ -112,28 +113,43 @@ public class BtVpnService extends VpnService {
     public void onDestroy() {
         executor.execute(this::stopAll);
         executor.shutdown();
+        try { executor.awaitTermination(5, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
         super.onDestroy();
     }
 
     private void startAll() {
-        if (running) return;
+        if (running) {
+            log("I startAll: ya corriendo, ignorado");
+            return;
+        }
 
         createChannel();
         startForeground(NF_ID, buildNotif());
 
+        // 1. Asegurar que cualquier sesión nativa anterior esté completamente muerta
+        //    antes de tocar cualquier otro recurso
         BtProxy.stop();
 
+        // 2. Resetear todos los recursos de la sesión anterior al estado inicial
+        //    en el mismo hilo antes de crear nada nuevo
+        cleanupSessionResources();
+
+        // 3. Arrancar el proxy nativo
         String internalId  = BtProxy.getOrCreateInternalId(this);
         int    startResult = BtProxy.start(this, internalId);
         if (startResult < 0) {
-            log("E btproxy start failed");
+            log("E startAll: btproxy start failed");
             stopForeground(STOP_FOREGROUND_REMOVE);
             return;
         }
 
+        // 4. Registrar la red ANTES de levantar la interfaz tun
+        //    para que el fd protegido ya tenga la red correcta
         registerNet();
 
+        // 5. Levantar la interfaz tun y el stack hev
         if (!startHevStack()) {
+            log("E startAll: startHevStack failed, deshaciendo");
             unregisterNet();
             BtProxy.stop();
             stopForeground(STOP_FOREGROUND_REMOVE);
@@ -146,57 +162,112 @@ public class BtVpnService extends VpnService {
     }
 
     private void stopAll() {
-        if (!running && !sRunning) return;
+        if (!running && !sRunning) {
+            log("I stopAll: ya detenido, ignorado");
+            return;
+        }
+
+        // Marcar detenido primero para que ningún otro path intente arrancar
         running  = false;
         sRunning = false;
 
+        // 1. Detener el stack hev: primero señalizar, luego esperar el thread,
+        //    luego cerrar el fd duplicado, luego cerrar el pfd original
         stopHevStack();
+
+        // 2. Detener el proxy nativo (pthread_join interno, espera que termine)
         BtProxy.stop();
+
+        // 3. Desregistrar callbacks de red (ya no hay proxy ni tun activos)
         unregisterNet();
+
+        // 4. Limpiar variables de sesión a estado inicial
+        cleanupSessionResources();
+
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
         log("I stopAll ok");
     }
 
-    private boolean startHevStack() {
-        ParcelFileDescriptor pfd = buildTunInterface();
-        if (pfd == null) { log("E startHevStack: buildTunInterface failed"); return false; }
-        tunPfd = pfd;
+    // Deja todas las variables de sesión en estado limpio conocido.
+    // Se llama tanto al inicio de startAll (para limpiar sesión anterior)
+    // como al final de stopAll.
+    private void cleanupSessionResources() {
+        tunPfd     = null;
+        hevTunFd   = -1;
+        hevThread  = null;
+        hevCfgFile = null;
+    }
 
-        try {
-            hevTunFd = ParcelFileDescriptor.dup(tunPfd.getFileDescriptor()).detachFd();
-        } catch (Exception e) {
-            log("E startHevStack: dup failed");
-            closeTunPfd();
+    private boolean startHevStack() {
+        // Construir la interfaz tun
+        ParcelFileDescriptor pfd = buildTunInterface();
+        if (pfd == null) {
+            log("E startHevStack: buildTunInterface failed");
             return false;
         }
+        tunPfd = pfd;
 
+        // Duplicar el fd ANTES de guardar nada más, para que si falla
+        // closeTunPfd() pueda limpiar correctamente
+        int dupFd;
+        try {
+            dupFd = ParcelFileDescriptor.dup(tunPfd.getFileDescriptor()).detachFd();
+        } catch (Exception e) {
+            log("E startHevStack: dup failed: " + e.getMessage());
+            // Cerrar el pfd que acabamos de abrir
+            try { tunPfd.close(); } catch (Exception ignored) {}
+            tunPfd   = null;
+            hevTunFd = -1;
+            return false;
+        }
+        hevTunFd = dupFd;
+
+        // Arrancar el thread hev con el fd duplicado
         startHevThread();
         return true;
     }
 
     private void stopHevStack() {
-        stopHevThread();
-        closeTunPfd();
-        int fd = hevTunFd; hevTunFd = -1;
+        // 1. Señalizar a hev que pare (no bloquea)
+        try { HevBridge.stop(); } catch (Throwable ignored) {}
+
+        // 2. Esperar que el thread de hev termine antes de cerrar cualquier fd
+        Thread old = hevThread;
+        hevThread = null;
+        if (old != null) {
+            try { old.join(3000); } catch (InterruptedException ignored) {}
+            if (old.isAlive()) {
+                log("W stopHevStack: hev thread no terminó en 3s, forzando interrupción");
+                old.interrupt();
+                try { old.join(1000); } catch (InterruptedException ignored) {}
+            }
+        }
+
+        // 3. Recién ahora cerrar el fd duplicado (hev ya no lo usa)
+        int fd = hevTunFd;
+        hevTunFd = -1;
         if (fd >= 0) {
             try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
+        }
+
+        // 4. Cerrar el ParcelFileDescriptor original
+        ParcelFileDescriptor pfd = tunPfd;
+        tunPfd = null;
+        if (pfd != null) {
+            try { pfd.close(); } catch (Exception ignored) {}
         }
     }
 
     private void startHevThread() {
-        stopHevThread();
+        // Nunca llamar startHevThread sin haber llamado stopHevThread antes
+        // (startHevStack ya garantiza esto porque stopAll llama stopHevStack primero)
         hevCfgFile = writeHevCfg();
         final int  fd  = hevTunFd;
         final File cfg = hevCfgFile;
         hevThread = new Thread(() -> HevBridge.start(cfg.getAbsolutePath(), fd), "hev");
+        hevThread.setDaemon(true);
         hevThread.start();
-    }
-
-    private void stopHevThread() {
-        try { HevBridge.stop(); } catch (Throwable ignored) {}
-        Thread old = hevThread; hevThread = null;
-        if (old != null) try { old.join(2000); } catch (InterruptedException ignored) {}
     }
 
     private void closeTunPfd() {
@@ -245,10 +316,12 @@ public class BtVpnService extends VpnService {
     private void unregisterNet() {
         try {
             ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-            ConnectivityManager.NetworkCallback cb = netCallback; netCallback = null;
+            ConnectivityManager.NetworkCallback cb = netCallback;
+            netCallback = null;
             if (cm != null && cb != null) cm.unregisterNetworkCallback(cb);
-            BtProxy.nativeSetNetwork(0L);
         } catch (Exception ignored) {}
+        // Resetear el network handle en el native siempre, independientemente
+        BtProxy.nativeSetNetwork(0L);
     }
 
     private void addPublicRoutes(Builder builder) {
