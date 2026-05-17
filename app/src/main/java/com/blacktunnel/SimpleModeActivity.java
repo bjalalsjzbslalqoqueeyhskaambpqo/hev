@@ -1,6 +1,9 @@
 package com.blacktunnel;
 
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Intent;
+import android.widget.Toast;
 import android.net.VpnService;
 import android.os.Bundle;
 import android.os.Handler;
@@ -19,6 +22,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private TextView statusView;
     private TextView internalIdView;
     private TextView logsView;
+    private String internalId = "";
     private UiState uiState = UiState.DISCONNECTED;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
@@ -55,8 +59,11 @@ public class SimpleModeActivity extends ComponentActivity {
         internalIdView = findViewById(R.id.txtInternalId);
         logsView = findViewById(R.id.txtLogs);
         connectBtn = findViewById(R.id.btnConnect);
+        Button copyIdBtn = findViewById(R.id.btnCopyId);
+        Button copyLogsBtn = findViewById(R.id.btnCopyLogs);
+        Button clearLogsBtn = findViewById(R.id.btnClearLogs);
 
-        String internalId = BtProxy.getOrCreateInternalId(this);
+        internalId = BtProxy.getOrCreateInternalId(this);
         internalIdView.setText("ID: " + internalId);
 
         setUiState(BtVpnService.isRunningState() ? UiState.CONNECTED : UiState.DISCONNECTED);
@@ -70,6 +77,14 @@ public class SimpleModeActivity extends ComponentActivity {
                 cleanDisconnectState();
             }
         }));
+
+        copyIdBtn.setOnClickListener(v -> copyText("internal_id", internalId, "ID copiado"));
+        copyLogsBtn.setOnClickListener(v -> copyText("logs", BtVpnService.dumpLogs(), "Logs copiados"));
+        clearLogsBtn.setOnClickListener(v -> {
+            BtVpnService.clearLogs();
+            refreshLogs();
+            Toast.makeText(this, "Logs limpiados", Toast.LENGTH_SHORT).show();
+        });
 
         handler.post(stateTicker);
     }
@@ -119,6 +134,14 @@ public class SimpleModeActivity extends ComponentActivity {
             startService(i);
         } catch (Throwable ignored) {}
         setUiState(UiState.DISCONNECTED);
+    }
+
+    private void copyText(String label, String value, String okMessage) {
+        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (cm == null) return;
+        if (value == null) value = "";
+        cm.setPrimaryClip(ClipData.newPlainText(label, value));
+        Toast.makeText(this, okMessage, Toast.LENGTH_SHORT).show();
     }
 
     private void refreshLogs() {

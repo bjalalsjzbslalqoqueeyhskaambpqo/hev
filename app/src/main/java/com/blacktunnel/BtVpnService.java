@@ -56,6 +56,12 @@ public class BtVpnService extends VpnService {
         }
     }
 
+    public static void clearLogs() {
+        synchronized (LOG_LOCK) {
+            LOGS.setLength(0);
+        }
+    }
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : null;
@@ -67,7 +73,7 @@ public class BtVpnService extends VpnService {
         return START_STICKY;
     }
 
-    @Override
+        @Override
     public void onDestroy() {
         executor.execute(this::stopAll);
         executor.shutdown();
@@ -80,6 +86,7 @@ public class BtVpnService extends VpnService {
             createChannel();
             startForeground(NF_ID, buildNotif());
             log("startAll: init");
+            log("startAll: using internal id=" + BtProxy.getOrCreateInternalId(this));
             BtProxy.stop();
             if (BtProxy.start(this, BtProxy.getOrCreateInternalId(this)) < 0 || !startHevStack()) {
                 log("startAll: native/hev failed");
@@ -104,6 +111,7 @@ public class BtVpnService extends VpnService {
         sRunning = false;
         log("safeShutdown: stopping");
         try { stopHevStack(); } catch (Throwable ignored) {}
+        log("safeShutdown: done");
         try { BtProxy.stop(); } catch (Throwable ignored) {}
         try { stopForeground(STOP_FOREGROUND_REMOVE); } catch (Throwable ignored) {}
         try { stopSelf(); } catch (Throwable ignored) {}
@@ -124,6 +132,7 @@ public class BtVpnService extends VpnService {
         } catch (Throwable t) {
             log("hev: start failed " + t.getClass().getSimpleName());
             try { stopHevStack(); } catch (Throwable ignored) {}
+        log("safeShutdown: done");
             return false;
         }
     }
