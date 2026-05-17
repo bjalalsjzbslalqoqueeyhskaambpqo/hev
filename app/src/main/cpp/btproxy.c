@@ -414,20 +414,22 @@ static tunnel_result_t open_tunnel(int *fd_out) {
 
     atomic_store(&g_last_pong, (long)time(NULL));
 
-    char req1[256], h1[2048];
-    snprintf(req1, sizeof(req1), "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", PROXY_HOST);
-    send(fd, req1, strlen(req1), MSG_NOSIGNAL);
+    // payload 1: preflight against proxy
+    char payload1[256], h1[2048];
+    snprintf(payload1, sizeof(payload1), "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", PROXY_HOST);
+    send(fd, payload1, strlen(payload1), MSG_NOSIGNAL);
     if (recv_eoh(fd, h1, sizeof(h1), HANDSHAKE_TIMEOUT_SEC) < 0) {
         close(fd);
         return TUNNEL_ERR_TRANSIENT;
     }
 
-    char req2[1024], h2[4096];
-    snprintf(req2, sizeof(req2),
+    // payload 2: tunnel upgrade + internal id
+    char payload2[1024], h2[4096];
+    snprintf(payload2, sizeof(payload2),
         "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
         "Connection: Upgrade\r\nAction: tunnel\r\nX-Internal-ID: %s\r\n\r\n",
         TUNNEL_HOST, g_internal_id[0] ? g_internal_id : "unknown");
-    send(fd, req2, strlen(req2), MSG_NOSIGNAL);
+    send(fd, payload2, strlen(payload2), MSG_NOSIGNAL);
     int hlen = recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
 
     int code = -1;
