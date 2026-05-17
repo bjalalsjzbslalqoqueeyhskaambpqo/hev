@@ -48,7 +48,6 @@ static const char *PROXY_IPS[] = {
 };
 #define PROXY_IP_COUNT 2
 
-/* ── Estado global ── */
 static pthread_mutex_t g_mu         = PTHREAD_MUTEX_INITIALIZER;
 static volatile int    g_running    = 0;
 static int             g_tfd        = -1;
@@ -64,7 +63,6 @@ static JavaVM         *g_jvm        = NULL;
 static jobject         g_svc        = NULL;
 static net_handle_t    g_net        = NETWORK_UNSPECIFIED;
 
-/* ── Log buffer ── */
 static pthread_mutex_t g_log_mu = PTHREAD_MUTEX_INITIALIZER;
 static char            g_logbuf[32768];
 static size_t          g_loglen = 0;
@@ -89,7 +87,6 @@ static void push_log(const char *lvl, const char *fmt, ...) {
     pthread_mutex_unlock(&g_log_mu);
 }
 
-/* ── Hash table sid → cfd ── */
 #define HT_SIZE 4096
 #define HT_MASK (HT_SIZE - 1)
 typedef struct hn_s { struct hn_s *next; uint32_t sid; int cfd; } hn_t;
@@ -149,7 +146,6 @@ static void ht_close_all(int epfd) {
     }
 }
 
-/* ── Protect fd via VpnService ── */
 static void protect_fd(int fd) {
     pthread_mutex_lock(&g_mu);
     net_handle_t net = g_net;
@@ -167,7 +163,6 @@ static void protect_fd(int fd) {
     if (att) (*jvm)->DetachCurrentThread(jvm);
 }
 
-/* ── I/O ── */
 static int tun_send(int tfd, uint8_t type, uint32_t sid,
                     const uint8_t *data, uint16_t dlen) {
     uint8_t hdr[FRAME_HDR];
@@ -212,7 +207,6 @@ static int recv_eoh(int fd, char *buf, int cap, int sec) {
     return ok ? used : -1;
 }
 
-/* ── Conexión al proxy ── */
 static int try_connect_ip(const char *ip, int timeout_ms) {
     struct sockaddr_in6 a = {0};
     a.sin6_family = AF_INET6; a.sin6_port = htons(PROXY_PORT);
@@ -284,27 +278,6 @@ static int open_tunnel(void) {
     return fd;
 }
 
-/* ── Limpieza unificada (manual o por error) ── */
-static void do_disconnect(void) {
-    pthread_mutex_lock(&g_mu);
-    int tfd  = g_tfd;  g_tfd  = -1;
-    int rfd  = g_rfd;  g_rfd  = -1;
-    int epfd = g_epfd; g_epfd = -1;
-    int wr   = g_wake_r; g_wake_r = -1;
-    int ww   = g_wake_w; g_wake_w = -1;
-    pthread_mutex_unlock(&g_mu);
-
-    if (ww   >= 0) { uint8_t b = 1; write(ww, &b, 1); }
-    if (epfd >= 0) close(epfd);
-    if (tfd  >= 0) { shutdown(tfd, SHUT_RDWR); close(tfd); }
-    if (rfd  >= 0) { shutdown(rfd, SHUT_RDWR); close(rfd); }
-    if (wr   >= 0) close(wr);
-    if (ww   >= 0) close(ww);
-
-    ht_close_all(-1);
-}
-
-/* ── Hilo principal ── */
 static void *proxy_thread(void *arg) {
     int port = (int)(intptr_t)arg;
 
@@ -452,10 +425,13 @@ static void *proxy_thread(void *arg) {
 
 session_end:
     push_log("I", "sesion terminada, limpiando");
+
     ht_close_all(epfd);
+
     pthread_mutex_lock(&g_mu);
     g_tfd = -1; g_rfd = -1; g_epfd = -1; g_wake_r = -1; g_wake_w = -1;
     pthread_mutex_unlock(&g_mu);
+
     close(epfd);
     shutdown(tfd, SHUT_RDWR); close(tfd);
     close(wfds[0]); close(wfds[1]);
@@ -471,7 +447,6 @@ done:
     return NULL;
 }
 
-/* ── JNI ── */
 JNIEXPORT jint JNICALL
 Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
                                           jint port, jobject svc, jstring iid) {
@@ -508,20 +483,29 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
 JNIEXPORT void JNICALL
 Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     (void)clazz;
+
     pthread_mutex_lock(&g_mu);
     if (!g_running) { pthread_mutex_unlock(&g_mu); return; }
     g_running = 0;
     g_iid[0] = 0;
-    jobject svc = g_svc; g_svc = NULL; g_jvm = NULL;
     pthread_t thr = g_thread; g_thread = 0;
     int ww = g_wake_w; g_wake_w = -1;
     pthread_mutex_unlock(&g_mu);
 
     if (ww >= 0) { uint8_t b = 1; write(ww, &b, 1); }
+    if (ww >= 0) close(ww);
+
     if (thr != 0) pthread_join(thr, NULL);
 
-    ht_close_all(-1);
+    pthread_mutex_lock(&g_mu);
+    jobject svc = g_svc; g_svc = NULL; g_jvm = NULL;
+    pthread_mutex_unlock(&g_mu);
     if (svc) (*env)->DeleteGlobalRef(env, svc);
+
+    ht_close_all(-1);
+
+    atomic_store(&g_last_pong, (long)time(NULL));
+
     push_log("I", "nativeStop ok");
 }
 
