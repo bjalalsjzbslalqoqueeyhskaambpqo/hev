@@ -55,34 +55,6 @@ static const char *PROXY_IPS[] = {
 };
 #define PROXY_IP_COUNT 2
 
-static int resolve_proxy_ipv6(char out[][INET6_ADDRSTRLEN], int cap) {
-    if (!g_running) return 0;
-    struct addrinfo hints = {0}, *res = NULL;
-    hints.ai_family   = AF_INET6;
-    hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(PROXY_HOST, "80", &hints, &res) != 0 || !res) return 0;
-    if (!g_running) { freeaddrinfo(res); return 0; }
-    int n = 0;
-    for (struct addrinfo *it = res; it && n < cap; it = it->ai_next) {
-        if (it->ai_family != AF_INET6 || !it->ai_addr) continue;
-        struct sockaddr_in6 *sa = (struct sockaddr_in6 *)it->ai_addr;
-        char ip[INET6_ADDRSTRLEN] = {0};
-        if (!inet_ntop(AF_INET6, &sa->sin6_addr, ip, sizeof(ip))) continue;
-        int dup = 0;
-        for (int i = 0; i < n; i++) if (strcmp(out[i], ip) == 0) { dup = 1; break; }
-        if (dup) continue;
-        snprintf(out[n], INET6_ADDRSTRLEN, "%s", ip);
-        n++;
-    }
-    freeaddrinfo(res);
-    return n;
-}
-
-#define OPEN_TUNNEL_OK       0
-#define OPEN_TUNNEL_ERR     -1
-#define OPEN_TUNNEL_INVALID -2
-#define OPEN_TUNNEL_EXPIRED -3
-
 static volatile int    g_running         = 0;
 static atomic_int      g_started         = 0;
 static int             g_relay_fd        = -1;
@@ -194,6 +166,34 @@ static void push_log(const char *lvl, const char *fmt, ...) {
     }
     pthread_mutex_unlock(&g_log_mu);
 }
+
+static int resolve_proxy_ipv6(char out[][INET6_ADDRSTRLEN], int cap) {
+    if (!g_running) return 0;
+    struct addrinfo hints = {0}, *res = NULL;
+    hints.ai_family   = AF_INET6;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(PROXY_HOST, "80", &hints, &res) != 0 || !res) return 0;
+    if (!g_running) { freeaddrinfo(res); return 0; }
+    int n = 0;
+    for (struct addrinfo *it = res; it && n < cap; it = it->ai_next) {
+        if (it->ai_family != AF_INET6 || !it->ai_addr) continue;
+        struct sockaddr_in6 *sa = (struct sockaddr_in6 *)it->ai_addr;
+        char ip[INET6_ADDRSTRLEN] = {0};
+        if (!inet_ntop(AF_INET6, &sa->sin6_addr, ip, sizeof(ip))) continue;
+        int dup = 0;
+        for (int i = 0; i < n; i++) if (strcmp(out[i], ip) == 0) { dup = 1; break; }
+        if (dup) continue;
+        snprintf(out[n], INET6_ADDRSTRLEN, "%s", ip);
+        n++;
+    }
+    freeaddrinfo(res);
+    return n;
+}
+
+#define OPEN_TUNNEL_OK       0
+#define OPEN_TUNNEL_ERR     -1
+#define OPEN_TUNNEL_INVALID -2
+#define OPEN_TUNNEL_EXPIRED -3
 
 static void wake_epoll(void) {
     pthread_mutex_lock(&g_mu);
@@ -692,6 +692,7 @@ static void *main_thread(void *arg) {
                     struct sockaddr_in ca; socklen_t cl = sizeof(ca);
                     int cfd = accept(rfd, (struct sockaddr *)&ca, &cl);
                     if (cfd < 0) continue;
+
                     int fdc = fcntl(cfd, F_GETFD, 0);
                     if (fdc >= 0) fcntl(cfd, F_SETFD, fdc | FD_CLOEXEC);
 
