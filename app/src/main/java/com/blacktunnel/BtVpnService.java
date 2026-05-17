@@ -50,9 +50,6 @@ public class BtVpnService extends VpnService {
     private static final String CH_ID = "bt_vpn";
     private static final int    NF_ID = 33;
 
-    // ---------------------------------------------------------------
-    // Static (process-wide) fields
-    // ---------------------------------------------------------------
     private static volatile boolean       sRunning        = false;
     private static final AtomicBoolean    sHotspotStarted = new AtomicBoolean(false);
     private static volatile Thread        sLocalProxyThread = null;
@@ -61,21 +58,8 @@ public class BtVpnService extends VpnService {
     private static final StringBuilder LOGS          = new StringBuilder(8192);
     private static final int           MAX_LOG_CHARS = 24000;
 
-    // ---------------------------------------------------------------
-    // Instance fields
-    // ---------------------------------------------------------------
-    /**
-     * Single executor serialises all lifecycle transitions.
-     * This eliminates the race between onTunnelReconnected, applyRuntimeChanges,
-     * and stop where they previously competed on the same volatile flags.
-     */
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
-    /**
-     * True while the VPN is fully up; set to true only after every
-     * subsystem has been started successfully, and cleared before
-     * any teardown begins.
-     */
     private volatile boolean      running  = false;
 
     private volatile ParcelFileDescriptor                tunPfd;
@@ -84,9 +68,6 @@ public class BtVpnService extends VpnService {
     private volatile File                                hevCfgFile;
     private volatile ConnectivityManager.NetworkCallback netCallback;
 
-    // ---------------------------------------------------------------
-    // Public static API
-    // ---------------------------------------------------------------
     public static boolean isRunningState() { return sRunning; }
 
     public static void log(String message) {
@@ -111,9 +92,6 @@ public class BtVpnService extends VpnService {
         }
     }
 
-    // ---------------------------------------------------------------
-    // Hotspot / local proxy (static, lifecycle independent of VPN)
-    // ---------------------------------------------------------------
     public static void startLocalProxy(int port) {
         if (sHotspotStarted.getAndSet(true)) return;
         Thread t = new Thread(() -> {
@@ -165,9 +143,6 @@ public class BtVpnService extends VpnService {
         return null;
     }
 
-    // ---------------------------------------------------------------
-    // Service lifecycle
-    // ---------------------------------------------------------------
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : null;
@@ -184,26 +159,13 @@ public class BtVpnService extends VpnService {
         super.onDestroy();
     }
 
-    // ---------------------------------------------------------------
-    // Callbacks from native layer – queued on executor to stay serial
-    // ---------------------------------------------------------------
-
-    /** Called by btproxy JNI when the tunnel reconnects after a drop. */
     public void onTunnelReconnected() {
         executor.execute(this::handleTunnelReconnected);
     }
 
-    /**
-     * Called by btproxy JNI when the server returns a permanent auth error.
-     * @param expired true = subscription expired; false = not registered.
-     */
     public void onAuthError(boolean expired) {
         executor.execute(() -> handleAuthError(expired));
     }
-
-    // ---------------------------------------------------------------
-    // Core lifecycle helpers (all run on executor thread)
-    // ---------------------------------------------------------------
 
     private void startAll() {
         if (running) return;
@@ -211,19 +173,16 @@ public class BtVpnService extends VpnService {
         createChannel();
         startForeground(NF_ID, buildNotif());
 
-        // Ensure any previous proxy instance is gone before starting fresh.
         BtProxy.stop();
 
         String internalId = BtProxy.getOrCreateInternalId(this);
         int startResult = BtProxy.start(this, internalId);
         if (startResult < 0) {
-            // One retry for transient bind races.
             SystemClock.sleep(250);
             startResult = BtProxy.start(this, internalId);
         }
         if (startResult == BtProxy.START_RESULT_AUTH_ERROR) {
             log("E startAll: auth error, not retrying");
-            // onAuthError will be called by native; just clean up foreground.
             stopForeground(STOP_FOREGROUND_REMOVE);
             return;
         }
@@ -249,7 +208,7 @@ public class BtVpnService extends VpnService {
     }
 
     private void stopAll() {
-        if (!running && !sRunning) return;   // already stopped
+        if (!running && !sRunning) return;
         running  = false;
         sRunning = false;
 
@@ -273,7 +232,6 @@ public class BtVpnService extends VpnService {
         if (!running) return;
         stopHevStack();
         if (hevTunFd < 0) {
-            // The tun fd is gone (shouldn't normally happen while running).
             log("E handleTunnelReconnected: tun fd invalid, rebuilding full tunnel");
             rebuildTunInterface();
             return;
@@ -284,18 +242,9 @@ public class BtVpnService extends VpnService {
 
     private void handleAuthError(boolean expired) {
         log("E handleAuthError expired=" + expired);
-        // UI layer observes sRunning going false and can query the error.
         stopAll();
     }
 
-    // ---------------------------------------------------------------
-    // HEV / tun stack helpers
-    // ---------------------------------------------------------------
-
-    /**
-     * Build the tun interface, dup the fd, write config, and start the hev thread.
-     * @return true on success; false if any step failed (caller should stop).
-     */
     private boolean startHevStack() {
         ParcelFileDescriptor pfd = buildTunInterface();
         if (pfd == null) { log("E startHevStack: buildTunInterface failed"); return false; }
@@ -313,7 +262,6 @@ public class BtVpnService extends VpnService {
         return true;
     }
 
-    /** Stop the hev thread and close all tun-related fds. */
     private void stopHevStack() {
         stopHevThread();
         closeTunPfd();
@@ -323,7 +271,6 @@ public class BtVpnService extends VpnService {
         }
     }
 
-    /** Rebuild only the tun interface (and hev) when the fd is lost while running. */
     private void rebuildTunInterface() {
         stopHevStack();
         if (!startHevStack()) {
@@ -334,7 +281,6 @@ public class BtVpnService extends VpnService {
         }
     }
 
-    /** Start (or restart) just the hev thread; tunFd must already be valid. */
     private void startHevThread() {
         stopHevThread();
         hevCfgFile = writeHevCfg();
@@ -355,9 +301,6 @@ public class BtVpnService extends VpnService {
         if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
     }
 
-    // ---------------------------------------------------------------
-    // Tun interface builder
-    // ---------------------------------------------------------------
     private ParcelFileDescriptor buildTunInterface() {
         Builder builder = new Builder()
                 .setSession("bt-hev")
@@ -370,9 +313,6 @@ public class BtVpnService extends VpnService {
         return builder.establish();
     }
 
-    // ---------------------------------------------------------------
-    // Network callback
-    // ---------------------------------------------------------------
     private void registerNet() {
         try {
             ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
@@ -408,9 +348,6 @@ public class BtVpnService extends VpnService {
         } catch (Exception ignored) {}
     }
 
-    // ---------------------------------------------------------------
-    // Route / policy helpers
-    // ---------------------------------------------------------------
     private void addPublicRoutes(Builder builder) {
         String[] excludes = {
             "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
@@ -473,9 +410,6 @@ public class BtVpnService extends VpnService {
         }
     }
 
-    // ---------------------------------------------------------------
-    // Hev config
-    // ---------------------------------------------------------------
     private File writeHevCfg() {
         String yml =
             "tunnel:\n  name: bt-hev\n  mtu: 1380\n  ipv4: 198.18.0.1\n  ipv6: 'fc00::1'\n" +
@@ -495,9 +429,6 @@ public class BtVpnService extends VpnService {
         return f;
     }
 
-    // ---------------------------------------------------------------
-    // Notification
-    // ---------------------------------------------------------------
     private void createChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
         NotificationManager nm = getSystemService(NotificationManager.class);
@@ -514,9 +445,6 @@ public class BtVpnService extends VpnService {
                 .build();
     }
 
-    // ---------------------------------------------------------------
-    // Local proxy client handling (static helpers)
-    // ---------------------------------------------------------------
     private static void handleClient(Socket client) {
         try {
             client.setSoTimeout(30000);
@@ -820,9 +748,6 @@ public class BtVpnService extends VpnService {
         while ((n = in.read(buf)) != -1) { out.write(buf, 0, n); out.flush(); }
     }
 
-    // ---------------------------------------------------------------
-    // Inner classes
-    // ---------------------------------------------------------------
     static final class HevBridge {
         static { System.loadLibrary("hev-jni"); }
         static native int  start(String path, int fd);
@@ -830,12 +755,9 @@ public class BtVpnService extends VpnService {
     }
 }
 
-// ---------------------------------------------------------------------------
 final class BtProxy {
 
     static final int SOCKS5_PORT = 10809;
-
-    /** Returned by start() when the server rejects the credential permanently. */
     static final int START_RESULT_AUTH_ERROR = -2;
 
     private static final String PREFS           = "strike_prefs";
@@ -863,11 +785,6 @@ final class BtProxy {
     static boolean isNativeReady()      { return NATIVE_READY; }
     static String  getNativeLoadError() { return NATIVE_LOAD_ERROR; }
 
-    /**
-     * Start the native proxy.
-     * @return 0 on success, START_RESULT_AUTH_ERROR for permanent auth failure,
-     *         or -1 for other errors.
-     */
     static int start(VpnService svc, String id) {
         if (!NATIVE_READY) return -1;
         return nativeStart(SOCKS5_PORT, svc, id);
@@ -899,11 +816,6 @@ final class BtProxy {
         nativeSetGamingMode(isGamingMode(ctx));
     }
 
-    /**
-     * Push current gaming-mode preference to the native layer at runtime.
-     * (Previously split between applyRuntimeMode → nativeApplyMode and
-     * nativeSetGamingMode; they are now the same operation.)
-     */
     static void applyRuntimeMode(Context ctx) {
         if (!NATIVE_READY) return;
         nativeSetGamingMode(isGamingMode(ctx));
