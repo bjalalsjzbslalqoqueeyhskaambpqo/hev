@@ -43,7 +43,7 @@
 #define PROXY_PORT  80
 #define TUNNEL_HOST "2.brawlpass.com.ar"
 
-#define TUNNEL_OK        0
+#define TUNNEL_OK       0
 #define TUNNEL_ERR_NET  -1
 #define TUNNEL_ERR_AUTH -2
 
@@ -53,28 +53,28 @@ static const char *STATIC_IPS[] = {
 };
 #define STATIC_IP_COUNT 2
 
-static pthread_mutex_t g_mu       = PTHREAD_MUTEX_INITIALIZER;
-static volatile int    g_running  = 0;
-static int             g_tfd      = -1;
-static int             g_rfd      = -1;
-static int             g_epfd     = -1;
-static int             g_wake_r   = -1;
-static int             g_wake_w   = -1;
-static pthread_t       g_thread   = 0;
-static atomic_int      g_next_sid = 1;
-static atomic_long     g_last_pong= 0;
-static char            g_iid[160] = {0};
-static JavaVM         *g_jvm      = NULL;
-static jobject         g_svc      = NULL;
-static net_handle_t    g_net      = NETWORK_UNSPECIFIED;
+static pthread_mutex_t g_mu        = PTHREAD_MUTEX_INITIALIZER;
+static volatile int    g_running   = 0;
+static int             g_tfd       = -1;
+static int             g_rfd       = -1;
+static int             g_epfd      = -1;
+static int             g_wake_r    = -1;
+static int             g_wake_w    = -1;
+static pthread_t       g_thread    = 0;
+static atomic_int      g_next_sid  = 1;
+static atomic_long     g_last_pong = 0;
+static char            g_iid[160]  = {0};
+static JavaVM         *g_jvm       = NULL;
+static jobject         g_svc       = NULL;
+static net_handle_t    g_net       = NETWORK_UNSPECIFIED;
 
-static atomic_int     g_tunnel_ready = 0;
-static pthread_mutex_t g_ready_mu    = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t  g_ready_cv    = PTHREAD_COND_INITIALIZER;
+static atomic_int      g_tunnel_ready = 0;
+static pthread_mutex_t g_ready_mu     = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_ready_cv     = PTHREAD_COND_INITIALIZER;
 
-static pthread_mutex_t g_log_mu  = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_log_mu = PTHREAD_MUTEX_INITIALIZER;
 static char            g_logbuf[32768];
-static size_t          g_loglen  = 0;
+static size_t          g_loglen = 0;
 
 static void push_log(const char *lvl, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
@@ -259,9 +259,8 @@ static int resolve_and_connect(void) {
     int fd = -1;
     for (struct addrinfo *ai = res; ai && fd < 0; ai = ai->ai_next) {
         char ip[INET6_ADDRSTRLEN] = {0};
-        struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)ai->ai_addr;
-        inet_ntop(AF_INET6, &s6->sin6_addr, ip, sizeof(ip));
-        push_log("I", "dns resuelto: %s", ip);
+        inet_ntop(AF_INET6, &((struct sockaddr_in6 *)ai->ai_addr)->sin6_addr, ip, sizeof(ip));
+        push_log("I", "dns: %s", ip);
         fd = try_connect_ip(ip, CONNECT_TIMEOUT_SEC * 1000);
     }
     freeaddrinfo(res);
@@ -278,30 +277,21 @@ static void parse_hdr(const char *buf, const char *key, char *out, int cap) {
 
 static int open_tunnel(void) {
     int fd = -1;
-
     for (int i = 0; i < STATIC_IP_COUNT && fd < 0; i++) {
         push_log("I", "probando %s", STATIC_IPS[i]);
         fd = try_connect_ip(STATIC_IPS[i], CONNECT_TIMEOUT_SEC * 1000);
     }
-
     if (fd < 0) {
-        push_log("I", "IPs estaticas fallaron, resolviendo DNS...");
+        push_log("I", "resolviendo DNS...");
         fd = resolve_and_connect();
     }
-
-    if (fd < 0) {
-        push_log("E", "sin conexion al proxy");
-        return TUNNEL_ERR_NET;
-    }
+    if (fd < 0) { push_log("E", "sin conexion al proxy"); return TUNNEL_ERR_NET; }
 
     char buf[4096];
     snprintf(buf, sizeof(buf), "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", PROXY_HOST);
     send(fd, buf, strlen(buf), MSG_NOSIGNAL);
-    if (recv_eoh(fd, buf, sizeof(buf), HANDSHAKE_TIMEOUT_SEC) < 0) {
-        push_log("E", "proxy no responde");
-        close(fd);
-        return TUNNEL_ERR_NET;
-    }
+    if (recv_eoh(fd, buf, sizeof(buf), HANDSHAKE_TIMEOUT_SEC) < 0)
+        { push_log("E", "proxy no responde"); close(fd); return TUNNEL_ERR_NET; }
 
     char req[1024];
     snprintf(req, sizeof(req),
@@ -311,11 +301,8 @@ static int open_tunnel(void) {
     send(fd, req, strlen(req), MSG_NOSIGNAL);
 
     char h2[4096];
-    if (recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC) < 0) {
-        push_log("E", "sin respuesta del servidor");
-        close(fd);
-        return TUNNEL_ERR_NET;
-    }
+    if (recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC) < 0)
+        { push_log("E", "sin respuesta del servidor"); close(fd); return TUNNEL_ERR_NET; }
 
     int code = -1;
     sscanf(h2, "HTTP/%*d.%*d %d", &code);
@@ -331,7 +318,7 @@ static int open_tunnel(void) {
         return fd;
     }
 
-    push_log("E", "servidor rechazo la conexion code=%d", code);
+    push_log("E", "servidor rechazo code=%d", code);
     close(fd);
     return TUNNEL_ERR_AUTH;
 }
@@ -341,7 +328,6 @@ static void *proxy_thread(void *arg) {
 
     int rfd = socket(AF_INET, SOCK_STREAM, 0);
     if (rfd < 0) { signal_ready(TUNNEL_ERR_NET); goto done; }
-
     {
         int one = 1;
         setsockopt(rfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
@@ -351,39 +337,23 @@ static void *proxy_thread(void *arg) {
         la.sin_family      = AF_INET;
         la.sin_port        = htons((uint16_t)port);
         la.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        if (bind(rfd, (struct sockaddr *)&la, sizeof(la)) < 0 || listen(rfd, RELAY_BACKLOG) < 0) {
-            push_log("E", "relay bind errno=%d", errno);
-            close(rfd);
-            signal_ready(TUNNEL_ERR_NET);
-            goto done;
-        }
+        if (bind(rfd, (struct sockaddr *)&la, sizeof(la)) < 0 || listen(rfd, RELAY_BACKLOG) < 0)
+            { push_log("E", "relay bind errno=%d", errno); close(rfd); signal_ready(TUNNEL_ERR_NET); goto done; }
         fcntl(rfd, F_SETFL, fcntl(rfd, F_GETFL, 0) | O_NONBLOCK);
     }
 
     int tfd = open_tunnel();
-    if (tfd < 0) {
-        signal_ready(tfd);
-        close(rfd);
-        goto done;
-    }
+    if (tfd < 0) { signal_ready(tfd); close(rfd); goto done; }
 
     int wfds[2] = {-1, -1};
-    if (pipe(wfds) < 0) {
-        push_log("E", "pipe errno=%d", errno);
-        signal_ready(TUNNEL_ERR_NET);
-        close(tfd); close(rfd);
-        goto done;
-    }
+    if (pipe(wfds) < 0)
+        { push_log("E", "pipe errno=%d", errno); signal_ready(TUNNEL_ERR_NET); close(tfd); close(rfd); goto done; }
     fcntl(wfds[0], F_SETFL, O_NONBLOCK); fcntl(wfds[1], F_SETFL, O_NONBLOCK);
     fcntl(wfds[0], F_SETFD, FD_CLOEXEC); fcntl(wfds[1], F_SETFD, FD_CLOEXEC);
 
     int epfd = epoll_create1(EPOLL_CLOEXEC);
-    if (epfd < 0) {
-        push_log("E", "epoll errno=%d", errno);
-        signal_ready(TUNNEL_ERR_NET);
-        close(wfds[0]); close(wfds[1]); close(tfd); close(rfd);
-        goto done;
-    }
+    if (epfd < 0)
+        { push_log("E", "epoll errno=%d", errno); signal_ready(TUNNEL_ERR_NET); close(wfds[0]); close(wfds[1]); close(tfd); close(rfd); goto done; }
 
     {
         struct epoll_event ev;
@@ -445,10 +415,23 @@ static void *proxy_thread(void *arg) {
                     if (r == 0 || (errno != EINTR && errno != EAGAIN)) goto session_end;
                 }
                 switch (ft) {
-                case T_DATA:  { int cfd = ht_get(sid); if (cfd >= 0 && len > 0) send(cfd, payload, len, MSG_NOSIGNAL); break; }
-                case T_CLOSE: { int cfd = ht_get(sid); if (cfd >= 0) { epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL); ht_del(sid); close(cfd); } break; }
-                case T_PING:  tun_send(tfd, T_PONG, 0, NULL, 0); break;
-                case T_PONG:  atomic_store(&g_last_pong, (long)time(NULL)); break;
+                case T_DATA: {
+                    int cfd = ht_get(sid);
+                    if (cfd >= 0 && len > 0)
+                        send(cfd, payload, len, MSG_NOSIGNAL | MSG_DONTWAIT);
+                    break;
+                }
+                case T_CLOSE: {
+                    int cfd = ht_get(sid);
+                    if (cfd >= 0) {
+                        epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
+                        ht_del(sid);
+                        close(cfd);
+                    }
+                    break;
+                }
+                case T_PING: tun_send(tfd, T_PONG, 0, NULL, 0); break;
+                case T_PONG: atomic_store(&g_last_pong, (long)time(NULL)); break;
                 }
                 continue;
             }
@@ -458,6 +441,7 @@ static void *proxy_thread(void *arg) {
                 int cfd = accept(rfd, (struct sockaddr *)&ca, &cl);
                 if (cfd < 0) continue;
                 fcntl(cfd, F_SETFD, FD_CLOEXEC);
+                fcntl(cfd, F_SETFL, fcntl(cfd, F_GETFL, 0) | O_NONBLOCK);
                 uint32_t sid;
                 do { sid = (uint32_t)atomic_fetch_add(&g_next_sid, 1) & 0x7FFFFFFF; }
                 while (!sid || ht_get(sid) != -1);
@@ -468,7 +452,7 @@ static void *proxy_thread(void *arg) {
                 if (tun_send(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0)
                     { ht_del(sid); close(cfd); goto session_end; }
                 struct epoll_event cev;
-                cev.events   = EPOLLIN;
+                cev.events   = EPOLLIN | EPOLLERR | EPOLLHUP;
                 cev.data.u64 = ((uint64_t)sid << 32) | (uint32_t)cfd;
                 if (epoll_ctl(epfd, EPOLL_CTL_ADD, cfd, &cev) < 0)
                     { ht_del(sid); close(cfd); }
@@ -499,11 +483,9 @@ static void *proxy_thread(void *arg) {
 
 session_end:
     ht_close_all(epfd);
-
     pthread_mutex_lock(&g_mu);
     g_tfd = -1; g_rfd = -1; g_epfd = -1; g_wake_r = -1; g_wake_w = -1;
     pthread_mutex_unlock(&g_mu);
-
     close(epfd);
     shutdown(tfd, SHUT_RDWR); close(tfd);
     close(wfds[0]); close(wfds[1]);
