@@ -144,7 +144,7 @@ public class SimpleModeActivity extends ComponentActivity {
         hotspotInfoView       = findViewById(R.id.txtHotspotInfo);
 
         internalId = BtProxy.getOrCreateInternalId(this);
-        BtProxy.applyStoredGamingMode(this);
+        BtProxy.applyGamingMode(this);
         hideInternalId = getSharedPreferences(PREF_UI, MODE_PRIVATE).getBoolean(KEY_HIDE_ID, false);
         if (deviceIdView != null) deviceIdView.setText("ID: " + internalId);
         refreshDeviceIdVisibility();
