@@ -311,8 +311,8 @@ static int open_tunnel(void) {
         char uname[128] = {0}, udays[32] = {0};
         parse_hdr(h2, "X-User-Name:", uname, sizeof(uname));
         parse_hdr(h2, "X-User-Days:", udays, sizeof(udays));
-        if (uname[0]) push_log("I", "user=%s", uname);
-        if (udays[0]) push_log("I", "days=%s", udays);
+        if (uname[0]) push_log("I", "user_name=%s", uname);
+        if (udays[0]) push_log("I", "user_days=%s", udays);
         push_log("I", "tunnel ok");
         atomic_store(&g_last_pong, (long)time(NULL));
         return fd;
