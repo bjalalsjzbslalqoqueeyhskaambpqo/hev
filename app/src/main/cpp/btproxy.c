@@ -774,7 +774,6 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     }
     ht_init();
     g_running = 1;
-    g_reconnect_delay = RECONNECT_DELAY_MIN;
     atomic_store(&g_next_sid, 1);
     pthread_mutex_unlock(&g_mu);
 
