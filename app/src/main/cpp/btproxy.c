@@ -55,8 +55,48 @@ static const char *PROXY_IPS[] = {
 };
 #define PROXY_IP_COUNT 2
 
+/* ------------------------------------------------------------------
+ * Tunnel open result: distinguishes permanent auth failures from
+ * transient network errors so the main loop can decide whether to
+ * retry or abort.
+ * ------------------------------------------------------------------ */
+typedef enum {
+    TUNNEL_OK          =  0,
+    TUNNEL_ERR_TRANSIENT = -1,   /* network / handshake error – retry */
+    TUNNEL_ERR_AUTH      = -2,   /* 403 not_registered                */
+    TUNNEL_ERR_EXPIRED   = -3,   /* 403 expired                       */
+} tunnel_result_t;
+
+/* ------------------------------------------------------------------
+ * Ready-state values signalled to nativeStart's caller.
+ * ------------------------------------------------------------------ */
+#define READY_PENDING   0
+#define READY_OK        1
+#define READY_FAIL     -1   /* transient: start failed, may retry  */
+#define READY_AUTH_ERR -2   /* permanent: invalid / expired user   */
+
+static int resolve_proxy_ipv6(char out[][INET6_ADDRSTRLEN], int cap) {
+    struct addrinfo hints = {0}, *res = NULL;
+    hints.ai_family   = AF_INET6;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(PROXY_HOST, "80", &hints, &res) != 0 || !res) return 0;
+    int n = 0;
+    for (struct addrinfo *it = res; it && n < cap; it = it->ai_next) {
+        if (it->ai_family != AF_INET6 || !it->ai_addr) continue;
+        struct sockaddr_in6 *sa = (struct sockaddr_in6 *)it->ai_addr;
+        char ip[INET6_ADDRSTRLEN] = {0};
+        if (!inet_ntop(AF_INET6, &sa->sin6_addr, ip, sizeof(ip))) continue;
+        int dup = 0;
+        for (int i = 0; i < n; i++) if (strcmp(out[i], ip) == 0) { dup = 1; break; }
+        if (dup) continue;
+        snprintf(out[n], INET6_ADDRSTRLEN, "%s", ip);
+        n++;
+    }
+    freeaddrinfo(res);
+    return n;
+}
+
 static volatile int    g_running         = 0;
-static atomic_int      g_started         = 0;
 static int             g_relay_fd        = -1;
 static int             g_tun_fd          = -1;
 static int             g_epoll_fd        = -1;
@@ -71,7 +111,6 @@ static JavaVM         *g_jvm             = NULL;
 static jobject         g_svc             = NULL;
 static net_handle_t    g_net             = NETWORK_UNSPECIFIED;
 static pthread_t       g_main_thread     = 0;
-static int             g_main_joinable   = 0;
 static pthread_mutex_t g_mu              = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_wmu             = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_log_mu          = PTHREAD_MUTEX_INITIALIZER;
@@ -79,7 +118,7 @@ static char            g_logbuf[32768];
 static size_t          g_loglen          = 0;
 static pthread_mutex_t g_ready_mu        = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_ready_cv        = PTHREAD_COND_INITIALIZER;
-static int             g_ready_st        = 0;
+static int             g_ready_st        = READY_PENDING;
 static int             g_ht_inited       = 0;
 static int             g_gaming_mode     = 0;
 
@@ -167,34 +206,6 @@ static void push_log(const char *lvl, const char *fmt, ...) {
     pthread_mutex_unlock(&g_log_mu);
 }
 
-static int resolve_proxy_ipv6(char out[][INET6_ADDRSTRLEN], int cap) {
-    if (!g_running) return 0;
-    struct addrinfo hints = {0}, *res = NULL;
-    hints.ai_family   = AF_INET6;
-    hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(PROXY_HOST, "80", &hints, &res) != 0 || !res) return 0;
-    if (!g_running) { freeaddrinfo(res); return 0; }
-    int n = 0;
-    for (struct addrinfo *it = res; it && n < cap; it = it->ai_next) {
-        if (it->ai_family != AF_INET6 || !it->ai_addr) continue;
-        struct sockaddr_in6 *sa = (struct sockaddr_in6 *)it->ai_addr;
-        char ip[INET6_ADDRSTRLEN] = {0};
-        if (!inet_ntop(AF_INET6, &sa->sin6_addr, ip, sizeof(ip))) continue;
-        int dup = 0;
-        for (int i = 0; i < n; i++) if (strcmp(out[i], ip) == 0) { dup = 1; break; }
-        if (dup) continue;
-        snprintf(out[n], INET6_ADDRSTRLEN, "%s", ip);
-        n++;
-    }
-    freeaddrinfo(res);
-    return n;
-}
-
-#define OPEN_TUNNEL_OK       0
-#define OPEN_TUNNEL_ERR     -1
-#define OPEN_TUNNEL_INVALID -2
-#define OPEN_TUNNEL_EXPIRED -3
-
 static void wake_epoll(void) {
     pthread_mutex_lock(&g_mu);
     int w = g_wake_w;
@@ -219,7 +230,7 @@ static void protect_fd(int fd) {
     if (att) (*jvm)->DetachCurrentThread(jvm);
 }
 
-static void call_java_void(const char *method) {
+static void notify_reconnected(void) {
     pthread_mutex_lock(&g_mu);
     JavaVM *jvm = g_jvm; jobject svc = g_svc;
     pthread_mutex_unlock(&g_mu);
@@ -228,15 +239,28 @@ static void call_java_void(const char *method) {
     if ((*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK)
         { (*jvm)->AttachCurrentThread(jvm, &env, NULL); att = 1; }
     jclass cls = (*env)->GetObjectClass(env, svc);
-    jmethodID m = (*env)->GetMethodID(env, cls, method, "()V");
+    jmethodID m = (*env)->GetMethodID(env, cls, "onTunnelReconnected", "()V");
     if (m) (*env)->CallVoidMethod(env, svc, m);
     (*env)->DeleteLocalRef(env, cls);
     if (att) (*jvm)->DetachCurrentThread(jvm);
 }
 
-static void notify_reconnected(void)  { call_java_void("onTunnelReconnected"); }
-static void notify_invalid_user(void) { call_java_void("onInvalidUser"); }
-static void notify_expired_user(void) { call_java_void("onExpiredUser"); }
+/* Notify Java side of a permanent auth failure so it can update UI. */
+static void notify_auth_error(int expired) {
+    pthread_mutex_lock(&g_mu);
+    JavaVM *jvm = g_jvm; jobject svc = g_svc;
+    pthread_mutex_unlock(&g_mu);
+    if (!jvm || !svc) return;
+    JNIEnv *env = NULL; int att = 0;
+    if ((*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK)
+        { (*jvm)->AttachCurrentThread(jvm, &env, NULL); att = 1; }
+    jclass cls = (*env)->GetObjectClass(env, svc);
+    /* onAuthError(boolean expired) */
+    jmethodID m = (*env)->GetMethodID(env, cls, "onAuthError", "(Z)V");
+    if (m) (*env)->CallVoidMethod(env, svc, m, (jboolean)expired);
+    (*env)->DeleteLocalRef(env, cls);
+    if (att) (*jvm)->DetachCurrentThread(jvm);
+}
 
 static void tune_tun(int fd) {
     int v;
@@ -263,9 +287,10 @@ static int tun_send(int tfd, uint8_t type, uint32_t sid,
     struct iovec iov[2] = {{hdr, FRAME_HDR}, {(void *)data, dlen}};
     int niov = dlen ? 2 : 1;
     ssize_t total = FRAME_HDR + dlen, sent = 0;
-    pthread_mutex_lock(&g_wmu);
     while (sent < total) {
+        pthread_mutex_lock(&g_wmu);
         ssize_t n = writev(tfd, iov, niov);
+        pthread_mutex_unlock(&g_wmu);
         if (n > 0) {
             sent += n;
             if (sent < total) {
@@ -283,37 +308,19 @@ static int tun_send(int tfd, uint8_t type, uint32_t sid,
             continue;
         } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
             struct pollfd wp = {tfd, POLLOUT, 0};
-            if (poll(&wp, 1, WRITE_POLL_TIMEOUT_MS) <= 0) {
-                pthread_mutex_unlock(&g_wmu);
-                return -1;
-            }
+            if (poll(&wp, 1, WRITE_POLL_TIMEOUT_MS) <= 0) return -1;
         } else {
-            pthread_mutex_unlock(&g_wmu);
             return -1;
         }
     }
-    pthread_mutex_unlock(&g_wmu);
     return 0;
 }
 
 static int tun_recv_full(int fd, uint8_t *buf, int len, int ms) {
-    struct timespec deadline;
-    clock_gettime(CLOCK_MONOTONIC, &deadline);
-    deadline.tv_sec  += ms / 1000;
-    deadline.tv_nsec += (ms % 1000) * 1000000L;
-    if (deadline.tv_nsec >= 1000000000L) {
-        deadline.tv_sec++;
-        deadline.tv_nsec -= 1000000000L;
-    }
     int off = 0;
     while (off < len) {
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        long remaining_ms = (deadline.tv_sec  - now.tv_sec)  * 1000
-                          + (deadline.tv_nsec - now.tv_nsec) / 1000000L;
-        if (remaining_ms <= 0) return -2;
         struct pollfd p = {fd, POLLIN, 0};
-        int pr = poll(&p, 1, (int)remaining_ms);
+        int pr = poll(&p, 1, ms);
         if (pr < 0) { if (errno == EINTR) continue; return -1; }
         if (pr == 0) return -2;
         ssize_t n = recv(fd, buf + off, len - off, 0);
@@ -354,22 +361,45 @@ static int try_connect_ip(const char *ip, int timeout_ms) {
     if (inet_pton(AF_INET6, ip, &a.sin6_addr) != 1) return -1;
     int fd = socket(AF_INET6, SOCK_STREAM, 0);
     if (fd < 0) return -1;
-    protect_fd(fd);
+    protect_fd(fd); tune_tun(fd);
     int fl = fcntl(fd, F_GETFL, 0); fcntl(fd, F_SETFL, fl | O_NONBLOCK);
     int r = connect(fd, (struct sockaddr *)&a, sizeof(a));
-    if (r != 0 && errno != EINPROGRESS) { close(fd); return -1; }
-    if (errno == EINPROGRESS) {
-        struct pollfd p = {fd, POLLOUT, 0};
-        if (poll(&p, 1, timeout_ms) <= 0) { close(fd); return -1; }
-        int e = 0; socklen_t el = sizeof(e);
-        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) < 0 || e != 0) { close(fd); return -1; }
-    }
+    if (r == 0) { fcntl(fd, F_SETFL, fl); return fd; }
+    if (errno != EINPROGRESS) { close(fd); return -1; }
+    struct pollfd p = {fd, POLLOUT, 0};
+    if (poll(&p, 1, timeout_ms) <= 0) { close(fd); return -1; }
+    int e = 0; socklen_t el = sizeof(e);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) < 0 || e != 0) { close(fd); return -1; }
     fcntl(fd, F_SETFL, fl);
-    tune_tun(fd);
     return fd;
 }
 
-static int open_tunnel(int *out_fd) {
+/*
+ * Check whether a 403 response body/headers contain a known token.
+ * Reads up to sizeof(extra)-1 bytes of body beyond the headers.
+ * Returns TUNNEL_ERR_AUTH or TUNNEL_ERR_EXPIRED; call only on 403.
+ */
+static tunnel_result_t classify_403(int fd, const char *hdrs) {
+    char extra[256] = {0};
+    recv(fd, extra, sizeof(extra) - 1, MSG_DONTWAIT);
+
+    if (strstr(hdrs, "not_registered") || strstr(extra, "not_registered")) {
+        push_log("E", "usuario no registrado");
+        return TUNNEL_ERR_AUTH;
+    }
+    if (strstr(hdrs, "expired") || strstr(extra, "expired")) {
+        push_log("E", "usuario expirado");
+        return TUNNEL_ERR_EXPIRED;
+    }
+    push_log("E", "error 403");
+    return TUNNEL_ERR_AUTH;   /* unknown 403: treat as invalid user */
+}
+
+/*
+ * open_tunnel – connect, perform HTTP upgrade handshake, return fd >= 0
+ * on success or a negative tunnel_result_t on failure.
+ */
+static tunnel_result_t open_tunnel(int *fd_out) {
     push_log("I", "resolviendo conexion...");
 
     int order[PROXY_IP_COUNT];
@@ -377,43 +407,43 @@ static int open_tunnel(int *out_fd) {
     if ((time(NULL) & 1) == 0) { int tmp = order[0]; order[0] = order[1]; order[1] = tmp; }
 
     int fd = -1;
-    for (int i = 0; i < PROXY_IP_COUNT && fd < 0 && g_running; i++) {
+    for (int i = 0; i < PROXY_IP_COUNT && fd < 0; i++) {
         push_log("I", "probando ip=%s", PROXY_IPS[order[i]]);
         fd = try_connect_ip(PROXY_IPS[order[i]], HAPPY_DELAY_MS);
         if (fd < 0 && i < PROXY_IP_COUNT - 1)
             push_log("I", "sin respuesta en %dms, probando siguiente", HAPPY_DELAY_MS);
     }
 
-    if (fd < 0 && g_running) {
+    if (fd < 0) {
         char dyn[RESOLVED_IP_MAX][INET6_ADDRSTRLEN] = {{0}};
         int dn = resolve_proxy_ipv6(dyn, RESOLVED_IP_MAX);
-        if (dn > 0 && g_running) {
-            push_log("I", "fallback dns ipv6 count=%d, pasada rapida", dn);
-            for (int i = 0; i < dn && fd < 0 && g_running; i++) {
+        if (dn > 0) {
+            push_log("I", "fallback dns ipv6 count=%d", dn);
+            for (int i = 0; i < dn && fd < 0; i++) {
                 push_log("I", "probando dns ip=%s", dyn[i]);
-                fd = try_connect_ip(dyn[i], HAPPY_DELAY_MS);
-            }
-        }
-        if (fd < 0 && dn > 0 && g_running) {
-            push_log("I", "pasada lenta dns ipv6");
-            for (int i = 0; i < dn && fd < 0 && g_running; i++) {
-                push_log("I", "reintentando dns ip=%s timeout=%ds", dyn[i], CONNECT_TIMEOUT_SEC);
                 fd = try_connect_ip(dyn[i], CONNECT_TIMEOUT_SEC * 1000);
             }
         }
     }
 
-    if (!g_running) { if (fd >= 0) close(fd); return OPEN_TUNNEL_ERR; }
-    if (fd < 0) { push_log("E", "tunnel connect failed"); return OPEN_TUNNEL_ERR; }
+    if (fd < 0) {
+        push_log("E", "tunnel connect failed");
+        return TUNNEL_ERR_TRANSIENT;
+    }
     push_log("I", "conexion establecida");
 
     atomic_store(&g_last_pong, (long)time(NULL));
 
+    /* First HTTP round-trip */
     char req1[256], h1[2048];
     snprintf(req1, sizeof(req1), "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", PROXY_HOST);
     send(fd, req1, strlen(req1), MSG_NOSIGNAL);
-    if (recv_eoh(fd, h1, sizeof(h1), HANDSHAKE_TIMEOUT_SEC) < 0) { close(fd); return OPEN_TUNNEL_ERR; }
+    if (recv_eoh(fd, h1, sizeof(h1), HANDSHAKE_TIMEOUT_SEC) < 0) {
+        close(fd);
+        return TUNNEL_ERR_TRANSIENT;
+    }
 
+    /* Upgrade request */
     char req2[1024], h2[4096];
     snprintf(req2, sizeof(req2),
         "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
@@ -422,25 +452,15 @@ static int open_tunnel(int *out_fd) {
     send(fd, req2, strlen(req2), MSG_NOSIGNAL);
     int hlen = recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
 
-    int code = -1; sscanf(h2, "HTTP/%*d.%*d %d", &code);
+    int code = -1;
+    sscanf(h2, "HTTP/%*d.%*d %d", &code);
+
     if (hlen < 0 || code != 101) {
-        if (code == 403) {
-            char body[256] = {0};
-            recv(fd, body, sizeof(body) - 1, MSG_DONTWAIT);
-            close(fd);
-            if (strstr(h2, "not_registered") || strstr(body, "not_registered")) {
-                push_log("E", "usuario no registrado");
-                return OPEN_TUNNEL_INVALID;
-            } else if (strstr(h2, "expired") || strstr(body, "expired")) {
-                push_log("E", "usuario expirado");
-                return OPEN_TUNNEL_EXPIRED;
-            } else {
-                push_log("E", "error 403");
-                return OPEN_TUNNEL_ERR;
-            }
-        }
-        push_log("E", "handshake failed code=%d", code);
-        close(fd); return OPEN_TUNNEL_ERR;
+        tunnel_result_t res = TUNNEL_ERR_TRANSIENT;
+        if (code == 403) res = classify_403(fd, h2);
+        else             push_log("E", "handshake failed code=%d", code);
+        close(fd);
+        return res;
     }
 
     char uname[128] = {0}, udays[32] = {0};
@@ -449,8 +469,9 @@ static int open_tunnel(int *out_fd) {
     if (uname[0]) push_log("I", "user_name=%s", uname);
     if (udays[0]) push_log("I", "user_days=%s", udays);
     push_log("I", "tunnel ok");
-    *out_fd = fd;
-    return OPEN_TUNNEL_OK;
+
+    *fd_out = fd;
+    return TUNNEL_OK;
 }
 
 typedef struct { int tfd; int epoch; int epfd; int wake_w; } thr_t;
@@ -470,7 +491,6 @@ static void *tunnel_reader(void *arg) {
                 (long)time(NULL) - atomic_load(&g_last_pong) > PONG_TIMEOUT_SEC) {
                 push_log("E", "pong timeout");
                 uint8_t b = 1; write(wake_w, &b, 1);
-                break;
             }
             continue;
         }
@@ -575,46 +595,44 @@ static int make_relay_socket(int port) {
     return rfd;
 }
 
+/* Signal the ready condition variable from the main thread. */
+static void signal_ready(int st) {
+    pthread_mutex_lock(&g_ready_mu);
+    if (g_ready_st == READY_PENDING) {
+        g_ready_st = st;
+        pthread_cond_broadcast(&g_ready_cv);
+    }
+    pthread_mutex_unlock(&g_ready_mu);
+}
+
 static void *main_thread(void *arg) {
-    int port = (int)(intptr_t)arg;
+    int port     = (int)(intptr_t)arg;
     int is_first = 1;
 
     while (g_running) {
         int tfd = -1;
-        int tres = open_tunnel(&tfd);
+        tunnel_result_t tres = open_tunnel(&tfd);
 
-        if (tres == OPEN_TUNNEL_INVALID) {
-            push_log("E", "usuario invalido, deteniendo");
-            g_running = 0;
-            pthread_mutex_lock(&g_ready_mu);
-            if (g_ready_st == 0) { g_ready_st = -1; pthread_cond_broadcast(&g_ready_cv); }
-            pthread_mutex_unlock(&g_ready_mu);
-            notify_invalid_user();
-            break;
-        }
+        if (tres != TUNNEL_OK) {
+            /* Permanent auth failure: notify Java, stop without retry. */
+            if (tres == TUNNEL_ERR_AUTH || tres == TUNNEL_ERR_EXPIRED) {
+                notify_auth_error(tres == TUNNEL_ERR_EXPIRED);
+                signal_ready(READY_AUTH_ERR);
+                break;
+            }
 
-        if (tres == OPEN_TUNNEL_EXPIRED) {
-            push_log("E", "usuario expirado, deteniendo");
-            g_running = 0;
-            pthread_mutex_lock(&g_ready_mu);
-            if (g_ready_st == 0) { g_ready_st = -1; pthread_cond_broadcast(&g_ready_cv); }
-            pthread_mutex_unlock(&g_ready_mu);
-            notify_expired_user();
-            break;
-        }
-
-        if (tres != OPEN_TUNNEL_OK) {
-            pthread_mutex_lock(&g_ready_mu);
-            if (g_ready_st == 0) { g_ready_st = -1; pthread_cond_broadcast(&g_ready_cv); }
-            pthread_mutex_unlock(&g_ready_mu);
+            /* Transient failure: signal nativeStart if still waiting,
+               then back off and retry. */
+            signal_ready(READY_FAIL);
             if (!g_running) break;
             push_log("E", "retry in %ds", g_reconnect_delay);
             for (int i = 0; i < g_reconnect_delay && g_running; i++) sleep(1);
-            if (g_reconnect_delay < RECONNECT_DELAY_MAX) g_reconnect_delay *= 2;
-            if (g_reconnect_delay > RECONNECT_DELAY_MAX) g_reconnect_delay = RECONNECT_DELAY_MAX;
+            g_reconnect_delay = g_reconnect_delay < RECONNECT_DELAY_MAX
+                                ? g_reconnect_delay * 2 : RECONNECT_DELAY_MAX;
             continue;
         }
 
+        /* Successful connection: reset backoff. */
         g_reconnect_delay = RECONNECT_DELAY_MIN;
 
         int rfd = make_relay_socket(port);
@@ -654,7 +672,11 @@ static void *main_thread(void *arg) {
 
         thr_t *ta = malloc(sizeof(*ta));
         thr_t *tb = malloc(sizeof(*tb));
-        if (!ta || !tb) { free(ta); free(tb); close(epfd); close(wfds[0]); close(wfds[1]); close(rfd); close(tfd); sleep(1); continue; }
+        if (!ta || !tb) {
+            free(ta); free(tb);
+            close(epfd); close(wfds[0]); close(wfds[1]); close(rfd); close(tfd);
+            sleep(1); continue;
+        }
         ta->tfd = tfd; ta->epoch = epoch; ta->epfd = epfd; ta->wake_w = wfds[1];
         tb->tfd = tfd; tb->epoch = epoch; tb->epfd = epfd; tb->wake_w = wfds[1];
 
@@ -662,12 +684,10 @@ static void *main_thread(void *arg) {
         pthread_create(&tr, NULL, tunnel_reader, ta); pthread_detach(tr);
         pthread_create(&tk, NULL, keepalive,      tb); pthread_detach(tk);
 
-        atomic_store(&g_started, 1);
         push_log("I", "relay port=%d epoch=%d", port, epoch);
 
-        pthread_mutex_lock(&g_ready_mu);
-        if (g_ready_st == 0) { g_ready_st = 1; pthread_cond_broadcast(&g_ready_cv); }
-        pthread_mutex_unlock(&g_ready_mu);
+        /* Signal nativeStart that we are up (only the first time). */
+        signal_ready(READY_OK);
 
         if (!is_first) notify_reconnected();
         is_first = 0;
@@ -683,16 +703,12 @@ static void *main_thread(void *arg) {
                 int      efd = events[i].data.fd;
                 uint32_t evs = events[i].events;
 
-                if (efd == wfds[0]) {
-                    dead = 1;
-                    break;
-                }
+                if (efd == wfds[0]) { dead = 1; break; }
 
                 if (efd == rfd) {
                     struct sockaddr_in ca; socklen_t cl = sizeof(ca);
                     int cfd = accept(rfd, (struct sockaddr *)&ca, &cl);
                     if (cfd < 0) continue;
-
                     int fdc = fcntl(cfd, F_GETFD, 0);
                     if (fdc >= 0) fcntl(cfd, F_SETFD, fdc | FD_CLOEXEC);
 
@@ -745,7 +761,6 @@ static void *main_thread(void *arg) {
         push_log("E", "tunnel dropped epoch=%d", epoch);
 
         atomic_fetch_add(&g_tunnel_epoch, 1);
-
         ht_close_all(epfd);
 
         pthread_mutex_lock(&g_mu);
@@ -760,11 +775,9 @@ static void *main_thread(void *arg) {
         close(wfds[0]);
         close(wfds[1]);
 
-        atomic_store(&g_started, 0);
         if (g_running) sleep(1);
     }
 
-    atomic_store(&g_started, 0);
     return NULL;
 }
 
@@ -775,9 +788,7 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
                                           jint port, jobject svc, jstring iid) {
     pthread_mutex_lock(&g_mu);
     if (g_running) { pthread_mutex_unlock(&g_mu); return 0; }
-    int joinable = g_main_joinable;
-    pthread_t old = joinable ? g_main_thread : 0;
-    g_main_joinable = 0;
+    pthread_t old = g_main_thread;
     pthread_mutex_unlock(&g_mu);
 
     if (old != 0) {
@@ -796,41 +807,36 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     }
     ht_init();
     g_running = 1;
-    atomic_store(&g_started, 0);
     g_reconnect_delay = RECONNECT_DELAY_MIN;
     atomic_store(&g_next_sid, 1);
     pthread_mutex_unlock(&g_mu);
 
-    pthread_mutex_lock(&g_ready_mu); g_ready_st = 0; pthread_mutex_unlock(&g_ready_mu);
-
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
+    pthread_mutex_lock(&g_ready_mu); g_ready_st = READY_PENDING; pthread_mutex_unlock(&g_ready_mu);
 
     pthread_t thr;
-    if (pthread_create(&thr, &attr, main_thread, (void *)(intptr_t)port) != 0) {
-        pthread_attr_destroy(&attr);
+    if (pthread_create(&thr, NULL, main_thread, (void *)(intptr_t)port) != 0) {
         pthread_mutex_lock(&g_mu); g_running = 0;
         (*env)->DeleteGlobalRef(env, g_svc); g_svc = NULL; g_jvm = NULL;
         pthread_mutex_unlock(&g_mu); return -1;
     }
-    pthread_attr_destroy(&attr);
-
-    pthread_mutex_lock(&g_mu);
-    g_main_thread  = thr;
-    g_main_joinable = 1;
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_lock(&g_mu); g_main_thread = thr; pthread_mutex_unlock(&g_mu);
+    pthread_detach(thr);
 
     struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); ts.tv_sec += 12;
     pthread_mutex_lock(&g_ready_mu);
-    while (g_ready_st == 0)
+    while (g_ready_st == READY_PENDING)
         if (pthread_cond_timedwait(&g_ready_cv, &g_ready_mu, &ts) != 0) break;
     int st = g_ready_st;
     pthread_mutex_unlock(&g_ready_mu);
 
-    if (st != 1) { Java_com_blacktunnel_BtProxy_nativeStop(env, clazz); return -1; }
-    push_log("I", "nativeStart ok");
-    return 0;
+    if (st == READY_OK) {
+        push_log("I", "nativeStart ok");
+        return 0;
+    }
+
+    /* Any non-OK state (FAIL, AUTH_ERR, or timeout): tear down and report. */
+    Java_com_blacktunnel_BtProxy_nativeStop(env, clazz);
+    return (st == READY_AUTH_ERR) ? -2 : -1;
 }
 
 JNIEXPORT void JNICALL
@@ -850,21 +856,23 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
 
     atomic_fetch_add(&g_tunnel_epoch, 1);
 
-    if (ww >= 0) { uint8_t b = 1; write(ww, &b, 1); }
+    if (ww   >= 0) { uint8_t b = 1; write(ww, &b, 1); }
     if (epfd >= 0) close(epfd);
     if (rfd  >= 0) { shutdown(rfd, SHUT_RDWR); close(rfd); }
     if (tfd  >= 0) { shutdown(tfd, SHUT_RDWR); close(tfd); }
     if (wr   >= 0) close(wr);
     if (ww   >= 0) close(ww);
 
+    /* Unblock any nativeStart still waiting. */
     pthread_mutex_lock(&g_ready_mu);
-    g_ready_st = -1; pthread_cond_broadcast(&g_ready_cv);
+    if (g_ready_st == READY_PENDING) {
+        g_ready_st = READY_FAIL;
+        pthread_cond_broadcast(&g_ready_cv);
+    }
     pthread_mutex_unlock(&g_ready_mu);
 
-    for (int i = 0; i < 50 && atomic_load(&g_started); i++) usleep(10000);
     ht_close_all(-1);
     if (svc) (*env)->DeleteGlobalRef(env, svc);
-    atomic_store(&g_started, 0);
 }
 
 JNIEXPORT jstring JNICALL
@@ -891,11 +899,6 @@ Java_com_blacktunnel_BtProxy_nativeSetGamingMode(JNIEnv *env, jclass clazz, jboo
     pthread_mutex_lock(&g_mu); g_gaming_mode = enabled ? 1 : 0; pthread_mutex_unlock(&g_mu);
 }
 
-JNIEXPORT void JNICALL
-Java_com_blacktunnel_BtProxy_nativeApplyMode(JNIEnv *env, jclass clazz, jboolean enabled) {
-    Java_com_blacktunnel_BtProxy_nativeSetGamingMode(env, clazz, enabled);
-}
-
 static JNINativeMethod g_methods[] = {
     {"nativeStart",        "(ILandroid/net/VpnService;Ljava/lang/String;)I",
                            (void *)Java_com_blacktunnel_BtProxy_nativeStart},
@@ -907,8 +910,6 @@ static JNINativeMethod g_methods[] = {
                            (void *)Java_com_blacktunnel_BtProxy_nativeSetNetwork},
     {"nativeSetGamingMode","(Z)V",
                            (void *)Java_com_blacktunnel_BtProxy_nativeSetGamingMode},
-    {"nativeApplyMode",    "(Z)V",
-                           (void *)Java_com_blacktunnel_BtProxy_nativeApplyMode},
 };
 
 JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *r) {
