@@ -601,7 +601,7 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     }
     pthread_mutex_lock(&g_mu); g_main_thread = thr; pthread_mutex_unlock(&g_mu);
 
-    push_log("I", "nativeStart lanzado");
+    push_log("I", "nativeStart lanzado ok");
     return 0;
 }
 
