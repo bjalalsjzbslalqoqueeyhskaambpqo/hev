@@ -73,7 +73,7 @@ public class BtVpnService extends VpnService {
         return START_STICKY;
     }
 
-        @Override
+    @Override
     public void onDestroy() {
         executor.execute(this::stopAll);
         executor.shutdown();
@@ -106,7 +106,9 @@ public class BtVpnService extends VpnService {
         safeShutdown();
     }
 
-    private void safeShutdown() {
+    private synchronized void safeShutdown() {
+        boolean hasResources = running || sRunning || hevThread != null || tunPfd != null || hevTunFd >= 0;
+        if (!hasResources) return;
         running = false;
         sRunning = false;
         log("safeShutdown: stopping");
@@ -132,7 +134,6 @@ public class BtVpnService extends VpnService {
         } catch (Throwable t) {
             log("hev: start failed " + t.getClass().getSimpleName());
             try { stopHevStack(); } catch (Throwable ignored) {}
-        log("safeShutdown: done");
             return false;
         }
     }

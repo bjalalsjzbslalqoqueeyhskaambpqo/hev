@@ -417,8 +417,10 @@ static tunnel_result_t open_tunnel(int *fd_out) {
     // payload 1: preflight against proxy
     char payload1[256], h1[2048];
     snprintf(payload1, sizeof(payload1), "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", PROXY_HOST);
+    push_log("I", "send payload1 preflight host=%s", PROXY_HOST);
     send(fd, payload1, strlen(payload1), MSG_NOSIGNAL);
     if (recv_eoh(fd, h1, sizeof(h1), HANDSHAKE_TIMEOUT_SEC) < 0) {
+        push_log("E", "payload1 sin respuesta");
         close(fd);
         return TUNNEL_ERR_TRANSIENT;
     }
@@ -429,11 +431,13 @@ static tunnel_result_t open_tunnel(int *fd_out) {
         "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
         "Connection: Upgrade\r\nAction: tunnel\r\nX-Internal-ID: %s\r\n\r\n",
         TUNNEL_HOST, g_internal_id[0] ? g_internal_id : "unknown");
+    push_log("I", "send payload2 upgrade id=%s", g_internal_id[0] ? g_internal_id : "unknown");
     send(fd, payload2, strlen(payload2), MSG_NOSIGNAL);
     int hlen = recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
 
     int code = -1;
     sscanf(h2, "HTTP/%*d.%*d %d", &code);
+    push_log("I", "payload2 response code=%d", code);
 
     if (hlen < 0 || code != 101) {
         tunnel_result_t res = TUNNEL_ERR_TRANSIENT;
