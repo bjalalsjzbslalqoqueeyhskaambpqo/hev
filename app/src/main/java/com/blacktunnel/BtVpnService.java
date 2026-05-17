@@ -23,9 +23,12 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -33,6 +36,7 @@ public class BtVpnService extends VpnService {
 
     public static final String ACTION_START = "com.blacktunnel.START";
     public static final String ACTION_STOP  = "com.blacktunnel.STOP";
+    public static final String ACTION_APPLY = "com.blacktunnel.APPLY";
 
     private static final String CH_ID = "bt_vpn";
     private static final int    NF_ID = 33;
@@ -53,6 +57,23 @@ public class BtVpnService extends VpnService {
     private volatile ConnectivityManager.NetworkCallback netCallback;
 
     public static boolean isRunningState() { return sRunning; }
+
+    public static String getHotspotIp() {
+        try {
+            InetAddress ip = InetAddress.getByName("192.168.43.1");
+            return ip.getHostAddress();
+        } catch (UnknownHostException ignored) {
+            return null;
+        }
+    }
+
+    public static void startLocalProxy(int port) {
+        log("I startLocalProxy port=" + port);
+    }
+
+    public static void stopLocalProxy() {
+        log("I stopLocalProxy");
+    }
 
     public static void log(String message) {
         String line = "[" + new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date())
@@ -329,6 +350,8 @@ final class BtProxy {
 
     private static final String PREFS           = "strike_prefs";
     private static final String KEY_INTERNAL_ID = "internal_id";
+    private static final String KEY_GAMING_MODE = "gaming_mode";
+    private static final String KEY_GAMING_APPS = "gaming_selected_packages";
 
     private static final boolean NATIVE_READY;
     private static final String  NATIVE_LOAD_ERROR;
@@ -377,6 +400,33 @@ final class BtProxy {
         String id = "STRK-" + sha256(seed).substring(0, 48);
         sp.edit().putString(KEY_INTERNAL_ID, id).apply();
         return id;
+    }
+
+    static void applyStoredGamingMode(Context ctx) {
+        isGamingMode(ctx);
+    }
+
+    static boolean isGamingMode(Context ctx) {
+        SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        return sp.getBoolean(KEY_GAMING_MODE, false);
+    }
+
+    static void setGamingMode(Context ctx, boolean enabled) {
+        SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        sp.edit().putBoolean(KEY_GAMING_MODE, enabled).apply();
+    }
+
+    static List<String> getGamingSelectedPackages(Context ctx) {
+        SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        Set<String> raw = sp.getStringSet(KEY_GAMING_APPS, Collections.emptySet());
+        if (raw == null || raw.isEmpty()) return new ArrayList<>();
+        return new ArrayList<>(raw);
+    }
+
+    static void setGamingSelectedPackages(Context ctx, List<String> packages) {
+        SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        Set<String> value = packages == null ? new HashSet<>() : new HashSet<>(packages);
+        sp.edit().putStringSet(KEY_GAMING_APPS, value).apply();
     }
 
     private static String sha256(String v) {
