@@ -36,13 +36,9 @@
 #define RELAY_BACKLOG          512
 #define PONG_TIMEOUT_SEC       120
 #define KEEPALIVE_INTERVAL_SEC 10
-#define RECONNECT_DELAY_MIN    2
-#define RECONNECT_DELAY_MAX    30
 #define CONNECT_TIMEOUT_SEC    15
 #define HANDSHAKE_TIMEOUT_SEC  4
 #define MAX_EPOLL_EVENTS       32
-#define HAPPY_DELAY_MS         200
-#define RESOLVED_IP_MAX        8
 #define WRITE_POLL_TIMEOUT_MS  500
 
 #define PROXY_HOST  "emailmarketing.personal.com.ar"
@@ -67,27 +63,6 @@ typedef enum {
 #define READY_FAIL     -1
 #define READY_AUTH_ERR -2
 
-static int resolve_proxy_ipv6(char out[][INET6_ADDRSTRLEN], int cap) {
-    struct addrinfo hints = {0}, *res = NULL;
-    hints.ai_family   = AF_INET6;
-    hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(PROXY_HOST, "80", &hints, &res) != 0 || !res) return 0;
-    int n = 0;
-    for (struct addrinfo *it = res; it && n < cap; it = it->ai_next) {
-        if (it->ai_family != AF_INET6 || !it->ai_addr) continue;
-        struct sockaddr_in6 *sa = (struct sockaddr_in6 *)it->ai_addr;
-        char ip[INET6_ADDRSTRLEN] = {0};
-        if (!inet_ntop(AF_INET6, &sa->sin6_addr, ip, sizeof(ip))) continue;
-        int dup = 0;
-        for (int i = 0; i < n; i++) if (strcmp(out[i], ip) == 0) { dup = 1; break; }
-        if (dup) continue;
-        snprintf(out[n], INET6_ADDRSTRLEN, "%s", ip);
-        n++;
-    }
-    freeaddrinfo(res);
-    return n;
-}
-
 static volatile int    g_running         = 0;
 static int             g_relay_fd        = -1;
 static int             g_tun_fd          = -1;
@@ -111,7 +86,6 @@ static pthread_mutex_t g_ready_mu        = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_ready_cv        = PTHREAD_COND_INITIALIZER;
 static int             g_ready_st        = READY_PENDING;
 static int             g_ht_inited       = 0;
-static int             g_gaming_mode     = 0;
 
 #define HT_SIZE 4096
 #define HT_MASK (HT_SIZE - 1)
@@ -197,13 +171,6 @@ static void push_log(const char *lvl, const char *fmt, ...) {
     pthread_mutex_unlock(&g_log_mu);
 }
 
-static void wake_epoll(void) {
-    pthread_mutex_lock(&g_mu);
-    int w = g_wake_w;
-    pthread_mutex_unlock(&g_mu);
-    if (w >= 0) { uint8_t b = 1; write(w, &b, 1); }
-}
-
 static void protect_fd(int fd) {
     pthread_mutex_lock(&g_mu);
     net_handle_t net = g_net;
@@ -217,21 +184,6 @@ static void protect_fd(int fd) {
     jclass cls = (*env)->GetObjectClass(env, svc);
     jmethodID m = (*env)->GetMethodID(env, cls, "protect", "(I)Z");
     if (m) (*env)->CallBooleanMethod(env, svc, m, fd);
-    (*env)->DeleteLocalRef(env, cls);
-    if (att) (*jvm)->DetachCurrentThread(jvm);
-}
-
-static void notify_reconnected(void) {
-    pthread_mutex_lock(&g_mu);
-    JavaVM *jvm = g_jvm; jobject svc = g_svc;
-    pthread_mutex_unlock(&g_mu);
-    if (!jvm || !svc) return;
-    JNIEnv *env = NULL; int att = 0;
-    if ((*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK)
-        { (*jvm)->AttachCurrentThread(jvm, &env, NULL); att = 1; }
-    jclass cls = (*env)->GetObjectClass(env, svc);
-    jmethodID m = (*env)->GetMethodID(env, cls, "onTunnelReconnected", "()V");
-    if (m) (*env)->CallVoidMethod(env, svc, m);
     (*env)->DeleteLocalRef(env, cls);
     if (att) (*jvm)->DetachCurrentThread(jvm);
 }
