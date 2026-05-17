@@ -56,10 +56,12 @@ static const char *PROXY_IPS[] = {
 #define PROXY_IP_COUNT 2
 
 static int resolve_proxy_ipv6(char out[][INET6_ADDRSTRLEN], int cap) {
+    if (!g_running) return 0;
     struct addrinfo hints = {0}, *res = NULL;
     hints.ai_family   = AF_INET6;
     hints.ai_socktype = SOCK_STREAM;
     if (getaddrinfo(PROXY_HOST, "80", &hints, &res) != 0 || !res) return 0;
+    if (!g_running) { freeaddrinfo(res); return 0; }
     int n = 0;
     for (struct addrinfo *it = res; it && n < cap; it = it->ai_next) {
         if (it->ai_family != AF_INET6 || !it->ai_addr) continue;
@@ -261,10 +263,9 @@ static int tun_send(int tfd, uint8_t type, uint32_t sid,
     struct iovec iov[2] = {{hdr, FRAME_HDR}, {(void *)data, dlen}};
     int niov = dlen ? 2 : 1;
     ssize_t total = FRAME_HDR + dlen, sent = 0;
+    pthread_mutex_lock(&g_wmu);
     while (sent < total) {
-        pthread_mutex_lock(&g_wmu);
         ssize_t n = writev(tfd, iov, niov);
-        pthread_mutex_unlock(&g_wmu);
         if (n > 0) {
             sent += n;
             if (sent < total) {
@@ -282,19 +283,37 @@ static int tun_send(int tfd, uint8_t type, uint32_t sid,
             continue;
         } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
             struct pollfd wp = {tfd, POLLOUT, 0};
-            if (poll(&wp, 1, WRITE_POLL_TIMEOUT_MS) <= 0) return -1;
+            if (poll(&wp, 1, WRITE_POLL_TIMEOUT_MS) <= 0) {
+                pthread_mutex_unlock(&g_wmu);
+                return -1;
+            }
         } else {
+            pthread_mutex_unlock(&g_wmu);
             return -1;
         }
     }
+    pthread_mutex_unlock(&g_wmu);
     return 0;
 }
 
 static int tun_recv_full(int fd, uint8_t *buf, int len, int ms) {
+    struct timespec deadline;
+    clock_gettime(CLOCK_MONOTONIC, &deadline);
+    deadline.tv_sec  += ms / 1000;
+    deadline.tv_nsec += (ms % 1000) * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec++;
+        deadline.tv_nsec -= 1000000000L;
+    }
     int off = 0;
     while (off < len) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        long remaining_ms = (deadline.tv_sec  - now.tv_sec)  * 1000
+                          + (deadline.tv_nsec - now.tv_nsec) / 1000000L;
+        if (remaining_ms <= 0) return -2;
         struct pollfd p = {fd, POLLIN, 0};
-        int pr = poll(&p, 1, ms);
+        int pr = poll(&p, 1, (int)remaining_ms);
         if (pr < 0) { if (errno == EINTR) continue; return -1; }
         if (pr == 0) return -2;
         ssize_t n = recv(fd, buf + off, len - off, 0);
@@ -335,16 +354,18 @@ static int try_connect_ip(const char *ip, int timeout_ms) {
     if (inet_pton(AF_INET6, ip, &a.sin6_addr) != 1) return -1;
     int fd = socket(AF_INET6, SOCK_STREAM, 0);
     if (fd < 0) return -1;
-    protect_fd(fd); tune_tun(fd);
+    protect_fd(fd);
     int fl = fcntl(fd, F_GETFL, 0); fcntl(fd, F_SETFL, fl | O_NONBLOCK);
     int r = connect(fd, (struct sockaddr *)&a, sizeof(a));
-    if (r == 0) { fcntl(fd, F_SETFL, fl); return fd; }
-    if (errno != EINPROGRESS) { close(fd); return -1; }
-    struct pollfd p = {fd, POLLOUT, 0};
-    if (poll(&p, 1, timeout_ms) <= 0) { close(fd); return -1; }
-    int e = 0; socklen_t el = sizeof(e);
-    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) < 0 || e != 0) { close(fd); return -1; }
+    if (r != 0 && errno != EINPROGRESS) { close(fd); return -1; }
+    if (errno == EINPROGRESS) {
+        struct pollfd p = {fd, POLLOUT, 0};
+        if (poll(&p, 1, timeout_ms) <= 0) { close(fd); return -1; }
+        int e = 0; socklen_t el = sizeof(e);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) < 0 || e != 0) { close(fd); return -1; }
+    }
     fcntl(fd, F_SETFL, fl);
+    tune_tun(fd);
     return fd;
 }
 
@@ -356,25 +377,33 @@ static int open_tunnel(int *out_fd) {
     if ((time(NULL) & 1) == 0) { int tmp = order[0]; order[0] = order[1]; order[1] = tmp; }
 
     int fd = -1;
-    for (int i = 0; i < PROXY_IP_COUNT && fd < 0; i++) {
+    for (int i = 0; i < PROXY_IP_COUNT && fd < 0 && g_running; i++) {
         push_log("I", "probando ip=%s", PROXY_IPS[order[i]]);
         fd = try_connect_ip(PROXY_IPS[order[i]], HAPPY_DELAY_MS);
         if (fd < 0 && i < PROXY_IP_COUNT - 1)
             push_log("I", "sin respuesta en %dms, probando siguiente", HAPPY_DELAY_MS);
     }
 
-    if (fd < 0) {
+    if (fd < 0 && g_running) {
         char dyn[RESOLVED_IP_MAX][INET6_ADDRSTRLEN] = {{0}};
         int dn = resolve_proxy_ipv6(dyn, RESOLVED_IP_MAX);
-        if (dn > 0) {
-            push_log("I", "fallback dns ipv6 count=%d", dn);
-            for (int i = 0; i < dn && fd < 0; i++) {
+        if (dn > 0 && g_running) {
+            push_log("I", "fallback dns ipv6 count=%d, pasada rapida", dn);
+            for (int i = 0; i < dn && fd < 0 && g_running; i++) {
                 push_log("I", "probando dns ip=%s", dyn[i]);
+                fd = try_connect_ip(dyn[i], HAPPY_DELAY_MS);
+            }
+        }
+        if (fd < 0 && dn > 0 && g_running) {
+            push_log("I", "pasada lenta dns ipv6");
+            for (int i = 0; i < dn && fd < 0 && g_running; i++) {
+                push_log("I", "reintentando dns ip=%s timeout=%ds", dyn[i], CONNECT_TIMEOUT_SEC);
                 fd = try_connect_ip(dyn[i], CONNECT_TIMEOUT_SEC * 1000);
             }
         }
     }
 
+    if (!g_running) { if (fd >= 0) close(fd); return OPEN_TUNNEL_ERR; }
     if (fd < 0) { push_log("E", "tunnel connect failed"); return OPEN_TUNNEL_ERR; }
     push_log("I", "conexion establecida");
 
