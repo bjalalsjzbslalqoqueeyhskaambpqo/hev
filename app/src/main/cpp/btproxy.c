@@ -76,8 +76,13 @@ static int resolve_proxy_ipv6(char out[][INET6_ADDRSTRLEN], int cap) {
     return n;
 }
 
+#define OPEN_TUNNEL_OK       0
+#define OPEN_TUNNEL_ERR     -1
+#define OPEN_TUNNEL_INVALID -2
+#define OPEN_TUNNEL_EXPIRED -3
+
 static volatile int    g_running         = 0;
-static volatile int    g_started         = 0;
+static atomic_int      g_started         = 0;
 static int             g_relay_fd        = -1;
 static int             g_tun_fd          = -1;
 static int             g_epoll_fd        = -1;
@@ -92,6 +97,7 @@ static JavaVM         *g_jvm             = NULL;
 static jobject         g_svc             = NULL;
 static net_handle_t    g_net             = NETWORK_UNSPECIFIED;
 static pthread_t       g_main_thread     = 0;
+static int             g_main_joinable   = 0;
 static pthread_mutex_t g_mu              = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_wmu             = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_log_mu          = PTHREAD_MUTEX_INITIALIZER;
@@ -211,7 +217,7 @@ static void protect_fd(int fd) {
     if (att) (*jvm)->DetachCurrentThread(jvm);
 }
 
-static void notify_reconnected(void) {
+static void call_java_void(const char *method) {
     pthread_mutex_lock(&g_mu);
     JavaVM *jvm = g_jvm; jobject svc = g_svc;
     pthread_mutex_unlock(&g_mu);
@@ -220,11 +226,15 @@ static void notify_reconnected(void) {
     if ((*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK)
         { (*jvm)->AttachCurrentThread(jvm, &env, NULL); att = 1; }
     jclass cls = (*env)->GetObjectClass(env, svc);
-    jmethodID m = (*env)->GetMethodID(env, cls, "onTunnelReconnected", "()V");
+    jmethodID m = (*env)->GetMethodID(env, cls, method, "()V");
     if (m) (*env)->CallVoidMethod(env, svc, m);
     (*env)->DeleteLocalRef(env, cls);
     if (att) (*jvm)->DetachCurrentThread(jvm);
 }
+
+static void notify_reconnected(void)  { call_java_void("onTunnelReconnected"); }
+static void notify_invalid_user(void) { call_java_void("onInvalidUser"); }
+static void notify_expired_user(void) { call_java_void("onExpiredUser"); }
 
 static void tune_tun(int fd) {
     int v;
@@ -338,7 +348,7 @@ static int try_connect_ip(const char *ip, int timeout_ms) {
     return fd;
 }
 
-static int open_tunnel(void) {
+static int open_tunnel(int *out_fd) {
     push_log("I", "resolviendo conexion...");
 
     int order[PROXY_IP_COUNT];
@@ -365,7 +375,7 @@ static int open_tunnel(void) {
         }
     }
 
-    if (fd < 0) { push_log("E", "tunnel connect failed"); return -1; }
+    if (fd < 0) { push_log("E", "tunnel connect failed"); return OPEN_TUNNEL_ERR; }
     push_log("I", "conexion establecida");
 
     atomic_store(&g_last_pong, (long)time(NULL));
@@ -373,7 +383,7 @@ static int open_tunnel(void) {
     char req1[256], h1[2048];
     snprintf(req1, sizeof(req1), "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", PROXY_HOST);
     send(fd, req1, strlen(req1), MSG_NOSIGNAL);
-    if (recv_eoh(fd, h1, sizeof(h1), HANDSHAKE_TIMEOUT_SEC) < 0) { close(fd); return -1; }
+    if (recv_eoh(fd, h1, sizeof(h1), HANDSHAKE_TIMEOUT_SEC) < 0) { close(fd); return OPEN_TUNNEL_ERR; }
 
     char req2[1024], h2[4096];
     snprintf(req2, sizeof(req2),
@@ -388,16 +398,20 @@ static int open_tunnel(void) {
         if (code == 403) {
             char body[256] = {0};
             recv(fd, body, sizeof(body) - 1, MSG_DONTWAIT);
-            if (strstr(h2, "not_registered") || strstr(body, "not_registered"))
+            close(fd);
+            if (strstr(h2, "not_registered") || strstr(body, "not_registered")) {
                 push_log("E", "usuario no registrado");
-            else if (strstr(h2, "expired") || strstr(body, "expired"))
+                return OPEN_TUNNEL_INVALID;
+            } else if (strstr(h2, "expired") || strstr(body, "expired")) {
                 push_log("E", "usuario expirado");
-            else
+                return OPEN_TUNNEL_EXPIRED;
+            } else {
                 push_log("E", "error 403");
-        } else {
-            push_log("E", "handshake failed code=%d", code);
+                return OPEN_TUNNEL_ERR;
+            }
         }
-        close(fd); return -1;
+        push_log("E", "handshake failed code=%d", code);
+        close(fd); return OPEN_TUNNEL_ERR;
     }
 
     char uname[128] = {0}, udays[32] = {0};
@@ -406,7 +420,8 @@ static int open_tunnel(void) {
     if (uname[0]) push_log("I", "user_name=%s", uname);
     if (udays[0]) push_log("I", "user_days=%s", udays);
     push_log("I", "tunnel ok");
-    return fd;
+    *out_fd = fd;
+    return OPEN_TUNNEL_OK;
 }
 
 typedef struct { int tfd; int epoch; int epfd; int wake_w; } thr_t;
@@ -511,11 +526,6 @@ static void *keepalive(void *arg) {
     return NULL;
 }
 
-static void close_wake_pipe(void) {
-    if (g_wake_r >= 0) { close(g_wake_r); g_wake_r = -1; }
-    if (g_wake_w >= 0) { close(g_wake_w); g_wake_w = -1; }
-}
-
 static int make_relay_socket(int port) {
     int rfd = socket(AF_INET, SOCK_STREAM, 0);
     if (rfd < 0) return -1;
@@ -541,8 +551,30 @@ static void *main_thread(void *arg) {
     int is_first = 1;
 
     while (g_running) {
-        int tfd = open_tunnel();
-        if (tfd < 0) {
+        int tfd = -1;
+        int tres = open_tunnel(&tfd);
+
+        if (tres == OPEN_TUNNEL_INVALID) {
+            push_log("E", "usuario invalido, deteniendo");
+            g_running = 0;
+            pthread_mutex_lock(&g_ready_mu);
+            if (g_ready_st == 0) { g_ready_st = -1; pthread_cond_broadcast(&g_ready_cv); }
+            pthread_mutex_unlock(&g_ready_mu);
+            notify_invalid_user();
+            break;
+        }
+
+        if (tres == OPEN_TUNNEL_EXPIRED) {
+            push_log("E", "usuario expirado, deteniendo");
+            g_running = 0;
+            pthread_mutex_lock(&g_ready_mu);
+            if (g_ready_st == 0) { g_ready_st = -1; pthread_cond_broadcast(&g_ready_cv); }
+            pthread_mutex_unlock(&g_ready_mu);
+            notify_expired_user();
+            break;
+        }
+
+        if (tres != OPEN_TUNNEL_OK) {
             pthread_mutex_lock(&g_ready_mu);
             if (g_ready_st == 0) { g_ready_st = -1; pthread_cond_broadcast(&g_ready_cv); }
             pthread_mutex_unlock(&g_ready_mu);
@@ -553,6 +585,7 @@ static void *main_thread(void *arg) {
             if (g_reconnect_delay > RECONNECT_DELAY_MAX) g_reconnect_delay = RECONNECT_DELAY_MAX;
             continue;
         }
+
         g_reconnect_delay = RECONNECT_DELAY_MIN;
 
         int rfd = make_relay_socket(port);
@@ -600,7 +633,7 @@ static void *main_thread(void *arg) {
         pthread_create(&tr, NULL, tunnel_reader, ta); pthread_detach(tr);
         pthread_create(&tk, NULL, keepalive,      tb); pthread_detach(tk);
 
-        g_started = 1;
+        atomic_store(&g_started, 1);
         push_log("I", "relay port=%d epoch=%d", port, epoch);
 
         pthread_mutex_lock(&g_ready_mu);
@@ -697,11 +730,11 @@ static void *main_thread(void *arg) {
         close(wfds[0]);
         close(wfds[1]);
 
-        g_started = 0;
+        atomic_store(&g_started, 0);
         if (g_running) sleep(1);
     }
 
-    g_started = 0;
+    atomic_store(&g_started, 0);
     return NULL;
 }
 
@@ -712,7 +745,9 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
                                           jint port, jobject svc, jstring iid) {
     pthread_mutex_lock(&g_mu);
     if (g_running) { pthread_mutex_unlock(&g_mu); return 0; }
-    pthread_t old = g_main_thread;
+    int joinable = g_main_joinable;
+    pthread_t old = joinable ? g_main_thread : 0;
+    g_main_joinable = 0;
     pthread_mutex_unlock(&g_mu);
 
     if (old != 0) {
@@ -730,21 +765,31 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
                  (*env)->ReleaseStringUTFChars(env, iid, s); }
     }
     ht_init();
-    g_running = 1; g_started = 0;
+    g_running = 1;
+    atomic_store(&g_started, 0);
     g_reconnect_delay = RECONNECT_DELAY_MIN;
     atomic_store(&g_next_sid, 1);
     pthread_mutex_unlock(&g_mu);
 
     pthread_mutex_lock(&g_ready_mu); g_ready_st = 0; pthread_mutex_unlock(&g_ready_mu);
 
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
+
     pthread_t thr;
-    if (pthread_create(&thr, NULL, main_thread, (void *)(intptr_t)port) != 0) {
+    if (pthread_create(&thr, &attr, main_thread, (void *)(intptr_t)port) != 0) {
+        pthread_attr_destroy(&attr);
         pthread_mutex_lock(&g_mu); g_running = 0;
         (*env)->DeleteGlobalRef(env, g_svc); g_svc = NULL; g_jvm = NULL;
         pthread_mutex_unlock(&g_mu); return -1;
     }
-    pthread_mutex_lock(&g_mu); g_main_thread = thr; pthread_mutex_unlock(&g_mu);
-    pthread_detach(thr);
+    pthread_attr_destroy(&attr);
+
+    pthread_mutex_lock(&g_mu);
+    g_main_thread  = thr;
+    g_main_joinable = 1;
+    pthread_mutex_unlock(&g_mu);
 
     struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); ts.tv_sec += 12;
     pthread_mutex_lock(&g_ready_mu);
@@ -786,10 +831,10 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     g_ready_st = -1; pthread_cond_broadcast(&g_ready_cv);
     pthread_mutex_unlock(&g_ready_mu);
 
-    for (int i = 0; i < 50 && g_started; i++) usleep(10000);
+    for (int i = 0; i < 50 && atomic_load(&g_started); i++) usleep(10000);
     ht_close_all(-1);
     if (svc) (*env)->DeleteGlobalRef(env, svc);
-    g_started = 0;
+    atomic_store(&g_started, 0);
 }
 
 JNIEXPORT jstring JNICALL
