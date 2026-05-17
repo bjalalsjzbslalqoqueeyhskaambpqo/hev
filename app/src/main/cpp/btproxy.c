@@ -176,6 +176,7 @@ static void protect_fd(int fd) {
     if (att) (*jvm)->DetachCurrentThread(jvm);
 }
 
+/* ── I/O del túnel ─────────────────────────────────────────────── */
 static int tun_send(int tfd, uint8_t type, uint32_t sid,
                     const uint8_t *data, uint16_t dlen) {
     uint8_t hdr[FRAME_HDR];
@@ -245,6 +246,7 @@ static int recv_eoh(int fd, char *buf, int cap, int sec) {
     return ok ? used : -1;
 }
 
+/* ── conexión al proxy ─────────────────────────────────────────── */
 static int try_connect_ip(const char *ip, int timeout_ms) {
     struct sockaddr_in6 a = {0};
     a.sin6_family = AF_INET6; a.sin6_port = htons(PROXY_PORT);
@@ -271,6 +273,14 @@ static int try_connect_ip(const char *ip, int timeout_ms) {
         { close(fd); return -1; }
     fcntl(fd, F_SETFL, fl);
     return fd;
+}
+
+static void parse_hdr(const char *buf, const char *key, char *out, int cap) {
+    const char *p = strstr(buf, key); if (!p) return;
+    p += strlen(key); while (*p == ' ' || *p == ':') p++;
+    const char *e = strstr(p, "\r\n"); if (!e) return;
+    int n = (int)(e - p); if (n <= 0 || n >= cap) return;
+    memcpy(out, p, n); out[n] = 0;
 }
 
 static int open_tunnel(void) {
@@ -309,6 +319,11 @@ static int open_tunnel(void) {
         close(fd); return -1;
     }
 
+    char uname[128] = {0}, udays[32] = {0};
+    parse_hdr(h2, "X-User-Name:", uname, sizeof(uname));
+    parse_hdr(h2, "X-User-Days:", udays, sizeof(udays));
+    if (uname[0]) push_log("I", "user=%s", uname);
+    if (udays[0]) push_log("I", "days=%s", udays);
     push_log("I", "tunnel ok");
     atomic_store(&g_last_pong, (long)time(NULL));
     return fd;
@@ -480,6 +495,8 @@ static void *main_thread(void *arg) {
         pthread_create(&tk, NULL, keepalive,      tb); pthread_detach(tk);
 
         push_log("I", "relay listo port=%d epoch=%d", port, epoch);
+
+        /* ── epoll loop: hev ↔ túnel ──────────────────────────── */
         struct epoll_event events[MAX_EPOLL_EVENTS];
         int dead = 0;
 
@@ -491,8 +508,10 @@ static void *main_thread(void *arg) {
                 int      efd = events[i].data.fd;
                 uint32_t evs = events[i].events;
 
+                /* señal de cierre */
                 if (efd == wfds[0]) { dead = 1; break; }
 
+                /* nueva conexión de hev */
                 if (efd == rfd) {
                     struct sockaddr_in ca; socklen_t cl = sizeof(ca);
                     int cfd = accept(rfd, (struct sockaddr *)&ca, &cl);
@@ -520,6 +539,7 @@ static void *main_thread(void *arg) {
                     continue;
                 }
 
+                /* datos de una sesión activa */
                 uint32_t sid = (uint32_t)(events[i].data.u64 >> 32);
                 int      cfd = (int)(uint32_t)events[i].data.u64;
 
@@ -547,6 +567,7 @@ static void *main_thread(void *arg) {
 
         push_log("E", "tunnel caido epoch=%d", epoch);
 
+        /* ── limpieza ──────────────────────────────────────────── */
         atomic_fetch_add(&g_tunnel_epoch, 1);
         ht_close_all(epfd);
 
@@ -575,13 +596,7 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     (void)clazz;
     pthread_mutex_lock(&g_mu);
     if (g_running) { pthread_mutex_unlock(&g_mu); return 0; }
-    pthread_t old = g_main_thread;
     pthread_mutex_unlock(&g_mu);
-
-    if (old != 0) {
-        pthread_join(old, NULL);
-        pthread_mutex_lock(&g_mu); g_main_thread = 0; pthread_mutex_unlock(&g_mu);
-    }
 
     pthread_mutex_lock(&g_mu);
     (*env)->GetJavaVM(env, &g_jvm);
@@ -604,7 +619,6 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
         pthread_mutex_unlock(&g_mu); return -1;
     }
     pthread_mutex_lock(&g_mu); g_main_thread = thr; pthread_mutex_unlock(&g_mu);
-    pthread_detach(thr);
 
     push_log("I", "nativeStart lanzado");
     return 0;
@@ -636,6 +650,10 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
 
     ht_close_all(-1);
     if (svc) (*env)->DeleteGlobalRef(env, svc);
+
+    pthread_t thr;
+    pthread_mutex_lock(&g_mu); thr = g_main_thread; g_main_thread = 0; pthread_mutex_unlock(&g_mu);
+    if (thr != 0) pthread_join(thr, NULL);
 }
 
 JNIEXPORT jstring JNICALL
