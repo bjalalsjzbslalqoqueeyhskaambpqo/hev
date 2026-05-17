@@ -427,13 +427,9 @@ static void *main_thread(void *arg) {
         uint32_t sid;
         do { sid = atomic_fetch_add(&g_sid, 1) & 0x7FFFFFFF; } while (!sid);
 
-        uint8_t buf[MAX_PAYLOAD];
-        ssize_t first = recv(cfd, buf, sizeof(buf), 0);
-        if (first <= 0) { close(cfd); continue; }
-
         if (!slot_alloc(sid, cfd)) { close(cfd); continue; }
 
-        if (tsend(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0) {
+        if (tsend(tfd, T_OPEN, sid, NULL, 0) < 0) {
             slot_free(sid); close(cfd); break;
         }
 
