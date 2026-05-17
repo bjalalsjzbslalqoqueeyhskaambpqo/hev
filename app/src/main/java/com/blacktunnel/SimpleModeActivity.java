@@ -1,830 +1,802 @@
 package com.blacktunnel;
 
-import android.app.Notification;
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
+import android.app.AlertDialog;
+import android.animation.Animator;
+import android.animation.AnimatorInflater;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
-import android.content.SharedPreferences;
+import android.content.res.ColorStateList;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
+import android.graphics.drawable.Drawable;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 import android.net.VpnService;
 import android.os.Build;
-import android.os.ParcelFileDescriptor;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
-import android.provider.Settings;
-import androidx.core.app.NotificationCompat;
-import java.io.EOFException;
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.net.Inet4Address;
-import java.net.InetAddress;
-import java.net.NetworkInterface;
-import java.net.ServerSocket;
-import java.net.Socket;
-import java.net.UnknownHostException;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.text.SimpleDateFormat;
+import android.text.Editable;
+import android.text.TextWatcher;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.animation.AnimationUtils;
+import android.widget.BaseAdapter;
+import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.EditText;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.ListView;
+import android.widget.Switch;
+import android.widget.TextView;
+import android.widget.Toast;
+import androidx.activity.ComponentActivity;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+
 import java.util.ArrayList;
-import java.util.Date;
-import java.util.Enumeration;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 
-public class BtVpnService extends VpnService {
+public class SimpleModeActivity extends ComponentActivity {
+    private static final String PREF_UI    = "ui_state";
+    private static final String KEY_HIDE_ID = "hide_internal_id";
+    private static final int    HOTSPOT_PROXY_PORT = 7071;
 
-    public static final String ACTION_START = "com.blacktunnel.START";
-    public static final String ACTION_STOP  = "com.blacktunnel.STOP";
-    public static final String ACTION_APPLY = "com.blacktunnel.APPLY";
+    private enum UiState { DISCONNECTED, CONNECTING, CONNECTED }
 
-    private static final String CH_ID         = "bt_vpn";
-    private static final int    NF_ID         = 33;
-    private static final int    MAX_LOG_CHARS = 24000;
+    private Button    connectBtn;
+    private Button    copyIdBtn;
+    private TextView  statusBadgeView;
+    private View      statusDotView;
+    private View      statusHaloView;
+    private TextView  statusDetailsView;
+    private TextView  deviceIdView;
+    private TextView  userValueView;
+    private TextView  daysValueView;
+    private TextView  pingValueView;
+    private Switch    gamingModeSwitch;
+    private TextView  gamingModeBadgeView;
+    private TextView  gamingDescriptionView;
+    private TextView  gamingSelectedCountView;
+    private Button    selectGamingAppsBtn;
+    private LinearLayout gamingModePanel;
+    private LinearLayout gamingControlsLayout;
+    private View         panelConnectionView;
+    private Switch    hotspotSwitch;
+    private TextView  hotspotInfoView;
+    private Animator  statusPulseAnimator;
+    private Animator  statusHaloAnimator;
 
-    private static final AtomicBoolean isRunning      = new AtomicBoolean(false);
-    private static final AtomicBoolean hotspotStarted = new AtomicBoolean(false);
+    private final ExecutorService appLoadExecutor = Executors.newSingleThreadExecutor();
+    private String  internalId           = "";
+    private UiState uiState              = UiState.DISCONNECTED;
+    private long    connectingSinceMs    = 0L;
+    private boolean lastRunning          = false;
+    private long    autoDisconnectAtMs   = -1L;
+    private String  authState            = "";
+    private boolean hideInternalId       = false;
+    private boolean applyingRuntimeChanges = false;
+    private int     lastPingMs           = -1;
 
-    private static final AtomicReference<Thread> localProxyThread = new AtomicReference<>(null);
+    private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
+    private ConnectivityManager connectivityManager;
+    private ConnectivityManager.NetworkCallback networkCallback;
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private ActivityResultLauncher<Intent> vpnPermissionLauncher;
 
-    private static final Object        LOG_LOCK = new Object();
-    private static final StringBuilder LOGS     = new StringBuilder(8192);
-
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
-
-    private volatile ParcelFileDescriptor                tunPfd;
-    private volatile Thread                              hevThread;
-    private volatile int                                 hevTunFd = -1;
-    private volatile ConnectivityManager.NetworkCallback netCallback;
-
-    public static boolean isRunningState() { return isRunning.get(); }
+    private final Runnable stateTicker = new Runnable() {
+        @Override public void run() {
+            try {
+                syncStateFromService();
+                refreshServiceState();
+            } catch (Throwable ignored) {}
+            handler.postDelayed(this, 800);
+        }
+    };
 
     @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
-        String action = intent != null ? intent.getAction() : null;
-        if (ACTION_STOP.equals(action)) {
-            executor.execute(this::stopAll);
-            return START_NOT_STICKY;
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_simple_mode);
+
+        vpnPermissionLauncher = registerForActivityResult(
+            new ActivityResultContracts.StartActivityForResult(),
+            result -> {
+                if (result.getResultCode() == RESULT_OK) startVpn();
+                else setUiState(UiState.DISCONNECTED);
+            }
+        );
+
+        connectBtn            = findViewById(R.id.btnConnect);
+        copyIdBtn             = findViewById(R.id.btnCopyLogs);
+        statusBadgeView       = findViewById(R.id.txtStatusBadge);
+        statusDotView         = findViewById(R.id.viewStatusDot);
+        statusHaloView        = findViewById(R.id.viewStatusHalo);
+        statusDetailsView     = findViewById(R.id.txtStatusDetails);
+        deviceIdView          = findViewById(R.id.txtDeviceId);
+        userValueView         = findViewById(R.id.txtUser);
+        daysValueView         = findViewById(R.id.txtDays);
+        pingValueView         = findViewById(R.id.txtPingValue);
+        gamingModeSwitch      = findViewById(R.id.switchGamingMode);
+        gamingModeBadgeView   = findViewById(R.id.txtGamingBadge);
+        gamingDescriptionView = findViewById(R.id.txtGamingDescription);
+        gamingSelectedCountView = findViewById(R.id.txtGamingSelectedCount);
+        selectGamingAppsBtn   = findViewById(R.id.btnSelectGamingApps);
+        gamingModePanel       = findViewById(R.id.panelGamingMode);
+        gamingControlsLayout  = findViewById(R.id.layoutGamingControls);
+        panelConnectionView   = findViewById(R.id.panelConnection);
+        hotspotSwitch         = findViewById(R.id.switchHotspot);
+        hotspotInfoView       = findViewById(R.id.txtHotspotInfo);
+
+        internalId = BtProxy.getOrCreateInternalId(this);
+        BtProxy.applyStoredGamingMode(this);
+        hideInternalId = getSharedPreferences(PREF_UI, MODE_PRIVATE).getBoolean(KEY_HIDE_ID, false);
+        if (deviceIdView != null) deviceIdView.setText("ID: " + internalId);
+        refreshDeviceIdVisibility();
+
+        boolean running = BtVpnService.isRunningState();
+        setUiState(running ? UiState.CONNECTED : UiState.DISCONNECTED);
+        lastRunning = running;
+        refreshServiceState();
+
+        connectBtn.setOnClickListener(v -> {
+            if (uiState == UiState.CONNECTING) return;
+            if (uiState == UiState.CONNECTED) stopVpn();
+            else startVpnWithPermission();
+        });
+        copyIdBtn.setOnClickListener(v -> copyInternalIdToClipboard());
+
+        if (gamingModeSwitch != null) {
+            gamingModeSwitch.setChecked(BtProxy.isGamingMode(this));
+            gamingModeSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                BtProxy.setGamingMode(this, isChecked);
+                refreshGamingModeUi();
+                if (BtVpnService.isRunningState()) {
+                    showGamingApplyFeedback(
+                        isChecked ? "Modo gaming: activando..." : "Modo normal: aplicando...",
+                        isChecked ? "Modo gaming activo" : "Modo normal activo",
+                        isChecked ? R.color.color_gaming : R.color.color_text_secondary
+                    );
+                    applyGamingChangesIfRunning();
+                }
+            });
         }
-        if (ACTION_APPLY.equals(action)) {
-            executor.execute(this::applySettings);
-            return START_STICKY;
+        if (selectGamingAppsBtn != null)
+            selectGamingAppsBtn.setOnClickListener(v -> openGamingAppsDialog());
+
+        if (hotspotSwitch != null) {
+            hotspotSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                if (isChecked) {
+                    String ip = BtVpnService.getHotspotIp();
+                    if (ip == null) {
+                        hotspotSwitch.setChecked(false);
+                        Toast.makeText(this, "Activá el hotspot WiFi primero", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    BtVpnService.startLocalProxy(HOTSPOT_PROXY_PORT);
+                    if (hotspotInfoView != null) {
+                        hotspotInfoView.setText("Proxy: " + ip + ":" + HOTSPOT_PROXY_PORT);
+                        hotspotInfoView.setVisibility(View.VISIBLE);
+                    }
+                } else {
+                    BtVpnService.stopLocalProxy();
+                    if (hotspotInfoView != null) hotspotInfoView.setVisibility(View.GONE);
+                }
+            });
         }
-        executor.execute(this::startAll);
-        return START_STICKY;
+
+        refreshGamingModeUi();
+        setupConnectivityMonitor();
+        handler.post(stateTicker);
+    }
+
+    private void setupConnectivityMonitor() {
+        connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (connectivityManager == null) return;
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override public void onLost(Network network) {
+                if (BtVpnService.isRunningState()) stopVpn();
+                setUiState(UiState.DISCONNECTED);
+            }
+            @Override public void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
+                if (caps == null) return;
+                if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                        && uiState == UiState.CONNECTING)
+                    setUiState(UiState.DISCONNECTED);
+            }
+        };
+        try {
+            connectivityManager.registerNetworkCallback(
+                new NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(),
+                networkCallback);
+        } catch (Throwable ignored) {}
+    }
+
+    private void copyInternalIdToClipboard() {
+        ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (cm != null) {
+            cm.setPrimaryClip(ClipData.newPlainText("internal_id", internalId));
+            Toast.makeText(this, "ID copiado", Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(this, "Error copiando ID", Toast.LENGTH_SHORT).show();
+        }
     }
 
     @Override
-    public void onDestroy() {
-        executor.execute(this::stopAll);
-        executor.shutdown();
-        try { executor.awaitTermination(5, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+    protected void onDestroy() {
+        handler.removeCallbacks(stateTicker);
+        handler.removeCallbacks(autoDisconnectRunnable);
+        stopStatusPulse();
+        stopStatusHaloWave();
+        if (connectivityManager != null && networkCallback != null) {
+            try { connectivityManager.unregisterNetworkCallback(networkCallback); } catch (Throwable ignored) {}
+        }
+        BtVpnService.stopLocalProxy();
+        appLoadExecutor.shutdownNow();
         super.onDestroy();
     }
 
-    private void startAll() {
-        if (isRunning.get()) return;
+    private int c(int colorRes) { return getColor(colorRes); }
 
-        createNotificationChannel();
-        startForeground(NF_ID, buildNotification());
+    private boolean canAnimate() { return android.animation.ValueAnimator.areAnimatorsEnabled(); }
 
-        if (!startProxy()) {
-            stopForeground(STOP_FOREGROUND_REMOVE);
-            stopSelf();
-            return;
+    private void startStatusPulse() {
+        if (statusDotView == null || !canAnimate()) return;
+        if (statusPulseAnimator == null) statusPulseAnimator = AnimatorInflater.loadAnimator(this, R.animator.pulse);
+        statusPulseAnimator.setTarget(statusDotView);
+        if (!statusPulseAnimator.isStarted()) statusPulseAnimator.start();
+    }
+
+    private void stopStatusPulse() {
+        if (statusPulseAnimator != null) statusPulseAnimator.cancel();
+        if (statusDotView != null) {
+            statusDotView.setScaleX(1f); statusDotView.setScaleY(1f); statusDotView.setAlpha(1f);
         }
+    }
 
-        BtProxy.applyGamingMode(this);
-        registerNetworkCallback();
+    private void startStatusHaloWave() {
+        if (statusHaloView == null || !canAnimate()) return;
+        if (statusHaloAnimator == null) statusHaloAnimator = AnimatorInflater.loadAnimator(this, R.animator.status_halo_wave);
+        statusHaloAnimator.setTarget(statusHaloView);
+        if (!statusHaloAnimator.isStarted()) statusHaloAnimator.start();
+    }
 
-        if (!openTunnel()) {
-            unregisterNetworkCallback();
-            BtProxy.stop();
-            stopForeground(STOP_FOREGROUND_REMOVE);
-            stopSelf();
-            return;
+    private void stopStatusHaloWave() {
+        if (statusHaloAnimator != null) statusHaloAnimator.cancel();
+        if (statusHaloView != null) {
+            statusHaloView.setScaleX(1f); statusHaloView.setScaleY(1f); statusHaloView.setAlpha(0.20f);
         }
-
-        isRunning.set(true);
-        log("I startAll ok");
     }
 
-    private boolean startProxy() {
-        BtProxy.stop();
-        String id = BtProxy.getOrCreateInternalId(this);
-        if (BtProxy.start(this, id) < 0) {
-            SystemClock.sleep(250);
-            if (BtProxy.start(this, id) < 0) {
-                log("E btproxy start failed");
-                return false;
-            }
-        }
-        return true;
+    private static final class AppOption {
+        final String   packageName;
+        final String   appName;
+        final Drawable icon;
+        AppOption(String p, String n, Drawable i) { packageName = p; appName = n; icon = i; }
     }
 
-    private boolean openTunnel() {
-        ParcelFileDescriptor pfd = buildTunInterface();
-        if (pfd == null) return false;
-        tunPfd = pfd;
-        try {
-            hevTunFd = ParcelFileDescriptor.dup(tunPfd.getFileDescriptor()).detachFd();
-        } catch (Exception e) {
-            closeTun();
-            return false;
-        }
-        return launchHev();
-    }
+    private void refreshGamingModeUi() {
+        boolean enabled  = BtProxy.isGamingMode(this);
+        List<String> selected = BtProxy.getGamingSelectedPackages(this);
 
-    private boolean launchHev() {
-        File cfg = writeHevConfig();
-        if (cfg == null) {
-            log("E launchHev: config write failed");
-            return false;
-        }
-        final int fd = hevTunFd;
-        hevThread = new Thread(() -> HevBridge.start(cfg.getAbsolutePath(), fd), "hev");
-        hevThread.start();
-        return true;
-    }
-
-    private void stopAll() {
-        if (!isRunning.compareAndSet(true, false)) return;
-        stopHev();
-        closeTun();
-        BtProxy.stop();
-        unregisterNetworkCallback();
-        stopForeground(STOP_FOREGROUND_REMOVE);
-        stopSelf();
-        log("I stopAll ok");
-    }
-
-    private void stopHev() {
-        try { HevBridge.stop(); } catch (Throwable ignored) {}
-        Thread t = hevThread; hevThread = null;
-        if (t != null) try { t.join(2000); } catch (InterruptedException ignored) {}
-    }
-
-    private void closeTun() {
-        ParcelFileDescriptor pfd = tunPfd; tunPfd = null;
-        if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
-        int fd = hevTunFd; hevTunFd = -1;
-        if (fd >= 0) try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
-    }
-
-    public void onTunnelReconnected() {
-        if (!isRunning.get()) return;
-        executor.execute(this::restartHev);
-    }
-
-    public void onInvalidUser() {
-        log("E onInvalidUser: stopping");
-        executor.execute(this::stopAll);
-    }
-
-    public void onExpiredUser() {
-        log("E onExpiredUser: stopping");
-        executor.execute(this::stopAll);
-    }
-
-    private void restartHev() {
-        if (!isRunning.get()) return;
-        stopHev();
-        if (tunPfd != null) {
-            if (!launchHev()) {
-                log("E restartHev: launchHev failed, rebuilding");
-                rebuildTunnel();
+        if (gamingModeBadgeView != null) {
+            if (enabled) {
+                gamingModeBadgeView.setText(R.string.gaming_mode_on_compact);
+                gamingModeBadgeView.setTextColor(c(R.color.color_gaming));
+                gamingModeBadgeView.setBackgroundResource(R.drawable.strike_chip_left);
+                gamingModeBadgeView.setLetterSpacing(0.14f);
+                gamingModeBadgeView.setShadowLayer(0f, 0f, 0f, 0);
             } else {
-                log("I restartHev ok");
+                gamingModeBadgeView.setText(R.string.gaming_mode_off_compact);
+                gamingModeBadgeView.setTextColor(c(R.color.color_btn_disabled));
+                gamingModeBadgeView.setShadowLayer(0f, 0f, 0f, 0);
             }
-        } else {
-            log("E restartHev: tun closed, rebuilding");
-            rebuildTunnel();
         }
-    }
-
-    private void rebuildTunnel() {
-        if (!isRunning.get()) return;
-        closeTun();
-        if (!openTunnel()) {
-            log("E rebuildTunnel: openTunnel failed, stopping");
-            stopAll();
-        } else {
-            log("I rebuildTunnel ok");
-        }
-    }
-
-    private void applySettings() {
-        if (!isRunning.get()) return;
-        BtProxy.applyGamingMode(this);
-        rebuildTunnel();
-    }
-
-    private void registerNetworkCallback() {
-        try {
-            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-            if (cm == null) return;
-            Network active = cm.getActiveNetwork();
-            if (active != null) {
-                BtProxy.nativeSetNetwork(active.getNetworkHandle());
-                setUnderlyingNetworks(new Network[]{active});
-            }
-            netCallback = new ConnectivityManager.NetworkCallback() {
-                @Override public void onAvailable(Network net) {
-                    BtProxy.nativeSetNetwork(net.getNetworkHandle());
-                    setUnderlyingNetworks(new Network[]{net});
-                }
-                @Override public void onLost(Network net) {
-                    BtProxy.nativeSetNetwork(0L);
-                    setUnderlyingNetworks(null);
-                }
-            };
-            cm.registerNetworkCallback(
-                new NetworkRequest.Builder()
-                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(),
-                netCallback);
-        } catch (Exception ignored) {}
-    }
-
-    private void unregisterNetworkCallback() {
-        try {
-            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-            ConnectivityManager.NetworkCallback cb = netCallback; netCallback = null;
-            if (cm != null && cb != null) cm.unregisterNetworkCallback(cb);
-            BtProxy.nativeSetNetwork(0L);
-        } catch (Exception ignored) {}
-    }
-
-    private ParcelFileDescriptor buildTunInterface() {
-        Builder b = new Builder()
-                .setSession("bt-hev")
-                .setMtu(1380)
-                .addAddress("198.18.0.1", 15)
-                .addAddress("fc00::1", 128)
-                .addDnsServer("198.18.0.2");
-        addPublicRoutes(b);
-        applyPerAppVpnPolicy(b);
-        return b.establish();
-    }
-
-    private void applyPerAppVpnPolicy(Builder b) {
-        List<String> pkgs = BtProxy.getGamingSelectedPackages(this);
-        if (BtProxy.isGamingMode(this) && !pkgs.isEmpty()) {
-            for (String pkg : pkgs)
-                if (pkg != null && !pkg.isBlank())
-                    try { b.addAllowedApplication(pkg); } catch (Exception ignored) {}
-        } else {
-            try { b.addDisallowedApplication(getPackageName()); } catch (Exception ignored) {}
-        }
-    }
-
-    private void addPublicRoutes(Builder b) {
-        String[] excludes = {
-            "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
-            "169.254.0.0/16", "224.0.0.0/4", "240.0.0.0/4", "255.255.255.255/32"
-        };
-        List<long[]> excluded = new ArrayList<>();
-        for (String cidr : excludes) {
-            try {
-                String[] p = cidr.split("/");
-                long base  = ip2long(InetAddress.getByName(p[0]));
-                int pfx    = Integer.parseInt(p[1]);
-                long mask  = pfx == 0 ? 0L : (~0L << (32 - pfx)) & 0xFFFFFFFFL;
-                long start = base & mask;
-                excluded.add(new long[]{start, start + (~mask & 0xFFFFFFFFL)});
-            } catch (UnknownHostException ignored) {}
-        }
-        excluded.sort((a, c) -> Long.compare(a[0], c[0]));
-        long cur = 0L;
-        for (long[] ex : excluded) {
-            if (cur < ex[0]) addCIDRs(b, cur, ex[0] - 1);
-            if (cur <= ex[1]) cur = ex[1] + 1;
-        }
-        if (cur <= 0xFFFFFFFEL) addCIDRs(b, cur, 0xFFFFFFFEL);
-        b.addRoute("2000::", 3);
-        b.addRoute("fc00::", 7);
-    }
-
-    private void addCIDRs(Builder b, long start, long end) {
-        while (start <= end) {
-            int prefix = maxPrefix(start, end);
-            b.addRoute(long2ip(start), prefix);
-            start += (1L << (32 - prefix));
-        }
-    }
-
-    private int maxPrefix(long start, long end) {
-        int p = Math.max(0, 32 - Math.min(32, Long.numberOfTrailingZeros(start)));
-        while (p < 32 && (1L << (32 - p)) > (end - start + 1)) p++;
-        return p;
-    }
-
-    private long ip2long(InetAddress a) {
-        byte[] b = a.getAddress();
-        return ((long)(b[0]&0xFF)<<24)|((long)(b[1]&0xFF)<<16)|((long)(b[2]&0xFF)<<8)|(b[3]&0xFF);
-    }
-
-    private String long2ip(long v) {
-        return ((v>>24)&0xFF)+"."+((v>>16)&0xFF)+"."+((v>>8)&0xFF)+"."+(v&0xFF);
-    }
-
-    private File writeHevConfig() {
-        String yml =
-            "tunnel:\n  name: bt-hev\n  mtu: 1380\n  ipv4: 198.18.0.1\n  ipv6: 'fc00::1'\n" +
-            "socks5:\n  address: 127.0.0.1\n  port: " + BtProxy.SOCKS5_PORT + "\n  udp: 'udp'\n  pipeline: false\n" +
-            "mapdns:\n  address: 198.18.0.2\n  port: 53\n  network: 198.18.0.0\n  netmask: 255.254.0.0\n  cache-size: 8192\n" +
-            "misc:\n  connect-timeout: 5000\n  tcp-read-write-timeout: 1800000\n" +
-            "  udp-read-write-timeout: 900000\n  max-session-count: 4096\n  log-level: warn\n  limit-nofile: 65535\n";
-        File f = new File(getFilesDir(), "hev.yml");
-        try (FileOutputStream o = new FileOutputStream(f, false)) {
-            o.write(yml.getBytes(StandardCharsets.UTF_8));
-            o.flush();
-            return f;
-        } catch (Exception e) {
-            log("E writeHevConfig: " + e.getMessage());
-            return null;
-        }
-    }
-
-    private void createNotificationChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
-        NotificationManager nm = getSystemService(NotificationManager.class);
-        if (nm != null)
-            nm.createNotificationChannel(
-                new NotificationChannel(CH_ID, "BlackTunnel", NotificationManager.IMPORTANCE_LOW));
-    }
-
-    private Notification buildNotification() {
-        return new NotificationCompat.Builder(this, CH_ID)
-                .setSmallIcon(android.R.drawable.stat_sys_warning)
-                .setContentTitle("BlackTunnel")
-                .setOngoing(true)
-                .build();
-    }
-
-    public static void log(String message) {
-        String line = "[" + new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()) + "] " + message + "\n";
-        synchronized (LOG_LOCK) {
-            LOGS.append(line);
-            if (LOGS.length() > MAX_LOG_CHARS) LOGS.delete(0, LOGS.length() - MAX_LOG_CHARS);
-        }
-    }
-
-    public static String dumpLogs() {
-        synchronized (LOG_LOCK) {
-            String native_ = BtProxy.drainLogs();
-            if (native_ != null && !native_.isBlank()) {
-                LOGS.append(native_);
-                if (LOGS.length() > MAX_LOG_CHARS) LOGS.delete(0, LOGS.length() - MAX_LOG_CHARS);
-            }
-            return LOGS.toString();
-        }
-    }
-
-    public static void startLocalProxy(int port) {
-        if (hotspotStarted.getAndSet(true)) return;
-        Thread t = new Thread(() -> {
-            try (ServerSocket ss = new ServerSocket(port, 128, InetAddress.getByName("0.0.0.0"))) {
-                ss.setReuseAddress(true);
-                while (!Thread.currentThread().isInterrupted()) {
-                    Socket client;
-                    try { client = ss.accept(); } catch (Exception e) { break; }
-                    Thread relay = new Thread(() -> handleProxyClient(client));
-                    relay.setDaemon(true);
-                    relay.start();
-                }
-            } catch (Exception ignored) {}
-            hotspotStarted.set(false);
-        }, "local-proxy");
-        t.setDaemon(true);
-        localProxyThread.set(t);
-        t.start();
-    }
-
-    public static void stopLocalProxy() {
-        Thread t = localProxyThread.getAndSet(null);
-        if (t != null) t.interrupt();
-        hotspotStarted.set(false);
-    }
-
-    public static String getHotspotIp() {
-        try {
-            Enumeration<NetworkInterface> ifaces = NetworkInterface.getNetworkInterfaces();
-            if (ifaces == null) return null;
-            while (ifaces.hasMoreElements()) {
-                NetworkInterface iface = ifaces.nextElement();
-                if (!iface.isUp() || iface.isLoopback()) continue;
-                String name = iface.getName().toLowerCase();
-                if (name.equals("lo") || name.startsWith("rmnet") || name.startsWith("ccmni") ||
-                    name.startsWith("dummy") || name.startsWith("p2p") || name.startsWith("bt-pan") ||
-                    name.startsWith("sit") || name.startsWith("ip6tnl")) continue;
-                Enumeration<InetAddress> addrs = iface.getInetAddresses();
-                while (addrs.hasMoreElements()) {
-                    InetAddress addr = addrs.nextElement();
-                    if (!addr.isSiteLocalAddress() || !(addr instanceof Inet4Address)) continue;
-                    String ip = addr.getHostAddress();
-                    if (ip == null || ip.startsWith("198.18.") || ip.startsWith("172.")) continue;
-                    return ip;
-                }
-            }
-        } catch (Exception ignored) {}
-        return null;
-    }
-
-    private static void handleProxyClient(Socket client) {
-        try {
-            client.setSoTimeout(30000);
-            client.setTcpNoDelay(true);
-            InputStream  ci = client.getInputStream();
-            OutputStream co = client.getOutputStream();
-            int first = ci.read();
-            if (first < 0) return;
-            if (first == 0x05) relayToSocks5(ci, co, (byte) first);
-            else handleHttpLoop(ci, co, (byte) first);
-        } catch (Exception ignored) {
-        } finally {
-            try { client.close(); } catch (Exception ignored) {}
-        }
-    }
-
-    private static void relayToSocks5(InputStream ci, OutputStream co, byte firstByte) throws Exception {
-        try (Socket motor = new Socket("127.0.0.1", BtProxy.SOCKS5_PORT)) {
-            motor.setTcpNoDelay(true);
-            InputStream  mi = motor.getInputStream();
-            OutputStream mo = motor.getOutputStream();
-            mo.write(firstByte);
-            bidirectionalRelay(mi, co, motor);
-            pipe(ci, mo);
-        }
-    }
-
-    private static void handleHttpLoop(InputStream ci, OutputStream co, byte firstByte) throws Exception {
-        byte[] pending = new byte[]{firstByte};
-        while (true) {
-            String firstLine = readLineWithPrefix(ci, pending);
-            pending = null;
-            if (firstLine == null || firstLine.isEmpty()) return;
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while (!(line = readLine(ci)).isEmpty()) sb.append(line).append("\r\n");
-            String hdrs      = sb.toString();
-            String hdrsLower = hdrs.toLowerCase(Locale.ROOT);
-            if (firstLine.startsWith("CONNECT ")) {
-                handleConnect(firstLine, ci, co); return;
-            } else if (hdrsLower.contains("upgrade: websocket")) {
-                handleWebSocket(firstLine, hdrs, ci, co); return;
+        if (gamingDescriptionView != null)
+            gamingDescriptionView.setVisibility(enabled ? View.VISIBLE : View.GONE);
+        if (gamingSelectedCountView != null) {
+            if (selected.isEmpty()) {
+                gamingSelectedCountView.setText("Ninguna app seleccionada");
+                gamingSelectedCountView.setTextColor(c(R.color.color_text_disabled));
             } else {
-                boolean keepAlive = !firstLine.contains("HTTP/1.0") && !hdrsLower.contains("connection: close");
-                if (!handleHttpRequest(firstLine, hdrs, ci, co) || !keepAlive) return;
+                String first = selected.get(0);
+                String summary = selected.size() > 1 ? first + " +" + (selected.size() - 1) + " más" : first;
+                gamingSelectedCountView.setText(summary);
+                gamingSelectedCountView.setTextColor(c(R.color.color_gaming));
             }
         }
-    }
-
-    private static void handleConnect(String firstLine, InputStream ci, OutputStream co) throws Exception {
-        String[] parts = firstLine.split(" ");
-        if (parts.length < 2) { sendError(co, 400); return; }
-        String hostPort = parts[1];
-        int colon = hostPort.lastIndexOf(':');
-        String host = colon >= 0 ? hostPort.substring(0, colon) : hostPort;
-        int    port = colon >= 0 ? parsePort(hostPort.substring(colon + 1), 443) : 443;
-        if (host.isEmpty()) { sendError(co, 400); return; }
-        try (Socket motor = new Socket("127.0.0.1", BtProxy.SOCKS5_PORT)) {
-            motor.setTcpNoDelay(true);
-            InputStream  mi = motor.getInputStream();
-            OutputStream mo = motor.getOutputStream();
-            if (!socks5Connect(mi, mo, host, port)) { sendError(co, 502); return; }
-            co.write("HTTP/1.1 200 Connection established\r\n\r\n".getBytes(StandardCharsets.UTF_8));
-            co.flush();
-            bidirectionalRelay(mi, co, motor);
-            pipe(ci, mo);
-        } catch (Exception e) { sendError(co, 502); }
-    }
-
-    private static void handleWebSocket(String firstLine, String hdrs, InputStream ci, OutputStream co) throws Exception {
-        String host = extractHeader(hdrs, "Host:");
-        int colon = host.lastIndexOf(':');
-        int port = 80;
-        if (colon >= 0) { port = parsePort(host.substring(colon + 1), 80); host = host.substring(0, colon); }
-        if (host.isEmpty()) { sendError(co, 400); return; }
-        try (Socket motor = new Socket("127.0.0.1", BtProxy.SOCKS5_PORT)) {
-            motor.setTcpNoDelay(true);
-            InputStream  mi = motor.getInputStream();
-            OutputStream mo = motor.getOutputStream();
-            if (!socks5Connect(mi, mo, host, port)) { sendError(co, 502); return; }
-            mo.write((firstLine + "\r\n" + hdrs + "\r\n").getBytes(StandardCharsets.UTF_8));
-            mo.flush();
-            bidirectionalRelay(mi, co, motor);
-            pipe(ci, mo);
-        } catch (Exception e) { sendError(co, 502); }
-    }
-
-    private static boolean handleHttpRequest(String firstLine, String hdrs, InputStream ci, OutputStream co) throws Exception {
-        String[] parts = firstLine.split(" ");
-        if (parts.length < 2) { sendError(co, 400); return false; }
-        String method  = parts[0];
-        String url     = parts[1];
-        String version = parts.length > 2 ? parts[2] : "HTTP/1.1";
-        String host; int port; String path;
-        if (url.startsWith("http:
-            String without  = url.substring(7);
-            int slash       = without.indexOf('/');
-            String hostPort = slash >= 0 ? without.substring(0, slash) : without;
-            path = slash >= 0 ? without.substring(slash) : "/";
-            int colon = hostPort.lastIndexOf(':');
-            host = colon >= 0 ? hostPort.substring(0, colon) : hostPort;
-            port = colon >= 0 ? parsePort(hostPort.substring(colon + 1), 80) : 80;
-        } else {
-            String hostHeader = extractHeader(hdrs, "Host:");
-            int colon = hostHeader.lastIndexOf(':');
-            host = colon >= 0 ? hostHeader.substring(0, colon) : hostHeader;
-            port = colon >= 0 ? parsePort(hostHeader.substring(colon + 1), 80) : 80;
-            path = url.isEmpty() ? "/" : url;
+        if (selectGamingAppsBtn != null) {
+            selectGamingAppsBtn.setEnabled(enabled);
+            selectGamingAppsBtn.setAlpha(enabled ? 1f : 0.55f);
         }
-        if (host.isEmpty()) { sendError(co, 400); return false; }
-        byte[] body = readBody(hdrs, ci);
-        try (Socket motor = new Socket("127.0.0.1", BtProxy.SOCKS5_PORT)) {
-            motor.setTcpNoDelay(true);
-            InputStream  mi = motor.getInputStream();
-            OutputStream mo = motor.getOutputStream();
-            if (!socks5Connect(mi, mo, host, port)) { sendError(co, 502); return false; }
-            StringBuilder req = new StringBuilder();
-            req.append(method).append(' ').append(path).append(' ').append(version).append("\r\n");
-            for (String h : hdrs.split("\r\n")) {
-                if (h.toLowerCase(Locale.ROOT).startsWith("proxy-connection:") || h.isEmpty()) continue;
-                req.append(h).append("\r\n");
+        if (gamingControlsLayout != null) {
+            if (enabled) {
+                gamingControlsLayout.setVisibility(View.VISIBLE);
+                gamingControlsLayout.setAlpha(0f);
+                gamingControlsLayout.animate().alpha(1f).setDuration(180).start();
+            } else {
+                gamingControlsLayout.animate().cancel();
+                gamingControlsLayout.setVisibility(View.GONE);
             }
-            req.append("\r\n");
-            mo.write(req.toString().getBytes(StandardCharsets.UTF_8));
-            if (body != null && body.length > 0) mo.write(body);
-            mo.flush();
-            pipeResponse(mi, co);
-        } catch (Exception e) { sendError(co, 502); return false; }
-        return true;
+        }
+        if (gamingModePanel != null) gamingModePanel.setActivated(enabled);
+        if (panelConnectionView != null)
+            panelConnectionView.setSelected(enabled && uiState == UiState.CONNECTED);
+        if (connectBtn != null && uiState != UiState.CONNECTED)
+            connectBtn.setText(enabled ? getString(R.string.connect_gaming) : getString(R.string.connect));
     }
 
-    private static void bidirectionalRelay(InputStream mi, OutputStream co, Socket motor) {
-        Thread r = new Thread(() -> {
-            try { pipe(mi, co); } catch (Exception ignored) {}
-            try { motor.close(); } catch (Exception ignored) {}
+    private void openGamingAppsDialog() {
+        View dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_gaming_apps, null, false);
+        EditText     searchView    = dialogView.findViewById(R.id.editSearchApps);
+        TextView     counterView   = dialogView.findViewById(R.id.txtPickerCounter);
+        LinearLayout selectedLayout= dialogView.findViewById(R.id.layoutSelectedApps);
+        ListView     listView      = dialogView.findViewById(R.id.listGamingApps);
+
+        counterView.setText(getString(R.string.gaming_loading_apps));
+        Set<String> selectedPackages = new HashSet<>(BtProxy.getGamingSelectedPackages(this));
+        listView.setEnabled(false);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+            .setView(dialogView)
+            .setNegativeButton("Cancelar", null)
+            .setPositiveButton("Guardar", (d, which) -> {
+                BtProxy.setGamingSelectedPackages(this, new ArrayList<>(selectedPackages));
+                refreshGamingModeUi();
+                showGamingApplyFeedback("Aplicando selección de apps...", "Selección aplicada", R.color.color_accent);
+                applyGamingChangesIfRunning();
+            })
+            .create();
+
+        appLoadExecutor.execute(() -> {
+            List<AppOption> allApps = loadInstalledUserApps();
+            runOnUiThread(() -> bindGamingDialogContent(searchView, counterView, selectedLayout, listView, selectedPackages, allApps));
         });
-        r.setDaemon(true);
-        r.start();
+        dialog.show();
     }
 
-    private static boolean socks5Connect(InputStream mi, OutputStream mo, String host, int port) throws Exception {
-        mo.write(new byte[]{0x05, 0x01, 0x00}); mo.flush();
-        byte[] resp = new byte[2]; readFully(mi, resp);
-        if (resp[0] != 0x05 || resp[1] != 0x00) return false;
-        byte[] hostBytes = host.getBytes(StandardCharsets.UTF_8);
-        byte[] req = new byte[7 + hostBytes.length];
-        req[0] = 0x05; req[1] = 0x01; req[2] = 0x00; req[3] = 0x03;
-        req[4] = (byte) hostBytes.length;
-        System.arraycopy(hostBytes, 0, req, 5, hostBytes.length);
-        req[5 + hostBytes.length] = (byte) ((port >> 8) & 0xFF);
-        req[6 + hostBytes.length] = (byte) (port & 0xFF);
-        mo.write(req); mo.flush();
-        byte[] shead = new byte[4]; readFully(mi, shead);
-        if (shead[1] != 0x00) return false;
-        switch (shead[3]) {
-            case 0x01: readFully(mi, new byte[6]);  break;
-            case 0x04: readFully(mi, new byte[18]); break;
-            case 0x03: { int len = mi.read() & 0xFF; readFully(mi, new byte[len + 2]); break; }
-            default: return false;
-        }
-        return true;
-    }
+    private void bindGamingDialogContent(EditText searchView, TextView counterView,
+            LinearLayout selectedLayout, ListView listView,
+            Set<String> selectedPackages, List<AppOption> allApps) {
+        GamingAppsAdapter adapter = new GamingAppsAdapter(allApps, selectedPackages);
+        listView.setAdapter(adapter);
+        listView.setEnabled(true);
 
-    private static byte[] readBody(String hdrs, InputStream in) throws Exception {
-        String cl = extractHeader(hdrs, "Content-Length:");
-        if (cl.isEmpty()) return null;
-        try {
-            int len = Integer.parseInt(cl.trim());
-            if (len <= 0) return null;
-            byte[] buf = new byte[len]; readFully(in, buf); return buf;
-        } catch (Exception ignored) { return null; }
-    }
-
-    private static void pipeResponse(InputStream in, OutputStream out) throws Exception {
-        String status = readLine(in);
-        if (status.isEmpty()) return;
-        out.write((status + "\r\n").getBytes(StandardCharsets.UTF_8));
-        int contentLength = -1; boolean chunked = false;
-        StringBuilder respHdrs = new StringBuilder();
-        String line;
-        while (!(line = readLine(in)).isEmpty()) {
-            respHdrs.append(line).append("\r\n");
-            String lower = line.toLowerCase(Locale.ROOT);
-            if (lower.startsWith("content-length:"))
-                try { contentLength = Integer.parseInt(line.substring(15).trim()); } catch (Exception ignored) {}
-            if (lower.contains("transfer-encoding:") && lower.contains("chunked")) chunked = true;
-        }
-        out.write((respHdrs + "\r\n").getBytes(StandardCharsets.UTF_8));
-        out.flush();
-        if (chunked) {
-            pipeChunked(in, out);
-        } else if (contentLength > 0) {
-            byte[] buf = new byte[8192]; int remaining = contentLength;
-            while (remaining > 0) {
-                int n = in.read(buf, 0, Math.min(remaining, buf.length));
-                if (n < 0) break;
-                out.write(buf, 0, n); remaining -= n;
+        final Runnable[] refreshPinned = new Runnable[1];
+        refreshPinned[0] = () -> {
+            selectedLayout.removeAllViews();
+            counterView.setText(getString(R.string.gaming_selected_count, selectedPackages.size()));
+            for (AppOption app : allApps) {
+                if (!selectedPackages.contains(app.packageName)) continue;
+                Button chip = new Button(this);
+                chip.setText(app.appName + " ✕");
+                chip.setAllCaps(false);
+                chip.setTextSize(12f);
+                chip.setPadding(20, 10, 20, 10);
+                chip.setBackgroundResource(R.drawable.strike_chip_left);
+                chip.setTextColor(c(R.color.color_text_primary));
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                lp.setMargins(0, 0, 12, 0);
+                chip.setLayoutParams(lp);
+                chip.setOnClickListener(v -> {
+                    selectedPackages.remove(app.packageName);
+                    adapter.notifyDataSetChanged();
+                    refreshPinned[0].run();
+                });
+                selectedLayout.addView(chip);
             }
-            out.flush();
-        } else if (contentLength != 0) {
-            pipe(in, out);
+        };
+
+        adapter.setSelectionListener((app, checked) -> {
+            if (checked && selectedPackages.size() >= 3 && !selectedPackages.contains(app.packageName)) {
+                Toast.makeText(this, "Máximo 3 aplicaciones en modo gaming", Toast.LENGTH_SHORT).show();
+                adapter.notifyDataSetChanged();
+                return;
+            }
+            if (checked) selectedPackages.add(app.packageName);
+            else selectedPackages.remove(app.packageName);
+            adapter.notifyDataSetChanged();
+            refreshPinned[0].run();
+        });
+
+        listView.setOnItemClickListener((parent, view, position, id) -> {
+            AppOption app = adapter.getItem(position);
+            boolean checked = !selectedPackages.contains(app.packageName);
+            if (checked && selectedPackages.size() >= 3 && !selectedPackages.contains(app.packageName)) {
+                Toast.makeText(this, "Máximo 3 aplicaciones en modo gaming", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if (checked) selectedPackages.add(app.packageName);
+            else selectedPackages.remove(app.packageName);
+            adapter.notifyDataSetChanged();
+            refreshPinned[0].run();
+        });
+
+        searchView.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                adapter.filter(s == null ? "" : s.toString());
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+
+        refreshPinned[0].run();
+    }
+
+    private List<AppOption> loadInstalledUserApps() {
+        PackageManager pm = getPackageManager();
+        List<ApplicationInfo> all = pm.getInstalledApplications(PackageManager.GET_META_DATA);
+        List<AppOption> out = new ArrayList<>();
+        for (ApplicationInfo app : all) {
+            boolean isSystem        = (app.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
+            boolean isUpdatedSystem = (app.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0;
+            boolean isInData        = app.sourceDir != null && app.sourceDir.startsWith("/data/app/");
+            if (!isSystem || isUpdatedSystem || isInData) {
+                String pkg = app.packageName;
+                if (pkg == null || pkg.equals(getPackageName())) continue;
+                CharSequence label = app.loadLabel(pm);
+                out.add(new AppOption(pkg, label == null ? pkg : label.toString(), app.loadIcon(pm)));
+            }
+        }
+        out.sort(Comparator.comparing(o -> o.appName.toLowerCase(Locale.ROOT)));
+        return out;
+    }
+
+    private final class GamingAppsAdapter extends BaseAdapter {
+        interface OnSelectionChanged { void onChange(AppOption app, boolean checked); }
+
+        private final List<AppOption> allApps;
+        private final List<AppOption> filteredApps;
+        private final Set<String>     selectedPackages;
+        private OnSelectionChanged    selectionListener;
+
+        GamingAppsAdapter(List<AppOption> apps, Set<String> selectedPackages) {
+            this.allApps          = new ArrayList<>(apps);
+            this.filteredApps     = new ArrayList<>(apps);
+            this.selectedPackages = selectedPackages;
+        }
+
+        void setSelectionListener(OnSelectionChanged l) { this.selectionListener = l; }
+
+        void filter(String query) {
+            filteredApps.clear();
+            String q = query.trim().toLowerCase(Locale.ROOT);
+            for (AppOption app : allApps)
+                if (q.isEmpty() || app.appName.toLowerCase(Locale.ROOT).contains(q)
+                        || app.packageName.toLowerCase(Locale.ROOT).contains(q))
+                    filteredApps.add(app);
+            notifyDataSetChanged();
+        }
+
+        @Override public int      getCount()              { return filteredApps.size(); }
+        @Override public AppOption getItem(int position)  { return filteredApps.get(position); }
+        @Override public long     getItemId(int position) { return position; }
+
+        @Override
+        public View getView(int position, View convertView, ViewGroup parent) {
+            View view = convertView;
+            if (view == null)
+                view = LayoutInflater.from(SimpleModeActivity.this)
+                    .inflate(R.layout.item_gaming_app, parent, false);
+            AppOption app = getItem(position);
+            ((ImageView) view.findViewById(R.id.imgAppIcon)).setImageDrawable(app.icon);
+            ((TextView)  view.findViewById(R.id.txtAppName)).setText(app.appName);
+            ((TextView)  view.findViewById(R.id.txtPackageName)).setText(app.packageName);
+            CheckBox check = view.findViewById(R.id.checkSelected);
+            check.setOnCheckedChangeListener(null);
+            check.setChecked(selectedPackages.contains(app.packageName));
+            check.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                if (selectionListener != null) selectionListener.onChange(app, isChecked);
+            });
+            return view;
         }
     }
 
-    private static void pipeChunked(InputStream in, OutputStream out) throws Exception {
-        byte[] buf = new byte[8192];
-        while (true) {
-            String sizeLine = readLine(in);
-            if (sizeLine.isEmpty()) continue;
-            out.write((sizeLine + "\r\n").getBytes(StandardCharsets.UTF_8));
-            int chunkSize;
-            try { chunkSize = Integer.parseInt(sizeLine.trim().split(";")[0], 16); }
-            catch (Exception e) { break; }
-            if (chunkSize == 0) {
-                readLine(in);
-                out.write("\r\n".getBytes(StandardCharsets.UTF_8));
-                out.flush();
-                break;
+    private void startVpnWithPermission() {
+        setUiState(UiState.CONNECTING);
+        authState = "";
+        Intent prepare = VpnService.prepare(this);
+        if (prepare != null) vpnPermissionLauncher.launch(prepare);
+        else startVpn();
+    }
+
+    private void startVpn() {
+        Intent i = new Intent(this, BtVpnService.class);
+        i.setAction(BtVpnService.ACTION_START);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
+        else startService(i);
+        connectingSinceMs = SystemClock.elapsedRealtime();
+        setUiState(UiState.CONNECTING);
+    }
+
+    private void stopVpn() {
+        Intent i = new Intent(this, BtVpnService.class);
+        i.setAction(BtVpnService.ACTION_STOP);
+        startService(i);
+        setUiState(UiState.DISCONNECTED);
+        handler.removeCallbacks(autoDisconnectRunnable);
+        autoDisconnectAtMs = -1L;
+    }
+
+    private void applyGamingChangesIfRunning() {
+        if (!BtVpnService.isRunningState()) return;
+        applyingRuntimeChanges = true;
+        connectingSinceMs = SystemClock.elapsedRealtime();
+        setUiState(UiState.CONNECTING);
+        Intent i = new Intent(this, BtVpnService.class);
+        i.setAction(BtVpnService.ACTION_APPLY);
+        startService(i);
+    }
+
+    private void setHideInternalId(boolean hide) {
+        if (hideInternalId == hide) return;
+        hideInternalId = hide;
+        getSharedPreferences(PREF_UI, MODE_PRIVATE).edit().putBoolean(KEY_HIDE_ID, hide).apply();
+        refreshDeviceIdVisibility();
+    }
+
+    private void refreshDeviceIdVisibility() {
+        if (deviceIdView != null) deviceIdView.setVisibility(hideInternalId ? View.GONE : View.VISIBLE);
+        if (copyIdBtn   != null) copyIdBtn.setVisibility(hideInternalId ? View.GONE : View.VISIBLE);
+    }
+
+    private void showGamingApplyFeedback(String start, String done, int colorRes) {
+        if (gamingModeBadgeView == null) return;
+        gamingModeBadgeView.setText(start);
+        gamingModeBadgeView.setTextColor(c(colorRes));
+        gamingModeBadgeView.animate().cancel();
+        gamingModeBadgeView.setAlpha(0.55f);
+        gamingModeBadgeView.animate().alpha(1f).setDuration(220).start();
+        handler.postDelayed(() -> {
+            if (gamingModeBadgeView != null) gamingModeBadgeView.setText(done);
+            handler.postDelayed(this::refreshGamingModeUi, 500);
+        }, 500);
+    }
+
+    private void syncStateFromService() {
+        boolean running = BtVpnService.isRunningState();
+        if (running && !lastRunning) {
+            authState = ""; applyingRuntimeChanges = false; setUiState(UiState.CONNECTED);
+        } else if (!running && lastRunning) {
+            applyingRuntimeChanges = false; setUiState(UiState.DISCONNECTED);
+        } else if (!running && uiState == UiState.CONNECTING) {
+            if (SystemClock.elapsedRealtime() - connectingSinceMs > 9000) {
+                applyingRuntimeChanges = false; setUiState(UiState.DISCONNECTED);
             }
-            int remaining = chunkSize;
-            while (remaining > 0) {
-                int n = in.read(buf, 0, Math.min(remaining, buf.length));
-                if (n < 0) return;
-                out.write(buf, 0, n); remaining -= n;
-            }
-            readLine(in);
-            out.write("\r\n".getBytes(StandardCharsets.UTF_8));
-            out.flush();
+        } else if (running && applyingRuntimeChanges) {
+            applyingRuntimeChanges = false; setUiState(UiState.CONNECTED);
+        }
+        lastRunning = running;
+    }
+
+    private void refreshServiceState() {
+        String logs = BtVpnService.dumpLogs();
+        updateServerAuthStatus(logs);
+        updateUserMetadata(logs);
+    }
+
+    private void updateServerAuthStatus(String logs) {
+        if (logs == null || statusDetailsView == null) return;
+        String latestAuth = findLatestAuthState(logs);
+        if ("not_registered".equals(latestAuth)) {
+            if ("not_registered".equals(authState)) return;
+            authState = "not_registered";
+            setHideInternalId(false);
+            if (BtVpnService.isRunningState()) stopVpn();
+            setUiState(UiState.DISCONNECTED);
+            statusDetailsView.setVisibility(View.VISIBLE);
+            statusDetailsView.setText("✖ Usuario no registrado\nComparte tu ID interno para habilitación\nID: " + internalId);
+            statusDetailsView.setTextColor(c(R.color.color_disconnected));
+            if (connectBtn != null) connectBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
+        } else if ("expired".equals(latestAuth)) {
+            if ("expired".equals(authState)) return;
+            authState = "expired";
+            setHideInternalId(false);
+            if (BtVpnService.isRunningState()) stopVpn();
+            setUiState(UiState.DISCONNECTED);
+            statusDetailsView.setVisibility(View.VISIBLE);
+            statusDetailsView.setText("✖ Usuario expirado\nRenueva tu acceso con soporte\nID: " + internalId);
+            statusDetailsView.setTextColor(c(R.color.color_connecting));
+            if (connectBtn != null) connectBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
+        } else if ("ok".equals(latestAuth)) {
+            authState = ""; setHideInternalId(true);
         }
     }
 
-    private static void sendError(OutputStream out, int code) {
-        try {
-            String msg = code == 400 ? "Bad Request" : code == 502 ? "Bad Gateway" : "Error";
-            out.write(("HTTP/1.1 " + code + " " + msg + "\r\nContent-Length: 0\r\n\r\n")
-                    .getBytes(StandardCharsets.UTF_8));
-            out.flush();
-        } catch (Exception ignored) {}
-    }
-
-    private static String readLineWithPrefix(InputStream in, byte[] prefix) throws Exception {
-        StringBuilder sb = new StringBuilder();
-        if (prefix != null) for (byte b : prefix) sb.append((char)(b & 0xFF));
-        int b;
-        while ((b = in.read()) >= 0) { if (b == '\n') break; if (b != '\r') sb.append((char) b); }
-        return b < 0 && sb.length() == 0 ? null : sb.toString().trim();
-    }
-
-    private static String readLine(InputStream in) throws Exception {
-        StringBuilder sb = new StringBuilder(); int b;
-        while ((b = in.read()) >= 0) { if (b == '\n') break; if (b != '\r') sb.append((char) b); }
-        return sb.toString();
-    }
-
-    private static String extractHeader(String headers, String name) {
-        String nameLower = name.toLowerCase(Locale.ROOT);
-        for (String l : headers.split("\r\n"))
-            if (l.toLowerCase(Locale.ROOT).startsWith(nameLower))
-                return l.substring(name.length()).trim();
+    private String findLatestAuthState(String logs) {
+        String[] lines = logs.split("\n");
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i];
+            if (line == null) continue;
+            String lower = line.trim().toLowerCase(Locale.ROOT);
+            if (lower.isEmpty()) continue;
+            if (lower.contains("usuario no registrado") || lower.contains("not_registered")) return "not_registered";
+            if (lower.contains("usuario expirado")     || lower.contains("expired"))       return "expired";
+            if (lower.contains("user_name=") || lower.contains("user_days=") || lower.contains("ping_ms=")) return "ok";
+        }
         return "";
     }
 
-    private static int parsePort(String s, int def) {
-        try { return Integer.parseInt(s.trim()); } catch (Exception e) { return def; }
-    }
-
-    private static void readFully(InputStream in, byte[] buf) throws Exception {
-        int off = 0;
-        while (off < buf.length) {
-            int n = in.read(buf, off, buf.length - off);
-            if (n < 0) throw new EOFException();
-            off += n;
+    private void updateUserMetadata(String logs) {
+        if (logs == null) return;
+        String[] lines = logs.split("\n");
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i].trim();
+            int idx = line.indexOf("user_name=");
+            if (idx >= 0 && userValueView != null) {
+                String v = line.substring(idx + "user_name=".length()).trim();
+                if (!v.isEmpty()) userValueView.setText(v);
+                break;
+            }
+        }
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i].trim();
+            int idx = line.indexOf("user_days=");
+            if (idx >= 0 && daysValueView != null) {
+                String v = line.substring(idx + "user_days=".length()).trim();
+                if (!v.isEmpty()) {
+                    daysValueView.setText(v + " días");
+                    try {
+                        int days = Integer.parseInt(v.replaceAll("[^0-9]", ""));
+                        daysValueView.setTextColor(days < 7 ? c(R.color.color_connecting) : c(R.color.color_connected));
+                        scheduleAutoDisconnectFromDays(days);
+                    } catch (Exception ignored) {}
+                }
+                break;
+            }
+        }
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i].trim();
+            int idx = line.indexOf("ping_ms=");
+            if (idx >= 0 && pingValueView != null) {
+                String v = line.substring(idx + "ping_ms=".length()).trim();
+                if (!v.isEmpty()) {
+                    try { animatePingTo(Integer.parseInt(v.replaceAll("[^0-9]", ""))); }
+                    catch (Exception ignored) {
+                        pingValueView.setText("--");
+                        pingValueView.setTextColor(c(R.color.color_text_disabled));
+                    }
+                }
+                break;
+            }
         }
     }
 
-    private static void pipe(InputStream in, OutputStream out) throws Exception {
-        byte[] buf = new byte[8192]; int n;
-        while ((n = in.read(buf)) != -1) { out.write(buf, 0, n); out.flush(); }
-    }
-
-    static final class HevBridge {
-        static { System.loadLibrary("hev-jni"); }
-        static native int  start(String path, int fd);
-        static native void stop();
-    }
-}
-
-final class BtProxy {
-
-    static final int SOCKS5_PORT = 10809;
-
-    private static final String PREFS           = "strike_prefs";
-    private static final String KEY_INTERNAL_ID = "internal_id";
-    private static final String KEY_GAMING_MODE = "gaming_mode";
-    private static final String KEY_GAMING_APPS = "gaming_apps";
-
-    private static final boolean NATIVE_READY;
-    private static final String  NATIVE_LOAD_ERROR;
-
-    static {
-        boolean ready = false; String error = "";
-        try {
-            System.loadLibrary("btproxy");
-            ready = true;
-        } catch (Throwable t) {
-            error = t.getClass().getSimpleName() + ": " + t.getMessage();
-            android.util.Log.e("BtProxy", "No se pudo cargar btproxy", t);
+    private void animatePingTo(int targetPing) {
+        if (pingValueView == null) return;
+        int start = lastPingMs >= 0 ? lastPingMs : targetPing;
+        if (!canAnimate() || lastPingMs < 0) {
+            pingValueView.setText(String.valueOf(targetPing));
+            pingValueView.setTextColor(resolvePingColor(targetPing));
+            lastPingMs = targetPing;
+            return;
         }
-        NATIVE_READY = ready; NATIVE_LOAD_ERROR = error;
+        android.animation.ValueAnimator counter = android.animation.ValueAnimator.ofInt(start, targetPing);
+        counter.setDuration(400);
+        counter.addUpdateListener(a -> pingValueView.setText(String.valueOf((int) a.getAnimatedValue())));
+        counter.start();
+        android.animation.ValueAnimator colorAnim = android.animation.ValueAnimator.ofObject(
+            new android.animation.ArgbEvaluator(),
+            pingValueView.getCurrentTextColor(), resolvePingColor(targetPing));
+        colorAnim.setDuration(600);
+        colorAnim.addUpdateListener(a -> pingValueView.setTextColor((Integer) a.getAnimatedValue()));
+        colorAnim.start();
+        lastPingMs = targetPing;
     }
 
-    static boolean isNativeReady()      { return NATIVE_READY; }
-    static String  getNativeLoadError() { return NATIVE_LOAD_ERROR; }
-
-    static int start(VpnService svc, String id) {
-        if (!NATIVE_READY) return -1;
-        return nativeStart(SOCKS5_PORT, svc, id);
+    private int resolvePingColor(int ping) {
+        if (ping < 80)  return c(R.color.color_connected);
+        if (ping <= 150) return c(R.color.color_accent);
+        return c(R.color.color_connecting);
     }
 
-    static void stop() {
-        if (NATIVE_READY) nativeStop();
+    private void scheduleAutoDisconnectFromDays(int days) {
+        handler.removeCallbacks(autoDisconnectRunnable);
+        if (days <= 0) { runAutoDisconnect(); return; }
+        long delay = days * 24L * 60L * 60L * 1000L;
+        autoDisconnectAtMs = SystemClock.elapsedRealtime() + delay;
+        handler.postDelayed(autoDisconnectRunnable, delay);
     }
 
-    static String drainLogs() {
-        return NATIVE_READY ? nativeDrainLogs() : "";
-    }
-
-    static void setGamingMode(Context ctx, boolean enabled) {
-        prefs(ctx).edit().putBoolean(KEY_GAMING_MODE, enabled).apply();
-        if (NATIVE_READY) nativeSetGamingMode(enabled);
-    }
-
-    static boolean isGamingMode(Context ctx) {
-        return prefs(ctx).getBoolean(KEY_GAMING_MODE, false);
-    }
-
-    static void applyGamingMode(Context ctx) {
-        if (NATIVE_READY) nativeApplyMode(isGamingMode(ctx));
-    }
-
-    static List<String> getGamingSelectedPackages(Context ctx) {
-        Set<String> set = prefs(ctx).getStringSet(KEY_GAMING_APPS, new HashSet<>());
-        return new ArrayList<>(set);
-    }
-
-    static void setGamingSelectedPackages(Context ctx, List<String> packages) {
-        HashSet<String> clean = new HashSet<>();
-        if (packages != null)
-            for (String pkg : packages)
-                if (pkg != null && !pkg.isBlank()) clean.add(pkg);
-        prefs(ctx).edit().putStringSet(KEY_GAMING_APPS, clean).apply();
-    }
-
-    static String getOrCreateInternalId(Context ctx) {
-        SharedPreferences sp = prefs(ctx);
-        String existing = sp.getString(KEY_INTERNAL_ID, null);
-        if (existing != null && !existing.isBlank()) return existing;
-        String rawId = Settings.Secure.getString(ctx.getContentResolver(), Settings.Secure.ANDROID_ID);
-        if (rawId == null || rawId.isBlank()) rawId = "unknown";
-        String seed = rawId + "|" + Build.BRAND + "|" + Build.MODEL + "|" + ctx.getPackageName() + "|" + System.currentTimeMillis();
-        String id = "STRK-" + sha256(seed).substring(0, 48);
-        sp.edit().putString(KEY_INTERNAL_ID, id).apply();
-        return id;
-    }
-
-    private static SharedPreferences prefs(Context ctx) {
-        return ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-    }
-
-    private static String sha256(String v) {
-        try {
-            byte[] d = MessageDigest.getInstance("SHA-256").digest(v.getBytes(StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder(d.length * 2);
-            for (byte b : d) sb.append(String.format("%02x", b));
-            return sb.toString();
-        } catch (Exception e) {
-            return Long.toHexString(System.currentTimeMillis()) + Long.toHexString(System.nanoTime());
+    private void runAutoDisconnect() {
+        if (!BtVpnService.isRunningState()) return;
+        stopVpn();
+        setHideInternalId(false);
+        if (statusDetailsView != null) {
+            statusDetailsView.setVisibility(View.VISIBLE);
+            statusDetailsView.setText("✖ Usuario expirado\nDesconexión automática local\nID: " + internalId);
+            statusDetailsView.setTextColor(c(R.color.color_connecting));
         }
     }
 
-    private static native int    nativeStart(int port, VpnService svc, String id);
-    private static native void   nativeStop();
-    private static native String nativeDrainLogs();
-    public  static native void   nativeSetGamingMode(boolean enabled);
-    public  static native void   nativeApplyMode(boolean enabled);
-    public  static native void   nativeSetNetwork(long networkHandle);
+    private void setUiState(UiState newState) {
+        uiState = newState;
+        if (connectBtn != null) {
+            if (newState == UiState.CONNECTING) {
+                connectBtn.setEnabled(false);
+                connectBtn.setActivated(false);
+                connectBtn.setText("Conectando...");
+                connectBtn.setBackgroundResource(R.drawable.btn_connecting_selector);
+                connectBtn.setTextColor(c(R.color.color_text_primary));
+            } else if (newState == UiState.CONNECTED) {
+                connectBtn.setEnabled(true);
+                connectBtn.setActivated(true);
+                connectBtn.setText(R.string.disconnect);
+                connectBtn.setBackgroundResource(R.drawable.btn_disconnect_selector);
+                connectBtn.setTextColor(c(R.color.color_text_primary));
+            } else {
+                connectBtn.setEnabled(true);
+                connectBtn.setActivated(false);
+                connectBtn.setText(BtProxy.isGamingMode(this) ? getString(R.string.connect_gaming) : getString(R.string.connect));
+                connectBtn.setBackgroundResource(R.drawable.btn_connect_selector);
+                connectBtn.setTextColor(0xFF050505);
+            }
+        }
+        if (statusDotView != null) {
+            int col = newState == UiState.CONNECTED ? c(R.color.color_connected)
+                    : newState == UiState.CONNECTING ? c(R.color.color_connecting)
+                    : c(R.color.color_text_disabled);
+            statusDotView.setBackgroundTintList(ColorStateList.valueOf(col));
+        }
+        if (statusHaloView != null) {
+            int col = newState == UiState.CONNECTED ? c(R.color.color_connected)
+                    : newState == UiState.CONNECTING ? c(R.color.color_connecting)
+                    : c(R.color.color_text_disabled);
+            statusHaloView.setBackgroundTintList(ColorStateList.valueOf(col));
+        }
+        if (statusBadgeView != null) {
+            if (newState == UiState.CONNECTING) {
+                statusBadgeView.setText("CONECTANDO...");
+                statusBadgeView.setTextColor(c(R.color.color_connecting));
+                startStatusPulse(); startStatusHaloWave();
+            } else if (newState == UiState.CONNECTED) {
+                statusBadgeView.setText("CONECTADO");
+                statusBadgeView.setTextColor(BtProxy.isGamingMode(this) ? c(R.color.color_gaming) : c(R.color.color_connected));
+                stopStatusPulse(); stopStatusHaloWave();
+                if (statusHaloView != null) statusHaloView.setAlpha(0.15f);
+            } else {
+                statusBadgeView.setText("DESCONECTADO");
+                statusBadgeView.setTextColor(c(R.color.color_disconnected));
+                stopStatusPulse(); stopStatusHaloWave();
+                if (statusHaloView != null) statusHaloView.setAlpha(0.20f);
+            }
+            statusBadgeView.setShadowLayer(0f, 0f, 0f, 0);
+        }
+        if (statusDetailsView != null) {
+            if (newState == UiState.CONNECTING) {
+                statusDetailsView.setVisibility(View.VISIBLE);
+                statusDetailsView.setText("• Estableciendo conexión...");
+                statusDetailsView.setTextColor(c(R.color.color_connecting));
+            } else if (newState == UiState.CONNECTED) {
+                String eta = autoDisconnectAtMs > 0 ? "Autodesconexión local activa" : "Conexión activa";
+                statusDetailsView.setVisibility(View.VISIBLE);
+                statusDetailsView.setText("✓ " + eta);
+                statusDetailsView.setTextColor(0xFF555555);
+                if (canAnimate()) statusDetailsView.startAnimation(AnimationUtils.loadAnimation(this, R.anim.fade_slide_in));
+            } else {
+                statusDetailsView.setVisibility(View.GONE);
+                if (pingValueView != null) {
+                    pingValueView.setText("--");
+                    pingValueView.setTextColor(c(R.color.color_text_disabled));
+                    lastPingMs = -1;
+                }
+            }
+        }
+        refreshGamingModeUi();
+    }
 }
