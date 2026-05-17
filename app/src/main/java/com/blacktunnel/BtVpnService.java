@@ -250,7 +250,7 @@ public class BtVpnService extends VpnService {
     private ParcelFileDescriptor buildTunInterface() {
         Builder builder = new Builder()
                 .setSession("bt-hev")
-                .setMtu(1380)
+                .setMtu(1420)
                 .addAddress("198.18.0.1", 15)
                 .addAddress("fc00::1", 128)
                 .addDnsServer("198.18.0.2");
@@ -347,7 +347,7 @@ public class BtVpnService extends VpnService {
 
     private File writeHevCfg() {
         String yml =
-            "tunnel:\n  name: bt-hev\n  mtu: 1380\n  ipv4: 198.18.0.1\n  ipv6: 'fc00::1'\n" +
+            "tunnel:\n  name: bt-hev\n  mtu: 1420\n  ipv4: 198.18.0.1\n  ipv6: 'fc00::1'\n" +
             "socks5:\n  address: 127.0.0.1\n  port: " + BtProxy.SOCKS5_PORT + "\n  udp: 'tcp'\n  pipeline: false\n" +
             "mapdns:\n  address: 198.18.0.2\n  port: 53\n  network: 198.18.0.0\n  netmask: 255.254.0.0\n  cache-size: 8192\n" +
             "misc:\n" +
