@@ -55,25 +55,17 @@ static const char *PROXY_IPS[] = {
 };
 #define PROXY_IP_COUNT 2
 
-/* ------------------------------------------------------------------
- * Tunnel open result: distinguishes permanent auth failures from
- * transient network errors so the main loop can decide whether to
- * retry or abort.
- * ------------------------------------------------------------------ */
 typedef enum {
-    TUNNEL_OK          =  0,
-    TUNNEL_ERR_TRANSIENT = -1,   /* network / handshake error – retry */
-    TUNNEL_ERR_AUTH      = -2,   /* 403 not_registered                */
-    TUNNEL_ERR_EXPIRED   = -3,   /* 403 expired                       */
+    TUNNEL_OK            =  0,
+    TUNNEL_ERR_TRANSIENT = -1,
+    TUNNEL_ERR_AUTH      = -2,
+    TUNNEL_ERR_EXPIRED   = -3,
 } tunnel_result_t;
 
-/* ------------------------------------------------------------------
- * Ready-state values signalled to nativeStart's caller.
- * ------------------------------------------------------------------ */
 #define READY_PENDING   0
 #define READY_OK        1
-#define READY_FAIL     -1   /* transient: start failed, may retry  */
-#define READY_AUTH_ERR -2   /* permanent: invalid / expired user   */
+#define READY_FAIL     -1
+#define READY_AUTH_ERR -2
 
 static int resolve_proxy_ipv6(char out[][INET6_ADDRSTRLEN], int cap) {
     struct addrinfo hints = {0}, *res = NULL;
@@ -245,7 +237,6 @@ static void notify_reconnected(void) {
     if (att) (*jvm)->DetachCurrentThread(jvm);
 }
 
-/* Notify Java side of a permanent auth failure so it can update UI. */
 static void notify_auth_error(int expired) {
     pthread_mutex_lock(&g_mu);
     JavaVM *jvm = g_jvm; jobject svc = g_svc;
@@ -255,7 +246,6 @@ static void notify_auth_error(int expired) {
     if ((*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK)
         { (*jvm)->AttachCurrentThread(jvm, &env, NULL); att = 1; }
     jclass cls = (*env)->GetObjectClass(env, svc);
-    /* onAuthError(boolean expired) */
     jmethodID m = (*env)->GetMethodID(env, cls, "onAuthError", "(Z)V");
     if (m) (*env)->CallVoidMethod(env, svc, m, (jboolean)expired);
     (*env)->DeleteLocalRef(env, cls);
@@ -374,11 +364,6 @@ static int try_connect_ip(const char *ip, int timeout_ms) {
     return fd;
 }
 
-/*
- * Check whether a 403 response body/headers contain a known token.
- * Reads up to sizeof(extra)-1 bytes of body beyond the headers.
- * Returns TUNNEL_ERR_AUTH or TUNNEL_ERR_EXPIRED; call only on 403.
- */
 static tunnel_result_t classify_403(int fd, const char *hdrs) {
     char extra[256] = {0};
     recv(fd, extra, sizeof(extra) - 1, MSG_DONTWAIT);
@@ -392,13 +377,9 @@ static tunnel_result_t classify_403(int fd, const char *hdrs) {
         return TUNNEL_ERR_EXPIRED;
     }
     push_log("E", "error 403");
-    return TUNNEL_ERR_AUTH;   /* unknown 403: treat as invalid user */
+    return TUNNEL_ERR_AUTH;
 }
 
-/*
- * open_tunnel – connect, perform HTTP upgrade handshake, return fd >= 0
- * on success or a negative tunnel_result_t on failure.
- */
 static tunnel_result_t open_tunnel(int *fd_out) {
     push_log("I", "resolviendo conexion...");
 
@@ -434,7 +415,6 @@ static tunnel_result_t open_tunnel(int *fd_out) {
 
     atomic_store(&g_last_pong, (long)time(NULL));
 
-    /* First HTTP round-trip */
     char req1[256], h1[2048];
     snprintf(req1, sizeof(req1), "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", PROXY_HOST);
     send(fd, req1, strlen(req1), MSG_NOSIGNAL);
@@ -443,7 +423,6 @@ static tunnel_result_t open_tunnel(int *fd_out) {
         return TUNNEL_ERR_TRANSIENT;
     }
 
-    /* Upgrade request */
     char req2[1024], h2[4096];
     snprintf(req2, sizeof(req2),
         "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
@@ -595,7 +574,6 @@ static int make_relay_socket(int port) {
     return rfd;
 }
 
-/* Signal the ready condition variable from the main thread. */
 static void signal_ready(int st) {
     pthread_mutex_lock(&g_ready_mu);
     if (g_ready_st == READY_PENDING) {
@@ -614,15 +592,12 @@ static void *main_thread(void *arg) {
         tunnel_result_t tres = open_tunnel(&tfd);
 
         if (tres != TUNNEL_OK) {
-            /* Permanent auth failure: notify Java, stop without retry. */
             if (tres == TUNNEL_ERR_AUTH || tres == TUNNEL_ERR_EXPIRED) {
                 notify_auth_error(tres == TUNNEL_ERR_EXPIRED);
                 signal_ready(READY_AUTH_ERR);
                 break;
             }
 
-            /* Transient failure: signal nativeStart if still waiting,
-               then back off and retry. */
             signal_ready(READY_FAIL);
             if (!g_running) break;
             push_log("E", "retry in %ds", g_reconnect_delay);
@@ -632,7 +607,6 @@ static void *main_thread(void *arg) {
             continue;
         }
 
-        /* Successful connection: reset backoff. */
         g_reconnect_delay = RECONNECT_DELAY_MIN;
 
         int rfd = make_relay_socket(port);
@@ -686,7 +660,6 @@ static void *main_thread(void *arg) {
 
         push_log("I", "relay port=%d epoch=%d", port, epoch);
 
-        /* Signal nativeStart that we are up (only the first time). */
         signal_ready(READY_OK);
 
         if (!is_first) notify_reconnected();
@@ -834,7 +807,6 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
         return 0;
     }
 
-    /* Any non-OK state (FAIL, AUTH_ERR, or timeout): tear down and report. */
     Java_com_blacktunnel_BtProxy_nativeStop(env, clazz);
     return (st == READY_AUTH_ERR) ? -2 : -1;
 }
@@ -863,7 +835,6 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     if (wr   >= 0) close(wr);
     if (ww   >= 0) close(ww);
 
-    /* Unblock any nativeStart still waiting. */
     pthread_mutex_lock(&g_ready_mu);
     if (g_ready_st == READY_PENDING) {
         g_ready_st = READY_FAIL;
