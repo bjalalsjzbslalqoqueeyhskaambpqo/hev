@@ -58,6 +58,7 @@ static int             g_wake_w       = -1;
 static atomic_int      g_next_sid     = 1;
 static atomic_int      g_tunnel_epoch = 0;
 static atomic_long     g_last_pong    = 0;
+static atomic_int      g_aux_threads  = 0;
 static char            g_internal_id[160] = {0};
 static JavaVM         *g_jvm          = NULL;
 static jobject         g_svc          = NULL;
@@ -65,7 +66,6 @@ static net_handle_t    g_net          = NETWORK_UNSPECIFIED;
 static pthread_t       g_main_thread  = 0;
 static pthread_mutex_t g_mu           = PTHREAD_MUTEX_INITIALIZER;
 
-/* ── log buffer (drenado desde Java) ───────────────────────────── */
 static pthread_mutex_t g_log_mu  = PTHREAD_MUTEX_INITIALIZER;
 static char            g_logbuf[32768];
 static size_t          g_loglen  = 0;
@@ -90,7 +90,6 @@ static void push_log(const char *lvl, const char *fmt, ...) {
     pthread_mutex_unlock(&g_log_mu);
 }
 
-/* ── hash table sid → cfd ──────────────────────────────────────── */
 #define HT_SIZE 4096
 #define HT_MASK (HT_SIZE - 1)
 
@@ -156,7 +155,6 @@ static void ht_close_all(int epfd) {
     }
 }
 
-/* ── protect + network ─────────────────────────────────────────── */
 static void protect_fd(int fd) {
     pthread_mutex_lock(&g_mu);
     net_handle_t net = g_net;
@@ -174,7 +172,6 @@ static void protect_fd(int fd) {
     if (att) (*jvm)->DetachCurrentThread(jvm);
 }
 
-/* ── I/O del túnel ─────────────────────────────────────────────── */
 static int tun_send(int tfd, uint8_t type, uint32_t sid,
                     const uint8_t *data, uint16_t dlen) {
     uint8_t hdr[FRAME_HDR];
@@ -228,7 +225,6 @@ static int tun_recv_full(int fd, uint8_t *buf, int len, int ms) {
     return 0;
 }
 
-/* ── handshake HTTP ────────────────────────────────────────────── */
 static int recv_eoh(int fd, char *buf, int cap, int sec) {
     struct timeval tv = {sec, 0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -244,7 +240,6 @@ static int recv_eoh(int fd, char *buf, int cap, int sec) {
     return ok ? used : -1;
 }
 
-/* ── conexión al proxy ─────────────────────────────────────────── */
 static int try_connect_ip(const char *ip, int timeout_ms) {
     struct sockaddr_in6 a = {0};
     a.sin6_family = AF_INET6; a.sin6_port = htons(PROXY_PORT);
@@ -324,10 +319,11 @@ static int open_tunnel(void) {
     return fd;
 }
 
-/* ── threads auxiliares ────────────────────────────────────────── */
 typedef struct { int tfd; int epoch; int epfd; int wake_w; } thr_t;
 
 static void *tunnel_reader(void *arg) {
+    atomic_fetch_add(&g_aux_threads, 1);
+
     thr_t *ta = (thr_t *)arg;
     int tfd = ta->tfd, epoch = ta->epoch, epfd = ta->epfd, wake_w = ta->wake_w;
     free(ta);
@@ -385,10 +381,14 @@ static void *tunnel_reader(void *arg) {
         case T_PONG: atomic_store(&g_last_pong, (long)time(NULL)); break;
         }
     }
+
+    atomic_fetch_sub(&g_aux_threads, 1);
     return NULL;
 }
 
 static void *keepalive(void *arg) {
+    atomic_fetch_add(&g_aux_threads, 1);
+
     thr_t *ta = (thr_t *)arg;
     int tfd = ta->tfd, epoch = ta->epoch, wake_w = ta->wake_w;
     free(ta);
@@ -410,10 +410,11 @@ static void *keepalive(void *arg) {
             break;
         }
     }
+
+    atomic_fetch_sub(&g_aux_threads, 1);
     return NULL;
 }
 
-/* ── relay socket (hev conecta aquí) ──────────────────────────── */
 static int make_relay_socket(int port) {
     int rfd = socket(AF_INET, SOCK_STREAM, 0);
     if (rfd < 0) return -1;
@@ -433,7 +434,6 @@ static int make_relay_socket(int port) {
     return rfd;
 }
 
-/* ── hilo principal ────────────────────────────────────────────── */
 static void *main_thread(void *arg) {
     int port = (int)(intptr_t)arg;
 
@@ -491,7 +491,6 @@ static void *main_thread(void *arg) {
 
         push_log("I", "relay listo port=%d epoch=%d", port, epoch);
 
-        /* ── epoll loop: hev ↔ túnel ──────────────────────────── */
         struct epoll_event events[MAX_EPOLL_EVENTS];
         int dead = 0;
 
@@ -503,10 +502,8 @@ static void *main_thread(void *arg) {
                 int      efd = events[i].data.fd;
                 uint32_t evs = events[i].events;
 
-                /* señal de cierre */
                 if (efd == wfds[0]) { dead = 1; break; }
 
-                /* nueva conexión de hev */
                 if (efd == rfd) {
                     struct sockaddr_in ca; socklen_t cl = sizeof(ca);
                     int cfd = accept(rfd, (struct sockaddr *)&ca, &cl);
@@ -534,7 +531,6 @@ static void *main_thread(void *arg) {
                     continue;
                 }
 
-                /* datos de una sesión activa */
                 uint32_t sid = (uint32_t)(events[i].data.u64 >> 32);
                 int      cfd = (int)(uint32_t)events[i].data.u64;
 
@@ -562,7 +558,6 @@ static void *main_thread(void *arg) {
 
         push_log("E", "tunnel caido epoch=%d", epoch);
 
-        /* ── limpieza ──────────────────────────────────────────── */
         atomic_fetch_add(&g_tunnel_epoch, 1);
         ht_close_all(epfd);
 
@@ -582,7 +577,6 @@ static void *main_thread(void *arg) {
     return NULL;
 }
 
-/* ── JNI ───────────────────────────────────────────────────────── */
 JNIEXPORT void JNICALL Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *, jclass);
 
 JNIEXPORT jint JNICALL
@@ -605,6 +599,7 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     ht_init();
     g_running = 1;
     atomic_store(&g_next_sid, 1);
+    atomic_store(&g_last_pong, (long)time(NULL));
     pthread_mutex_unlock(&g_mu);
 
     pthread_t thr;
@@ -644,11 +639,18 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     if (ww   >= 0) close(ww);
 
     ht_close_all(-1);
-    if (svc) (*env)->DeleteGlobalRef(env, svc);
 
     pthread_t thr;
     pthread_mutex_lock(&g_mu); thr = g_main_thread; g_main_thread = 0; pthread_mutex_unlock(&g_mu);
     if (thr != 0) pthread_join(thr, NULL);
+
+    int waited = 0;
+    while (atomic_load(&g_aux_threads) > 0 && waited < 50) {
+        usleep(100000);
+        waited++;
+    }
+
+    if (svc) (*env)->DeleteGlobalRef(env, svc);
 }
 
 JNIEXPORT jstring JNICALL
