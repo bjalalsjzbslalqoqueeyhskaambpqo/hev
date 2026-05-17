@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <poll.h>
 #include <fcntl.h>
+#include <netdb.h>
 
 #define LOG_TAG "btproxy"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
@@ -38,34 +39,42 @@
 #define CONNECT_TIMEOUT_SEC    15
 #define HANDSHAKE_TIMEOUT_SEC  4
 
-#define PROXY_HOST "emailmarketing.personal.com.ar"
-#define PROXY_PORT 80
+#define PROXY_HOST  "emailmarketing.personal.com.ar"
+#define PROXY_PORT  80
 #define TUNNEL_HOST "2.brawlpass.com.ar"
 
-static const char *PROXY_IPS[] = {
+#define TUNNEL_OK        0
+#define TUNNEL_ERR_NET  -1
+#define TUNNEL_ERR_AUTH -2
+
+static const char *STATIC_IPS[] = {
     "2606:4700::6812:16b7",
     "2606:4700::6812:17b7",
 };
-#define PROXY_IP_COUNT 2
+#define STATIC_IP_COUNT 2
 
-static pthread_mutex_t g_mu         = PTHREAD_MUTEX_INITIALIZER;
-static volatile int    g_running    = 0;
-static int             g_tfd        = -1;
-static int             g_rfd        = -1;
-static int             g_epfd       = -1;
-static int             g_wake_r     = -1;
-static int             g_wake_w     = -1;
-static pthread_t       g_thread     = 0;
-static atomic_int      g_next_sid   = 1;
-static atomic_long     g_last_pong  = 0;
-static char            g_iid[160]   = {0};
-static JavaVM         *g_jvm        = NULL;
-static jobject         g_svc        = NULL;
-static net_handle_t    g_net        = NETWORK_UNSPECIFIED;
+static pthread_mutex_t g_mu       = PTHREAD_MUTEX_INITIALIZER;
+static volatile int    g_running  = 0;
+static int             g_tfd      = -1;
+static int             g_rfd      = -1;
+static int             g_epfd     = -1;
+static int             g_wake_r   = -1;
+static int             g_wake_w   = -1;
+static pthread_t       g_thread   = 0;
+static atomic_int      g_next_sid = 1;
+static atomic_long     g_last_pong= 0;
+static char            g_iid[160] = {0};
+static JavaVM         *g_jvm      = NULL;
+static jobject         g_svc      = NULL;
+static net_handle_t    g_net      = NETWORK_UNSPECIFIED;
 
-static pthread_mutex_t g_log_mu = PTHREAD_MUTEX_INITIALIZER;
+static atomic_int     g_tunnel_ready = 0;
+static pthread_mutex_t g_ready_mu    = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_ready_cv    = PTHREAD_COND_INITIALIZER;
+
+static pthread_mutex_t g_log_mu  = PTHREAD_MUTEX_INITIALIZER;
 static char            g_logbuf[32768];
-static size_t          g_loglen = 0;
+static size_t          g_loglen  = 0;
 
 static void push_log(const char *lvl, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
@@ -87,12 +96,19 @@ static void push_log(const char *lvl, const char *fmt, ...) {
     pthread_mutex_unlock(&g_log_mu);
 }
 
+static void signal_ready(int code) {
+    atomic_store(&g_tunnel_ready, code);
+    pthread_mutex_lock(&g_ready_mu);
+    pthread_cond_broadcast(&g_ready_cv);
+    pthread_mutex_unlock(&g_ready_mu);
+}
+
 #define HT_SIZE 4096
 #define HT_MASK (HT_SIZE - 1)
 typedef struct hn_s { struct hn_s *next; uint32_t sid; int cfd; } hn_t;
-static hn_t           *g_ht[HT_SIZE];
-static pthread_mutex_t g_ht_mu[HT_SIZE];
-static int             g_ht_inited = 0;
+static hn_t            *g_ht[HT_SIZE];
+static pthread_mutex_t  g_ht_mu[HT_SIZE];
+static int              g_ht_inited = 0;
 
 static void ht_init(void) {
     for (int i = 0; i < HT_SIZE; i++) {
@@ -209,18 +225,19 @@ static int recv_eoh(int fd, char *buf, int cap, int sec) {
 
 static int try_connect_ip(const char *ip, int timeout_ms) {
     struct sockaddr_in6 a = {0};
-    a.sin6_family = AF_INET6; a.sin6_port = htons(PROXY_PORT);
+    a.sin6_family = AF_INET6;
+    a.sin6_port   = htons(PROXY_PORT);
     if (inet_pton(AF_INET6, ip, &a.sin6_addr) != 1) return -1;
     int fd = socket(AF_INET6, SOCK_STREAM, 0); if (fd < 0) return -1;
     protect_fd(fd);
-    int one = 1;
+    int one = 1, v = 524288;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &one, sizeof(one));
     setsockopt(fd, SOL_SOCKET,  SO_KEEPALIVE, &one, sizeof(one));
-    int v = 524288;
-    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &v, sizeof(v));
-    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &v, sizeof(v));
+    setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,    &v,   sizeof(v));
+    setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,    &v,   sizeof(v));
     int fl = fcntl(fd, F_GETFL, 0);
-    fcntl(fd, F_SETFL, fl | O_NONBLOCK); fcntl(fd, F_SETFD, FD_CLOEXEC);
+    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
     int r = connect(fd, (struct sockaddr *)&a, sizeof(a));
     if (r == 0) { fcntl(fd, F_SETFL, fl); return fd; }
     if (errno != EINPROGRESS) { close(fd); return -1; }
@@ -229,6 +246,25 @@ static int try_connect_ip(const char *ip, int timeout_ms) {
     int e = 0; socklen_t el = sizeof(e);
     if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) < 0 || e != 0) { close(fd); return -1; }
     fcntl(fd, F_SETFL, fl);
+    return fd;
+}
+
+static int resolve_and_connect(void) {
+    struct addrinfo hints = {0}, *res = NULL;
+    hints.ai_family   = AF_INET6;
+    hints.ai_socktype = SOCK_STREAM;
+    char port_str[8];
+    snprintf(port_str, sizeof(port_str), "%d", PROXY_PORT);
+    if (getaddrinfo(PROXY_HOST, port_str, &hints, &res) != 0 || !res) return -1;
+    int fd = -1;
+    for (struct addrinfo *ai = res; ai && fd < 0; ai = ai->ai_next) {
+        char ip[INET6_ADDRSTRLEN] = {0};
+        struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)ai->ai_addr;
+        inet_ntop(AF_INET6, &s6->sin6_addr, ip, sizeof(ip));
+        push_log("I", "dns resuelto: %s", ip);
+        fd = try_connect_ip(ip, CONNECT_TIMEOUT_SEC * 1000);
+    }
+    freeaddrinfo(res);
     return fd;
 }
 
@@ -241,19 +277,31 @@ static void parse_hdr(const char *buf, const char *key, char *out, int cap) {
 }
 
 static int open_tunnel(void) {
-    push_log("I", "conectando...");
     int fd = -1;
-    for (int i = 0; i < PROXY_IP_COUNT && fd < 0; i++) {
-        push_log("I", "probando %s", PROXY_IPS[i]);
-        fd = try_connect_ip(PROXY_IPS[i], CONNECT_TIMEOUT_SEC * 1000);
+
+    for (int i = 0; i < STATIC_IP_COUNT && fd < 0; i++) {
+        push_log("I", "probando %s", STATIC_IPS[i]);
+        fd = try_connect_ip(STATIC_IPS[i], CONNECT_TIMEOUT_SEC * 1000);
     }
-    if (fd < 0) { push_log("E", "connect failed"); return -1; }
+
+    if (fd < 0) {
+        push_log("I", "IPs estaticas fallaron, resolviendo DNS...");
+        fd = resolve_and_connect();
+    }
+
+    if (fd < 0) {
+        push_log("E", "sin conexion al proxy");
+        return TUNNEL_ERR_NET;
+    }
 
     char buf[4096];
     snprintf(buf, sizeof(buf), "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", PROXY_HOST);
     send(fd, buf, strlen(buf), MSG_NOSIGNAL);
-    if (recv_eoh(fd, buf, sizeof(buf), HANDSHAKE_TIMEOUT_SEC) < 0)
-        { push_log("E", "proxy no responde"); close(fd); return -1; }
+    if (recv_eoh(fd, buf, sizeof(buf), HANDSHAKE_TIMEOUT_SEC) < 0) {
+        push_log("E", "proxy no responde");
+        close(fd);
+        return TUNNEL_ERR_NET;
+    }
 
     char req[1024];
     snprintf(req, sizeof(req),
@@ -263,51 +311,79 @@ static int open_tunnel(void) {
     send(fd, req, strlen(req), MSG_NOSIGNAL);
 
     char h2[4096];
-    int hlen = recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
-    int code = -1; sscanf(h2, "HTTP/%*d.%*d %d", &code);
-    if (hlen < 0 || code != 101)
-        { push_log("E", "handshake failed code=%d", code); close(fd); return -1; }
+    if (recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC) < 0) {
+        push_log("E", "sin respuesta del servidor");
+        close(fd);
+        return TUNNEL_ERR_NET;
+    }
 
-    char uname[128] = {0}, udays[32] = {0};
-    parse_hdr(h2, "X-User-Name:", uname, sizeof(uname));
-    parse_hdr(h2, "X-User-Days:", udays, sizeof(udays));
-    if (uname[0]) push_log("I", "user=%s", uname);
-    if (udays[0]) push_log("I", "days=%s", udays);
-    push_log("I", "tunnel ok");
-    atomic_store(&g_last_pong, (long)time(NULL));
-    return fd;
+    int code = -1;
+    sscanf(h2, "HTTP/%*d.%*d %d", &code);
+
+    if (code == 101) {
+        char uname[128] = {0}, udays[32] = {0};
+        parse_hdr(h2, "X-User-Name:", uname, sizeof(uname));
+        parse_hdr(h2, "X-User-Days:", udays, sizeof(udays));
+        if (uname[0]) push_log("I", "user=%s", uname);
+        if (udays[0]) push_log("I", "days=%s", udays);
+        push_log("I", "tunnel ok");
+        atomic_store(&g_last_pong, (long)time(NULL));
+        return fd;
+    }
+
+    push_log("E", "servidor rechazo la conexion code=%d", code);
+    close(fd);
+    return TUNNEL_ERR_AUTH;
 }
 
 static void *proxy_thread(void *arg) {
     int port = (int)(intptr_t)arg;
 
     int rfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (rfd < 0) { push_log("E", "relay socket failed"); goto done; }
+    if (rfd < 0) { signal_ready(TUNNEL_ERR_NET); goto done; }
+
     {
         int one = 1;
         setsockopt(rfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
         setsockopt(rfd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one));
         fcntl(rfd, F_SETFD, FD_CLOEXEC);
         struct sockaddr_in la = {0};
-        la.sin_family = AF_INET;
-        la.sin_port = htons((uint16_t)port);
+        la.sin_family      = AF_INET;
+        la.sin_port        = htons((uint16_t)port);
         la.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        if (bind(rfd, (struct sockaddr *)&la, sizeof(la)) < 0 || listen(rfd, RELAY_BACKLOG) < 0)
-            { push_log("E", "relay bind failed errno=%d", errno); close(rfd); goto done; }
+        if (bind(rfd, (struct sockaddr *)&la, sizeof(la)) < 0 || listen(rfd, RELAY_BACKLOG) < 0) {
+            push_log("E", "relay bind errno=%d", errno);
+            close(rfd);
+            signal_ready(TUNNEL_ERR_NET);
+            goto done;
+        }
         fcntl(rfd, F_SETFL, fcntl(rfd, F_GETFL, 0) | O_NONBLOCK);
     }
-    push_log("I", "relay listo port=%d", port);
 
     int tfd = open_tunnel();
-    if (tfd < 0) goto close_relay;
+    if (tfd < 0) {
+        signal_ready(tfd);
+        close(rfd);
+        goto done;
+    }
 
     int wfds[2] = {-1, -1};
-    if (pipe(wfds) < 0) { push_log("E", "pipe failed"); close(tfd); goto close_relay; }
+    if (pipe(wfds) < 0) {
+        push_log("E", "pipe errno=%d", errno);
+        signal_ready(TUNNEL_ERR_NET);
+        close(tfd); close(rfd);
+        goto done;
+    }
     fcntl(wfds[0], F_SETFL, O_NONBLOCK); fcntl(wfds[1], F_SETFL, O_NONBLOCK);
     fcntl(wfds[0], F_SETFD, FD_CLOEXEC); fcntl(wfds[1], F_SETFD, FD_CLOEXEC);
 
     int epfd = epoll_create1(EPOLL_CLOEXEC);
-    if (epfd < 0) { push_log("E", "epoll failed"); close(wfds[0]); close(wfds[1]); close(tfd); goto close_relay; }
+    if (epfd < 0) {
+        push_log("E", "epoll errno=%d", errno);
+        signal_ready(TUNNEL_ERR_NET);
+        close(wfds[0]); close(wfds[1]); close(tfd); close(rfd);
+        goto done;
+    }
 
     {
         struct epoll_event ev;
@@ -320,6 +396,7 @@ static void *proxy_thread(void *arg) {
     g_tfd = tfd; g_rfd = rfd; g_epfd = epfd; g_wake_r = wfds[0]; g_wake_w = wfds[1];
     pthread_mutex_unlock(&g_mu);
 
+    signal_ready(1);
     push_log("I", "sesion activa");
 
     {
@@ -333,16 +410,13 @@ static void *proxy_thread(void *arg) {
             long now = time(NULL);
 
             if (now - atomic_load(&g_last_pong) > PONG_TIMEOUT_SEC) {
-                push_log("E", "pong timeout, desconectando");
+                push_log("E", "pong timeout");
                 break;
             }
 
             if (now - last_ping >= KEEPALIVE_INTERVAL_SEC) {
                 last_ping = now;
-                if (tun_send(tfd, T_PING, 0, NULL, 0) < 0) {
-                    push_log("E", "ping failed, desconectando");
-                    break;
-                }
+                if (tun_send(tfd, T_PING, 0, NULL, 0) < 0) break;
             }
 
             if (n <= 0) continue;
@@ -363,7 +437,7 @@ static void *proxy_thread(void *arg) {
                 uint32_t sid = ((uint32_t)hdr[1] << 24) | ((uint32_t)hdr[2] << 16) |
                                ((uint32_t)hdr[3] <<  8) |  (uint32_t)hdr[4];
                 uint16_t len = ((uint16_t)hdr[5] << 8) | hdr[6];
-                if (len > MAX_PAYLOAD) { push_log("E", "payload too large"); goto session_end; }
+                if (len > MAX_PAYLOAD) goto session_end;
                 off = 0;
                 while (off < (int)len) {
                     ssize_t r = recv(tfd, payload + off, len - off, 0);
@@ -371,7 +445,7 @@ static void *proxy_thread(void *arg) {
                     if (r == 0 || (errno != EINTR && errno != EAGAIN)) goto session_end;
                 }
                 switch (ft) {
-                case T_DATA: { int cfd = ht_get(sid); if (cfd >= 0 && len > 0) send(cfd, payload, len, MSG_NOSIGNAL); break; }
+                case T_DATA:  { int cfd = ht_get(sid); if (cfd >= 0 && len > 0) send(cfd, payload, len, MSG_NOSIGNAL); break; }
                 case T_CLOSE: { int cfd = ht_get(sid); if (cfd >= 0) { epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL); ht_del(sid); close(cfd); } break; }
                 case T_PING:  tun_send(tfd, T_PONG, 0, NULL, 0); break;
                 case T_PONG:  atomic_store(&g_last_pong, (long)time(NULL)); break;
@@ -424,8 +498,6 @@ static void *proxy_thread(void *arg) {
     }
 
 session_end:
-    push_log("I", "sesion terminada, limpiando");
-
     ht_close_all(epfd);
 
     pthread_mutex_lock(&g_mu);
@@ -435,8 +507,6 @@ session_end:
     close(epfd);
     shutdown(tfd, SHUT_RDWR); close(tfd);
     close(wfds[0]); close(wfds[1]);
-
-close_relay:
     close(rfd);
 
 done:
@@ -463,6 +533,7 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     ht_init();
     atomic_store(&g_next_sid, 1);
     atomic_store(&g_last_pong, (long)time(NULL));
+    atomic_store(&g_tunnel_ready, 0);
     g_tfd = g_rfd = g_epfd = g_wake_r = g_wake_w = -1;
     g_running = 1;
     pthread_mutex_unlock(&g_mu);
@@ -473,9 +544,25 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
         g_running = 0;
         (*env)->DeleteGlobalRef(env, g_svc); g_svc = NULL; g_jvm = NULL;
         pthread_mutex_unlock(&g_mu);
-        return -1;
+        return TUNNEL_ERR_NET;
     }
     pthread_mutex_lock(&g_mu); g_thread = thr; pthread_mutex_unlock(&g_mu);
+
+    pthread_mutex_lock(&g_ready_mu);
+    while (atomic_load(&g_tunnel_ready) == 0)
+        pthread_cond_wait(&g_ready_cv, &g_ready_mu);
+    pthread_mutex_unlock(&g_ready_mu);
+
+    int ready = atomic_load(&g_tunnel_ready);
+    if (ready < 0) {
+        pthread_join(thr, NULL);
+        pthread_mutex_lock(&g_mu);
+        jobject old = g_svc; g_svc = NULL; g_jvm = NULL;
+        pthread_mutex_unlock(&g_mu);
+        if (old) (*env)->DeleteGlobalRef(env, old);
+        return ready;
+    }
+
     push_log("I", "nativeStart ok");
     return 0;
 }
@@ -483,7 +570,6 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
 JNIEXPORT void JNICALL
 Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     (void)clazz;
-
     pthread_mutex_lock(&g_mu);
     if (!g_running) { pthread_mutex_unlock(&g_mu); return; }
     g_running = 0;
@@ -492,9 +578,7 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     int ww = g_wake_w; g_wake_w = -1;
     pthread_mutex_unlock(&g_mu);
 
-    if (ww >= 0) { uint8_t b = 1; write(ww, &b, 1); }
-    if (ww >= 0) close(ww);
-
+    if (ww >= 0) { uint8_t b = 1; write(ww, &b, 1); close(ww); }
     if (thr != 0) pthread_join(thr, NULL);
 
     pthread_mutex_lock(&g_mu);
@@ -503,9 +587,7 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     if (svc) (*env)->DeleteGlobalRef(env, svc);
 
     ht_close_all(-1);
-
-    atomic_store(&g_last_pong, (long)time(NULL));
-
+    atomic_store(&g_tunnel_ready, 0);
     push_log("I", "nativeStop ok");
 }
 
