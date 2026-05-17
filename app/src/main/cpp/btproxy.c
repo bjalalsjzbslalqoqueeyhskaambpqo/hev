@@ -97,7 +97,6 @@ static int             g_wake_w          = -1;
 static atomic_int      g_next_sid        = 1;
 static atomic_int      g_tunnel_epoch    = 0;
 static atomic_long     g_last_pong       = 0;
-static int             g_reconnect_delay = RECONNECT_DELAY_MIN;
 static char            g_internal_id[160] = {0};
 static JavaVM         *g_jvm             = NULL;
 static jobject         g_svc             = NULL;
@@ -599,15 +598,9 @@ static void *main_thread(void *arg) {
             }
 
             signal_ready(READY_FAIL);
-            if (!g_running) break;
-            push_log("E", "retry in %ds", g_reconnect_delay);
-            for (int i = 0; i < g_reconnect_delay && g_running; i++) sleep(1);
-            g_reconnect_delay = g_reconnect_delay < RECONNECT_DELAY_MAX
-                                ? g_reconnect_delay * 2 : RECONNECT_DELAY_MAX;
-            continue;
+            break;
         }
 
-        g_reconnect_delay = RECONNECT_DELAY_MIN;
 
         int rfd = make_relay_socket(port);
         if (rfd < 0) {
@@ -662,7 +655,6 @@ static void *main_thread(void *arg) {
 
         signal_ready(READY_OK);
 
-        if (!is_first) notify_reconnected();
         is_first = 0;
 
         struct epoll_event events[MAX_EPOLL_EVENTS];
@@ -867,7 +859,7 @@ Java_com_blacktunnel_BtProxy_nativeSetNetwork(JNIEnv *e, jclass c, jlong net) {
 JNIEXPORT void JNICALL
 Java_com_blacktunnel_BtProxy_nativeSetGamingMode(JNIEnv *env, jclass clazz, jboolean enabled) {
     (void)env; (void)clazz;
-    pthread_mutex_lock(&g_mu); g_gaming_mode = enabled ? 1 : 0; pthread_mutex_unlock(&g_mu);
+    (void)env; (void)clazz; (void)enabled;
 }
 
 static JNINativeMethod g_methods[] = {
