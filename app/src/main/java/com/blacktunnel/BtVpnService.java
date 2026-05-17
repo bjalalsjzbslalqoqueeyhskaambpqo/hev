@@ -122,8 +122,12 @@ public class BtVpnService extends VpnService {
     private boolean startHevStack() {
         try {
             tunPfd = new Builder().setSession("bt-hev").setMtu(1380)
-                    .addAddress("198.18.0.1", 15).addDnsServer("198.18.0.2")
-                    .addRoute("0.0.0.0", 0).establish();
+                    .addAddress("198.18.0.1", 15)
+                    .addAddress("fc00::1", 128)
+                    .addDnsServer("198.18.0.2")
+                    .addRoute("0.0.0.0", 0)
+                    .addRoute("::", 0)
+                    .establish();
             if (tunPfd == null) return false;
             hevTunFd = ParcelFileDescriptor.dup(tunPfd.getFileDescriptor()).detachFd();
             File cfg = writeHevCfg();

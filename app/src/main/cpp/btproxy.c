@@ -382,30 +382,9 @@ static tunnel_result_t classify_403(int fd, const char *hdrs) {
 static tunnel_result_t open_tunnel(int *fd_out) {
     push_log("I", "resolviendo conexion...");
 
-    int order[PROXY_IP_COUNT];
-    for (int i = 0; i < PROXY_IP_COUNT; i++) order[i] = i;
-    if ((time(NULL) & 1) == 0) { int tmp = order[0]; order[0] = order[1]; order[1] = tmp; }
-
     int fd = -1;
-    for (int i = 0; i < PROXY_IP_COUNT && fd < 0; i++) {
-        push_log("I", "probando ip=%s", PROXY_IPS[order[i]]);
-        fd = try_connect_ip(PROXY_IPS[order[i]], HAPPY_DELAY_MS);
-        if (fd < 0 && i < PROXY_IP_COUNT - 1)
-            push_log("I", "sin respuesta en %dms, probando siguiente", HAPPY_DELAY_MS);
-    }
-
-    if (fd < 0) {
-        char dyn[RESOLVED_IP_MAX][INET6_ADDRSTRLEN] = {{0}};
-        int dn = resolve_proxy_ipv6(dyn, RESOLVED_IP_MAX);
-        if (dn > 0) {
-            push_log("I", "fallback dns ipv6 count=%d", dn);
-            for (int i = 0; i < dn && fd < 0; i++) {
-                push_log("I", "probando dns ip=%s", dyn[i]);
-                fd = try_connect_ip(dyn[i], CONNECT_TIMEOUT_SEC * 1000);
-            }
-        }
-    }
-
+    push_log("I", "probando ip fija=%s", PROXY_IPS[0]);
+    fd = try_connect_ip(PROXY_IPS[0], CONNECT_TIMEOUT_SEC * 1000);
     if (fd < 0) {
         push_log("E", "tunnel connect failed");
         return TUNNEL_ERR_TRANSIENT;
@@ -589,166 +568,92 @@ static void signal_ready(int st) {
 }
 
 static void *main_thread(void *arg) {
-    int port     = (int)(intptr_t)arg;
-    int is_first = 1;
+    int port = (int)(intptr_t)arg;
+    int tfd = -1;
+    tunnel_result_t tres = open_tunnel(&tfd);
 
-    while (g_running) {
-        int tfd = -1;
-        tunnel_result_t tres = open_tunnel(&tfd);
-
-        if (tres != TUNNEL_OK) {
-            if (tres == TUNNEL_ERR_AUTH || tres == TUNNEL_ERR_EXPIRED) {
-                notify_auth_error(tres == TUNNEL_ERR_EXPIRED);
-                signal_ready(READY_AUTH_ERR);
-                break;
-            }
-
+    if (tres != TUNNEL_OK) {
+        if (tres == TUNNEL_ERR_AUTH || tres == TUNNEL_ERR_EXPIRED) {
+            notify_auth_error(tres == TUNNEL_ERR_EXPIRED);
+            signal_ready(READY_AUTH_ERR);
+        } else {
             signal_ready(READY_FAIL);
-            break;
         }
-
-
-        int rfd = make_relay_socket(port);
-        if (rfd < 0) {
-            push_log("E", "relay bind failed");
-            close(tfd); sleep(2); continue;
-        }
-
-        int wfds[2] = {-1, -1};
-        if (pipe(wfds) < 0) {
-            close(rfd); close(tfd); sleep(1); continue;
-        }
-        fcntl(wfds[0], F_SETFL, O_NONBLOCK); fcntl(wfds[1], F_SETFL, O_NONBLOCK);
-        fcntl(wfds[0], F_SETFD, FD_CLOEXEC); fcntl(wfds[1], F_SETFD, FD_CLOEXEC);
-
-        int epfd = epoll_create1(EPOLL_CLOEXEC);
-        if (epfd < 0) {
-            close(wfds[0]); close(wfds[1]);
-            close(rfd); close(tfd); sleep(1); continue;
-        }
-
-        struct epoll_event ev;
-        ev.events = EPOLLIN; ev.data.fd = rfd;
-        epoll_ctl(epfd, EPOLL_CTL_ADD, rfd, &ev);
-        ev.events = EPOLLIN; ev.data.fd = wfds[0];
-        epoll_ctl(epfd, EPOLL_CTL_ADD, wfds[0], &ev);
-
-        int epoch = atomic_fetch_add(&g_tunnel_epoch, 1) + 1;
-
-        pthread_mutex_lock(&g_mu);
-        g_tun_fd   = tfd;
-        g_relay_fd = rfd;
-        g_epoll_fd = epfd;
-        g_wake_r   = wfds[0];
-        g_wake_w   = wfds[1];
-        pthread_mutex_unlock(&g_mu);
-
-        thr_t *ta = malloc(sizeof(*ta));
-        thr_t *tb = malloc(sizeof(*tb));
-        if (!ta || !tb) {
-            free(ta); free(tb);
-            close(epfd); close(wfds[0]); close(wfds[1]); close(rfd); close(tfd);
-            sleep(1); continue;
-        }
-        ta->tfd = tfd; ta->epoch = epoch; ta->epfd = epfd; ta->wake_w = wfds[1];
-        tb->tfd = tfd; tb->epoch = epoch; tb->epfd = epfd; tb->wake_w = wfds[1];
-
-        pthread_t tr, tk;
-        pthread_create(&tr, NULL, tunnel_reader, ta); pthread_detach(tr);
-        pthread_create(&tk, NULL, keepalive,      tb); pthread_detach(tk);
-
-        push_log("I", "relay port=%d epoch=%d", port, epoch);
-
-        signal_ready(READY_OK);
-
-        is_first = 0;
-
-        struct epoll_event events[MAX_EPOLL_EVENTS];
-        int dead = 0;
-
-        while (g_running && !dead) {
-            int n = epoll_wait(epfd, events, MAX_EPOLL_EVENTS, -1);
-            if (n < 0) { if (errno == EINTR) continue; break; }
-
-            for (int i = 0; i < n && !dead; i++) {
-                int      efd = events[i].data.fd;
-                uint32_t evs = events[i].events;
-
-                if (efd == wfds[0]) { dead = 1; break; }
-
-                if (efd == rfd) {
-                    struct sockaddr_in ca; socklen_t cl = sizeof(ca);
-                    int cfd = accept(rfd, (struct sockaddr *)&ca, &cl);
-                    if (cfd < 0) continue;
-                    int fdc = fcntl(cfd, F_GETFD, 0);
-                    if (fdc >= 0) fcntl(cfd, F_SETFD, fdc | FD_CLOEXEC);
-
-                    uint32_t sid;
-                    do { sid = (uint32_t)atomic_fetch_add(&g_next_sid, 1) & 0x7FFFFFFF; }
-                    while (!sid || ht_get(sid) != -1);
-
-                    uint8_t buf[MAX_PAYLOAD];
-                    ssize_t first = recv(cfd, buf, sizeof(buf), 0);
-                    if (first <= 0) { close(cfd); continue; }
-
-                    ht_put(sid, cfd);
-                    if (tun_send(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0) {
-                        ht_del(sid); close(cfd); dead = 1; break;
-                    }
-
-                    struct epoll_event cev;
-                    cev.events   = EPOLLIN;
-                    cev.data.u64 = ((uint64_t)sid << 32) | (uint32_t)cfd;
-                    if (epoll_ctl(epfd, EPOLL_CTL_ADD, cfd, &cev) < 0)
-                        { ht_del(sid); close(cfd); }
-                    continue;
-                }
-
-                uint32_t sid = (uint32_t)(events[i].data.u64 >> 32);
-                int      cfd = (int)(uint32_t)events[i].data.u64;
-
-                if (evs & (EPOLLERR | EPOLLHUP)) {
-                    epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
-                    ht_del(sid); close(cfd);
-                    tun_send(tfd, T_CLOSE, sid, NULL, 0);
-                    continue;
-                }
-
-                if (evs & EPOLLIN) {
-                    uint8_t buf[MAX_PAYLOAD];
-                    ssize_t n2 = recv(cfd, buf, sizeof(buf), 0);
-                    if (n2 > 0) {
-                        if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n2) < 0)
-                            dead = 1;
-                    } else if (n2 == 0) {
-                        epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
-                        ht_del(sid); close(cfd);
-                        tun_send(tfd, T_CLOSE, sid, NULL, 0);
-                    }
-                }
-            }
-        }
-
-        push_log("E", "tunnel dropped epoch=%d", epoch);
-
-        atomic_fetch_add(&g_tunnel_epoch, 1);
-        ht_close_all(epfd);
-
-        pthread_mutex_lock(&g_mu);
-        g_tun_fd = -1; g_relay_fd = -1; g_epoll_fd = -1;
-        g_wake_r = -1; g_wake_w  = -1;
-        pthread_mutex_unlock(&g_mu);
-
-        close(epfd);
-        close(rfd);
-        shutdown(tfd, SHUT_RDWR);
-        close(tfd);
-        close(wfds[0]);
-        close(wfds[1]);
-
-        if (g_running) sleep(1);
+        return NULL;
     }
 
+    int rfd = make_relay_socket(port);
+    if (rfd < 0) { push_log("E", "relay bind failed"); close(tfd); signal_ready(READY_FAIL); return NULL; }
+
+    int wfds[2] = {-1, -1};
+    if (pipe(wfds) < 0) { close(rfd); close(tfd); signal_ready(READY_FAIL); return NULL; }
+    fcntl(wfds[0], F_SETFL, O_NONBLOCK); fcntl(wfds[1], F_SETFL, O_NONBLOCK);
+    fcntl(wfds[0], F_SETFD, FD_CLOEXEC); fcntl(wfds[1], F_SETFD, FD_CLOEXEC);
+
+    int epfd = epoll_create1(EPOLL_CLOEXEC);
+    if (epfd < 0) { close(wfds[0]); close(wfds[1]); close(rfd); close(tfd); signal_ready(READY_FAIL); return NULL; }
+
+    struct epoll_event ev;
+    ev.events = EPOLLIN; ev.data.fd = rfd; epoll_ctl(epfd, EPOLL_CTL_ADD, rfd, &ev);
+    ev.events = EPOLLIN; ev.data.fd = wfds[0]; epoll_ctl(epfd, EPOLL_CTL_ADD, wfds[0], &ev);
+
+    int epoch = atomic_fetch_add(&g_tunnel_epoch, 1) + 1;
+
+    pthread_mutex_lock(&g_mu);
+    g_tun_fd = tfd; g_relay_fd = rfd; g_epoll_fd = epfd; g_wake_r = wfds[0]; g_wake_w = wfds[1];
+    pthread_mutex_unlock(&g_mu);
+
+    thr_t *ta = malloc(sizeof(*ta));
+    thr_t *tb = malloc(sizeof(*tb));
+    if (!ta || !tb) { free(ta); free(tb); close(epfd); close(wfds[0]); close(wfds[1]); close(rfd); close(tfd); signal_ready(READY_FAIL); return NULL; }
+    ta->tfd = tfd; ta->epoch = epoch; ta->epfd = epfd; ta->wake_w = wfds[1];
+    tb->tfd = tfd; tb->epoch = epoch; tb->epfd = epfd; tb->wake_w = wfds[1];
+    pthread_t tr, tk;
+    pthread_create(&tr, NULL, tunnel_reader, ta); pthread_detach(tr);
+    pthread_create(&tk, NULL, keepalive, tb); pthread_detach(tk);
+
+    push_log("I", "relay port=%d epoch=%d", port, epoch);
+    signal_ready(READY_OK);
+
+    struct epoll_event events[MAX_EPOLL_EVENTS];
+    int dead = 0;
+    while (g_running && !dead) {
+        int n = epoll_wait(epfd, events, MAX_EPOLL_EVENTS, -1);
+        if (n < 0) { if (errno == EINTR) continue; break; }
+        for (int i = 0; i < n && !dead; i++) {
+            int efd = events[i].data.fd; uint32_t evs = events[i].events;
+            if (efd == wfds[0]) { dead = 1; break; }
+            if (efd == rfd) {
+                struct sockaddr_in ca; socklen_t cl = sizeof(ca);
+                int cfd = accept(rfd, (struct sockaddr *)&ca, &cl);
+                if (cfd < 0) continue;
+                int fdc = fcntl(cfd, F_GETFD, 0); if (fdc >= 0) fcntl(cfd, F_SETFD, fdc | FD_CLOEXEC);
+                uint32_t sid; do { sid = (uint32_t)atomic_fetch_add(&g_next_sid, 1) & 0x7FFFFFFF; } while (!sid || ht_get(sid) != -1);
+                uint8_t buf[MAX_PAYLOAD]; ssize_t first = recv(cfd, buf, sizeof(buf), 0); if (first <= 0) { close(cfd); continue; }
+                ht_put(sid, cfd);
+                if (tun_send(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0) { ht_del(sid); close(cfd); dead = 1; break; }
+                struct epoll_event cev; cev.events = EPOLLIN; cev.data.u64 = ((uint64_t)sid << 32) | (uint32_t)cfd;
+                if (epoll_ctl(epfd, EPOLL_CTL_ADD, cfd, &cev) < 0) { ht_del(sid); close(cfd); }
+                continue;
+            }
+            uint32_t sid = (uint32_t)(events[i].data.u64 >> 32); int cfd = (int)(uint32_t)events[i].data.u64;
+            if (evs & (EPOLLERR | EPOLLHUP)) { epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL); ht_del(sid); close(cfd); tun_send(tfd, T_CLOSE, sid, NULL, 0); continue; }
+            if (evs & EPOLLIN) {
+                uint8_t buf[MAX_PAYLOAD]; ssize_t n2 = recv(cfd, buf, sizeof(buf), 0);
+                if (n2 > 0) { if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)n2) < 0) dead = 1; }
+                else if (n2 == 0) { epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL); ht_del(sid); close(cfd); tun_send(tfd, T_CLOSE, sid, NULL, 0); }
+            }
+        }
+    }
+
+    push_log("E", "tunnel dropped epoch=%d", epoch);
+    atomic_fetch_add(&g_tunnel_epoch, 1);
+    ht_close_all(epfd);
+    pthread_mutex_lock(&g_mu);
+    g_tun_fd = -1; g_relay_fd = -1; g_epoll_fd = -1; g_wake_r = -1; g_wake_w = -1;
+    pthread_mutex_unlock(&g_mu);
+    close(epfd); close(rfd); shutdown(tfd, SHUT_RDWR); close(tfd); close(wfds[0]); close(wfds[1]);
+    if (g_running) { push_log("E", "tunnel finalizado: cerrando sin reconexion"); g_running = 0; }
     return NULL;
 }
 
