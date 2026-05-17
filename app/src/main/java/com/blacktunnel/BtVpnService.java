@@ -14,6 +14,9 @@ import androidx.core.app.NotificationCompat;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -25,6 +28,8 @@ public class BtVpnService extends VpnService {
     private static final int NF_ID = 33;
 
     private static volatile boolean sRunning = false;
+    private static final Object LOG_LOCK = new Object();
+    private static final StringBuilder LOGS = new StringBuilder(16384);
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private volatile boolean running = false;
@@ -33,6 +38,23 @@ public class BtVpnService extends VpnService {
     private volatile Thread hevThread;
 
     public static boolean isRunningState() { return sRunning; }
+
+    public static void log(String message) {
+        String line = "[" + new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()) + "] " + message + "\n";
+        synchronized (LOG_LOCK) {
+            LOGS.append(line);
+            if (LOGS.length() > 48000) LOGS.delete(0, LOGS.length() - 48000);
+        }
+    }
+
+    public static String dumpLogs() {
+        synchronized (LOG_LOCK) {
+            String n = BtProxy.drainLogs();
+            if (n != null && !n.isBlank()) LOGS.append(n);
+            if (LOGS.length() > 48000) LOGS.delete(0, LOGS.length() - 48000);
+            return LOGS.toString();
+        }
+    }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -57,14 +79,18 @@ public class BtVpnService extends VpnService {
         try {
             createChannel();
             startForeground(NF_ID, buildNotif());
+            log("startAll: init");
             BtProxy.stop();
             if (BtProxy.start(this, BtProxy.getOrCreateInternalId(this)) < 0 || !startHevStack()) {
+                log("startAll: native/hev failed");
                 safeShutdown();
                 return;
             }
             running = true;
             sRunning = true;
+            log("startAll: connected");
         } catch (Throwable t) {
+            log("startAll: exception " + t.getClass().getSimpleName());
             safeShutdown();
         }
     }
@@ -76,6 +102,7 @@ public class BtVpnService extends VpnService {
     private void safeShutdown() {
         running = false;
         sRunning = false;
+        log("safeShutdown: stopping");
         try { stopHevStack(); } catch (Throwable ignored) {}
         try { BtProxy.stop(); } catch (Throwable ignored) {}
         try { stopForeground(STOP_FOREGROUND_REMOVE); } catch (Throwable ignored) {}
@@ -92,8 +119,10 @@ public class BtVpnService extends VpnService {
             File cfg = writeHevCfg();
             hevThread = new Thread(() -> HevBridge.start(cfg.getAbsolutePath(), hevTunFd), "hev");
             hevThread.start();
+            log("hev: started");
             return true;
         } catch (Throwable t) {
+            log("hev: start failed " + t.getClass().getSimpleName());
             try { stopHevStack(); } catch (Throwable ignored) {}
             return false;
         }
@@ -142,6 +171,7 @@ final class BtProxy {
     static { System.loadLibrary("btproxy"); }
     static int start(VpnService svc, String id) { return nativeStart(SOCKS5_PORT, svc, id); }
     static void stop() { nativeStop(); }
+    static String drainLogs() { return nativeDrainLogs(); }
     static String getOrCreateInternalId(Context ctx) {
         String id = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_INTERNAL_ID, "");
         if (id != null && !id.isBlank()) return id;

@@ -17,6 +17,8 @@ public class SimpleModeActivity extends ComponentActivity {
 
     private Button connectBtn;
     private TextView statusView;
+    private TextView internalIdView;
+    private TextView logsView;
     private UiState uiState = UiState.DISCONNECTED;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
@@ -28,7 +30,8 @@ public class SimpleModeActivity extends ComponentActivity {
             boolean running = BtVpnService.isRunningState();
             if (running && uiState != UiState.CONNECTED) setUiState(UiState.CONNECTED);
             if (!running && uiState == UiState.CONNECTED) setUiState(UiState.DISCONNECTED);
-            handler.postDelayed(this, 500);
+            refreshLogs();
+            handler.postDelayed(this, 700);
         }
     };
 
@@ -49,7 +52,12 @@ public class SimpleModeActivity extends ComponentActivity {
         );
 
         statusView = findViewById(R.id.txtStatus);
+        internalIdView = findViewById(R.id.txtInternalId);
+        logsView = findViewById(R.id.txtLogs);
         connectBtn = findViewById(R.id.btnConnect);
+
+        String internalId = BtProxy.getOrCreateInternalId(this);
+        internalIdView.setText("ID: " + internalId);
 
         setUiState(BtVpnService.isRunningState() ? UiState.CONNECTED : UiState.DISCONNECTED);
 
@@ -111,6 +119,13 @@ public class SimpleModeActivity extends ComponentActivity {
             startService(i);
         } catch (Throwable ignored) {}
         setUiState(UiState.DISCONNECTED);
+    }
+
+    private void refreshLogs() {
+        if (logsView == null) return;
+        String logs = BtVpnService.dumpLogs();
+        if (logs == null || logs.isBlank()) logs = "Sin logs";
+        logsView.setText(logs);
     }
 
     private void setUiState(UiState state) {
