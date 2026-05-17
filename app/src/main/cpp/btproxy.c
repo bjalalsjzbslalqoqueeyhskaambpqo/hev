@@ -24,7 +24,6 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-/* ── protocolo mux ─────────────────────────────────────────────── */
 #define T_OPEN  0x01
 #define T_DATA  0x02
 #define T_CLOSE 0x03
@@ -50,7 +49,6 @@ static const char *PROXY_IPS[] = {
 };
 #define PROXY_IP_COUNT 2
 
-/* ── estado global ─────────────────────────────────────────────── */
 static volatile int    g_running      = 0;
 static int             g_relay_fd     = -1;
 static int             g_tun_fd       = -1;
@@ -292,8 +290,6 @@ static int open_tunnel(void) {
         fd = try_connect_ip(PROXY_IPS[i], CONNECT_TIMEOUT_SEC * 1000);
     }
     if (fd < 0) { push_log("E", "connect failed"); return -1; }
-
-    /* primera petición: verifica conectividad del proxy */
     char buf[4096];
     snprintf(buf, sizeof(buf), "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", PROXY_HOST);
     send(fd, buf, strlen(buf), MSG_NOSIGNAL);
@@ -301,7 +297,6 @@ static int open_tunnel(void) {
         push_log("E", "proxy no responde"); close(fd); return -1;
     }
 
-    /* segunda petición: abre el túnel con el identificador */
     char req[1024];
     snprintf(req, sizeof(req),
         "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
