@@ -230,9 +230,10 @@ static int try_connect_ip(const char *ip, int timeout_ms) {
     if (inet_pton(AF_INET6, ip, &a.sin6_addr) != 1) return -1;
     int fd = socket(AF_INET6, SOCK_STREAM, 0); if (fd < 0) return -1;
     protect_fd(fd);
-    int one = 1;
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &one, sizeof(one));
-    setsockopt(fd, SOL_SOCKET,  SO_KEEPALIVE, &one, sizeof(one));
+    int one = 1, rcvbuf = 262144;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &one,    sizeof(one));
+    setsockopt(fd, SOL_SOCKET,  SO_KEEPALIVE, &one,    sizeof(one));
+    setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,    &rcvbuf, sizeof(rcvbuf));
     int fl = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, fl | O_NONBLOCK);
     fcntl(fd, F_SETFD, FD_CLOEXEC);
@@ -397,12 +398,16 @@ static void *proxy_thread(void *arg) {
             if (efd == wfds[0]) break;
 
             if (efd == tfd) {
+                for (;;) {
                 uint8_t hdr[FRAME_HDR], payload[MAX_PAYLOAD];
                 int off = 0;
                 while (off < FRAME_HDR) {
-                    ssize_t r = recv(tfd, hdr + off, FRAME_HDR - off, 0);
+                    ssize_t r = recv(tfd, hdr + off, FRAME_HDR - off, MSG_DONTWAIT);
                     if (r > 0) { off += r; continue; }
-                    if (r == 0 || (errno != EINTR && errno != EAGAIN)) goto session_end;
+                    if (r == 0) goto session_end;
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) goto tfd_drained;
+                    if (errno == EINTR) continue;
+                    goto session_end;
                 }
                 uint8_t  ft  = hdr[0];
                 uint32_t sid = ((uint32_t)hdr[1] << 24) | ((uint32_t)hdr[2] << 16) |
@@ -418,8 +423,15 @@ static void *proxy_thread(void *arg) {
                 switch (ft) {
                 case T_DATA: {
                     int cfd = ht_get(sid);
-                    if (cfd >= 0 && len > 0)
-                        send(cfd, payload, len, MSG_NOSIGNAL | MSG_DONTWAIT);
+                    if (cfd >= 0 && len > 0) {
+                        ssize_t sent = 0;
+                        while (sent < (ssize_t)len) {
+                            ssize_t w = send(cfd, payload + sent, len - sent, MSG_NOSIGNAL);
+                            if (w > 0) { sent += w; continue; }
+                            if (w < 0 && errno == EINTR) continue;
+                            break;
+                        }
+                    }
                     break;
                 }
                 case T_CLOSE: {
@@ -434,6 +446,8 @@ static void *proxy_thread(void *arg) {
                 case T_PING: tun_send(tfd, T_PONG, 0, NULL, 0); break;
                 case T_PONG: atomic_store(&g_last_pong, (long)time(NULL)); break;
                 }
+                } /* end drain loop */
+                tfd_drained:
                 continue;
             }
 
