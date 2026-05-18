@@ -24,7 +24,6 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-/* ── protocolo mux ─────────────────────────────────────────────── */
 #define T_OPEN  0x01
 #define T_DATA  0x02
 #define T_CLOSE 0x03
@@ -50,7 +49,6 @@ static const char *PROXY_IPS[] = {
 };
 #define PROXY_IP_COUNT 2
 
-/* ── estado global ─────────────────────────────────────────────── */
 static volatile int    g_running      = 0;
 static int             g_relay_fd     = -1;
 static int             g_tun_fd       = -1;
@@ -67,7 +65,6 @@ static net_handle_t    g_net          = NETWORK_UNSPECIFIED;
 static pthread_t       g_main_thread  = 0;
 static pthread_mutex_t g_mu           = PTHREAD_MUTEX_INITIALIZER;
 
-/* ── log buffer (drenado desde Java) ───────────────────────────── */
 static pthread_mutex_t g_log_mu  = PTHREAD_MUTEX_INITIALIZER;
 static char            g_logbuf[32768];
 static size_t          g_loglen  = 0;
@@ -92,7 +89,6 @@ static void push_log(const char *lvl, const char *fmt, ...) {
     pthread_mutex_unlock(&g_log_mu);
 }
 
-/* ── hash table sid → cfd ──────────────────────────────────────── */
 #define HT_SIZE 4096
 #define HT_MASK (HT_SIZE - 1)
 
@@ -158,7 +154,6 @@ static void ht_close_all(int epfd) {
     }
 }
 
-/* ── protect + network ─────────────────────────────────────────── */
 static void protect_fd(int fd) {
     pthread_mutex_lock(&g_mu);
     net_handle_t net = g_net;
@@ -229,7 +224,6 @@ static int tun_recv_full(int fd, uint8_t *buf, int len, int ms) {
     return 0;
 }
 
-/* ── handshake HTTP ────────────────────────────────────────────── */
 static int recv_eoh(int fd, char *buf, int cap, int sec) {
     struct timeval tv = {sec, 0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -283,7 +277,6 @@ static int open_tunnel(void) {
     }
     if (fd < 0) { push_log("E", "connect failed"); return -1; }
 
-    /* primera petición: verifica conectividad del proxy */
     char buf[4096];
     snprintf(buf, sizeof(buf), "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", PROXY_HOST);
     send(fd, buf, strlen(buf), MSG_NOSIGNAL);
@@ -291,7 +284,6 @@ static int open_tunnel(void) {
         push_log("E", "proxy no responde"); close(fd); return -1;
     }
 
-    /* segunda petición: abre el túnel con el identificador */
     char req[1024];
     snprintf(req, sizeof(req),
         "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
@@ -314,7 +306,6 @@ static int open_tunnel(void) {
     return fd;
 }
 
-/* ── threads auxiliares ────────────────────────────────────────── */
 typedef struct { int tfd; int epoch; int epfd; int wake_w; } thr_t;
 
 static void *tunnel_reader(void *arg) {
@@ -403,7 +394,6 @@ static void *keepalive(void *arg) {
     return NULL;
 }
 
-/* ── relay socket (hev conecta aquí) ──────────────────────────── */
 static int make_relay_socket(int port) {
     int rfd = socket(AF_INET, SOCK_STREAM, 0);
     if (rfd < 0) return -1;
@@ -423,7 +413,6 @@ static int make_relay_socket(int port) {
     return rfd;
 }
 
-/* ── hilo principal ────────────────────────────────────────────── */
 static void *main_thread(void *arg) {
     int port = (int)(intptr_t)arg;
 
@@ -566,7 +555,6 @@ static void *main_thread(void *arg) {
     return NULL;
 }
 
-/* ── JNI ───────────────────────────────────────────────────────── */
 JNIEXPORT void JNICALL Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *, jclass);
 
 JNIEXPORT jint JNICALL
