@@ -70,6 +70,7 @@ static pthread_mutex_t g_mu           = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_log_mu  = PTHREAD_MUTEX_INITIALIZER;
 static char            g_logbuf[32768];
 static size_t          g_loglen  = 0;
+static long            now_mono_ms(void);
 
 static void push_log(const char *lvl, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
