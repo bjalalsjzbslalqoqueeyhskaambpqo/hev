@@ -91,6 +91,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private boolean hideInternalId       = false;
     private boolean applyingRuntimeChanges = false;
     private int     lastPingMs           = -1;
+    private boolean handshakeConfirmed   = false;
 
     private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
     private ConnectivityManager connectivityManager;
@@ -528,6 +529,7 @@ public class SimpleModeActivity extends ComponentActivity {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
         else startService(i);
         connectingSinceMs = SystemClock.elapsedRealtime();
+        handshakeConfirmed = false;
         setUiState(UiState.CONNECTING);
     }
 
@@ -535,6 +537,7 @@ public class SimpleModeActivity extends ComponentActivity {
         Intent i = new Intent(this, BtVpnService.class);
         i.setAction(BtVpnService.ACTION_STOP);
         startService(i);
+        handshakeConfirmed = false;
         setUiState(UiState.DISCONNECTED);
         handler.removeCallbacks(autoDisconnectRunnable);
         autoDisconnectAtMs = -1L;
@@ -577,15 +580,33 @@ public class SimpleModeActivity extends ComponentActivity {
 
     private void syncStateFromService() {
         boolean running = BtVpnService.isRunningState();
+        String logs = BtVpnService.dumpLogs();
+        String connState = findLatestConnectionState(logs);
+        if ("connected".equals(connState)) handshakeConfirmed = true;
+
         if (running && !lastRunning) {
-            authState = ""; applyingRuntimeChanges = false; setUiState(UiState.CONNECTED);
+            authState = "";
+            applyingRuntimeChanges = false;
+            if (handshakeConfirmed) setUiState(UiState.CONNECTED);
+            else setUiState(UiState.CONNECTING);
         } else if (!running && lastRunning) {
             applyingRuntimeChanges = false; setUiState(UiState.DISCONNECTED);
+            handshakeConfirmed = false;
+        } else if (running && "failed".equals(connState)) {
+            applyingRuntimeChanges = false;
+            handshakeConfirmed = false;
+            stopVpn();
+            setUiState(UiState.DISCONNECTED);
+        } else if (running && handshakeConfirmed && uiState != UiState.CONNECTED) {
+            applyingRuntimeChanges = false;
+            setUiState(UiState.CONNECTED);
+        } else if (running && !handshakeConfirmed && uiState != UiState.CONNECTING) {
+            setUiState(UiState.CONNECTING);
         } else if (!running && uiState == UiState.CONNECTING) {
             if (SystemClock.elapsedRealtime() - connectingSinceMs > 9000) {
                 applyingRuntimeChanges = false; setUiState(UiState.DISCONNECTED);
             }
-        } else if (running && applyingRuntimeChanges) {
+        } else if (running && applyingRuntimeChanges && handshakeConfirmed) {
             applyingRuntimeChanges = false; setUiState(UiState.CONNECTED);
         }
         lastRunning = running;
@@ -635,6 +656,25 @@ public class SimpleModeActivity extends ComponentActivity {
             if (lower.contains("usuario no registrado") || lower.contains("not_registered")) return "not_registered";
             if (lower.contains("usuario expirado")     || lower.contains("expired"))       return "expired";
             if (lower.contains("user_name=") || lower.contains("user_days=") || lower.contains("ping_ms=")) return "ok";
+        }
+        return "";
+    }
+
+    private String findLatestConnectionState(String logs) {
+        if (logs == null || logs.isEmpty()) return "";
+        String[] lines = logs.split("\n");
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i];
+            if (line == null) continue;
+            String lower = line.trim().toLowerCase(Locale.ROOT);
+            if (lower.isEmpty()) continue;
+            if (lower.contains("tunnel ok") ||
+                lower.contains("user_name=") ||
+                lower.contains("user_days=") ||
+                lower.contains("ping_ms=")) return "connected";
+            if (lower.contains("handshake failed") ||
+                lower.contains("proxy no responde") ||
+                lower.contains("connect failed")) return "failed";
         }
         return "";
     }
