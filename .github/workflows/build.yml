@@ -4,7 +4,7 @@ on:
   pull_request:
   push:
     branches:
-      - v1-hev-socks5
+      - codex/remove-comments-from-c-and-java-code
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
