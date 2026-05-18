@@ -230,11 +230,9 @@ static int try_connect_ip(const char *ip, int timeout_ms) {
     if (inet_pton(AF_INET6, ip, &a.sin6_addr) != 1) return -1;
     int fd = socket(AF_INET6, SOCK_STREAM, 0); if (fd < 0) return -1;
     protect_fd(fd);
-    int one = 1, v = 524288;
+    int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &one, sizeof(one));
     setsockopt(fd, SOL_SOCKET,  SO_KEEPALIVE, &one, sizeof(one));
-    setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,    &v,   sizeof(v));
-    setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,    &v,   sizeof(v));
     int fl = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, fl | O_NONBLOCK);
     fcntl(fd, F_SETFD, FD_CLOEXEC);
@@ -372,9 +370,11 @@ static void *proxy_thread(void *arg) {
     {
         long last_ping = time(NULL);
         struct epoll_event ev;
+        int has_pending = 0;
 
         while (1) {
-            int n = epoll_wait(epfd, &ev, 1, 5000);
+            int timeout = has_pending ? 200 : 5000;
+            int n = epoll_wait(epfd, &ev, 1, timeout);
             if (n < 0 && errno == EINTR) continue;
 
             long now = time(NULL);
@@ -389,7 +389,8 @@ static void *proxy_thread(void *arg) {
                 if (tun_send(tfd, T_PING, 0, NULL, 0) < 0) break;
             }
 
-            if (n <= 0) continue;
+            if (n == 0) { has_pending = 0; continue; }
+            if (n < 0) continue;
 
             int efd = ev.data.fd;
 
@@ -451,6 +452,7 @@ static void *proxy_thread(void *arg) {
                 ht_put(sid, cfd);
                 if (tun_send(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0)
                     { ht_del(sid); close(cfd); goto session_end; }
+                has_pending = 1;
                 struct epoll_event cev;
                 cev.events   = EPOLLIN | EPOLLERR | EPOLLHUP;
                 cev.data.u64 = ((uint64_t)sid << 32) | (uint32_t)cfd;
@@ -471,6 +473,7 @@ static void *proxy_thread(void *arg) {
                     ssize_t nr = recv(cfd, buf, sizeof(buf), 0);
                     if (nr > 0) {
                         if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)nr) < 0) goto session_end;
+                        has_pending = 1;
                     } else if (nr == 0) {
                         epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
                         ht_del(sid); close(cfd);
