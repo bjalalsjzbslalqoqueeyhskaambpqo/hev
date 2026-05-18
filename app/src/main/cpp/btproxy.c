@@ -35,7 +35,7 @@
 #define MAX_PAYLOAD            16384
 #define RELAY_BACKLOG          512
 #define PONG_TIMEOUT_SEC       120
-#define KEEPALIVE_INTERVAL_SEC 10
+#define KEEPALIVE_INTERVAL_SEC 3
 #define CONNECT_TIMEOUT_SEC    15
 #define HANDSHAKE_TIMEOUT_SEC  4
 #define MAX_EPOLL_EVENTS       32
@@ -59,6 +59,7 @@ static int             g_wake_w       = -1;
 static atomic_int      g_next_sid     = 1;
 static atomic_int      g_tunnel_epoch = 0;
 static atomic_long     g_last_pong    = 0;
+static atomic_long     g_last_ping_ts_ms = 0;
 static char            g_internal_id[160] = {0};
 static JavaVM         *g_jvm          = NULL;
 static jobject         g_svc          = NULL;
@@ -391,7 +392,15 @@ static void *tunnel_reader(void *arg) {
             break;
         }
         case T_PING: tun_send(tfd, T_PONG, 0, NULL, 0); break;
-        case T_PONG: atomic_store(&g_last_pong, (long)time(NULL)); break;
+        case T_PONG: {
+            atomic_store(&g_last_pong, (long)time(NULL));
+            long sent = atomic_load(&g_last_ping_ts_ms);
+            if (sent > 0) {
+                long rtt = now_mono_ms() - sent;
+                if (rtt >= 0 && rtt < 10000) push_log("I", "ping_ms=%ld", rtt);
+            }
+            break;
+        }
         }
     }
     return NULL;
@@ -414,6 +423,7 @@ static void *keepalive(void *arg) {
         }
         if (now - last < KEEPALIVE_INTERVAL_SEC) continue;
         last = now;
+        atomic_store(&g_last_ping_ts_ms, now_mono_ms());
         if (tun_send(tfd, T_PING, 0, NULL, 0) < 0) {
             uint8_t b = 1; write(wake_w, &b, 1);
             break;
@@ -693,4 +703,9 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *r) {
             sizeof(g_methods) / sizeof(g_methods[0])) < 0) return JNI_ERR;
     (*env)->DeleteLocalRef(env, cls);
     return JNI_VERSION_1_6;
+}
+static long now_mono_ms(void) {
+    struct timespec ts = {0};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long)(ts.tv_sec * 1000L + ts.tv_nsec / 1000000L);
 }

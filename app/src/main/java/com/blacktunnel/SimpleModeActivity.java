@@ -7,6 +7,7 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.Configuration;
 import android.content.res.ColorStateList;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
@@ -103,9 +104,17 @@ public class SimpleModeActivity extends ComponentActivity {
                 syncStateFromService();
                 refreshServiceState();
             } catch (Throwable ignored) {}
-            handler.postDelayed(this, 800);
+            handler.postDelayed(this, 3000);
         }
     };
+
+    @Override
+    protected void attachBaseContext(Context newBase) {
+        Configuration configuration = new Configuration(newBase.getResources().getConfiguration());
+        configuration.fontScale = 1.0f;
+        Context fixedContext = newBase.createConfigurationContext(configuration);
+        super.attachBaseContext(fixedContext);
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -166,8 +175,8 @@ public class SimpleModeActivity extends ComponentActivity {
                 refreshGamingModeUi();
                 if (BtVpnService.isRunningState()) {
                     showGamingApplyFeedback(
-                        isChecked ? "Modo gaming: activando..." : "Modo normal: aplicando...",
-                        isChecked ? "Modo gaming activo" : "Modo normal activo",
+                        isChecked ? "Modo aplicaciones: activando..." : "Modo normal: aplicando...",
+                        isChecked ? "Modo aplicaciones activo" : "Modo normal activo",
                         isChecked ? R.color.color_gaming : R.color.color_text_secondary
                     );
                     applyGamingChangesIfRunning();
@@ -186,13 +195,11 @@ public class SimpleModeActivity extends ComponentActivity {
                         Toast.makeText(this, "Activá el hotspot WiFi primero", Toast.LENGTH_LONG).show();
                         return;
                     }
-                    BtVpnService.startLocalProxy(HOTSPOT_PROXY_PORT);
                     if (hotspotInfoView != null) {
-                        hotspotInfoView.setText("Proxy: " + ip + ":" + HOTSPOT_PROXY_PORT);
+                        hotspotInfoView.setText("Próximamente disponible");
                         hotspotInfoView.setVisibility(View.VISIBLE);
                     }
                 } else {
-                    BtVpnService.stopLocalProxy();
                     if (hotspotInfoView != null) hotspotInfoView.setVisibility(View.GONE);
                 }
             });
@@ -404,7 +411,7 @@ public class SimpleModeActivity extends ComponentActivity {
 
         adapter.setSelectionListener((app, checked) -> {
             if (checked && selectedPackages.size() >= 3 && !selectedPackages.contains(app.packageName)) {
-                Toast.makeText(this, "Máximo 3 aplicaciones en modo gaming", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Máximo 3 aplicaciones en modo seleccionado", Toast.LENGTH_SHORT).show();
                 adapter.notifyDataSetChanged();
                 return;
             }
@@ -418,7 +425,7 @@ public class SimpleModeActivity extends ComponentActivity {
             AppOption app = adapter.getItem(position);
             boolean checked = !selectedPackages.contains(app.packageName);
             if (checked && selectedPackages.size() >= 3 && !selectedPackages.contains(app.packageName)) {
-                Toast.makeText(this, "Máximo 3 aplicaciones en modo gaming", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Máximo 3 aplicaciones en modo seleccionado", Toast.LENGTH_SHORT).show();
                 return;
             }
             if (checked) selectedPackages.add(app.packageName);
