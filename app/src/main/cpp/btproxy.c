@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
@@ -239,6 +240,28 @@ static int recv_eoh(int fd, char *buf, int cap, int sec) {
     return ok ? used : -1;
 }
 
+static void parse_hdr(const char *hdrs, const char *key, char *out, size_t out_cap) {
+    if (!hdrs || !key || !out || out_cap == 0) return;
+    out[0] = 0;
+    size_t klen = strlen(key);
+    const char *p = hdrs;
+    while (*p) {
+        const char *eol = strstr(p, "\r\n");
+        size_t len = eol ? (size_t)(eol - p) : strlen(p);
+        if (len >= klen && strncasecmp(p, key, klen) == 0) {
+            const char *v = p + klen;
+            while (*v == ' ' || *v == '\t') v++;
+            size_t vlen = len - (size_t)(v - p);
+            if (vlen >= out_cap) vlen = out_cap - 1;
+            memcpy(out, v, vlen);
+            out[vlen] = 0;
+            return;
+        }
+        if (!eol) break;
+        p = eol + 2;
+    }
+}
+
 static int try_connect_ip(const char *ip, int timeout_ms) {
     struct sockaddr_in6 a = {0};
     a.sin6_family = AF_INET6; a.sin6_port = htons(PROXY_PORT);
@@ -301,6 +324,11 @@ static int open_tunnel(void) {
         close(fd); return -1;
     }
 
+    char uname[128] = {0}, udays[32] = {0};
+    parse_hdr(h2, "X-User-Name:", uname, sizeof(uname));
+    parse_hdr(h2, "X-User-Days:", udays, sizeof(udays));
+    if (uname[0]) push_log("I", "user_name=%s", uname);
+    if (udays[0]) push_log("I", "user_days=%s", udays);
     push_log("I", "tunnel ok");
     atomic_store(&g_last_pong, (long)time(NULL));
     return fd;
