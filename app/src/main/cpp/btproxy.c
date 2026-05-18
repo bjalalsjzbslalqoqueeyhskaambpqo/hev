@@ -322,9 +322,134 @@ static int open_tunnel(void) {
     return TUNNEL_ERR_AUTH;
 }
 
+/*
+ * tunnel_reader_arg: contexto compartido entre proxy_thread (client loop)
+ * y tunnel_reader_thread. Vida util = duracion de la sesion.
+ *
+ * Coordinacion de shutdown:
+ *   - Cualquiera de los dos threads puede iniciar el cierre escribiendo
+ *     en wake_w. El otro lo detecta en su proximo ciclo.
+ *   - tfd se cierra solo despues de que ambos terminaron (proxy_thread
+ *     hace join al tunnel_reader antes de cerrar recursos).
+ */
+typedef struct {
+    int tfd;       /* socket del tunel (lectura exclusiva del tunnel_reader) */
+    int epfd;      /* epoll del client loop (solo tunnel_reader escribe eventos de cierre via wake) */
+    int wake_w;    /* extremo escritura del pipe de shutdown */
+} tun_reader_arg_t;
+
+/*
+ * send_all: envia todos los bytes al fd local (loopback).
+ * En loopback casi nunca bloquea, pero si pasa no descartamos nada.
+ * Retorna 0 ok, -1 si el fd cerro o dio error irrecuperable.
+ */
+static int send_all(int fd, const uint8_t *buf, size_t len) {
+    size_t sent = 0;
+    while (sent < len) {
+        ssize_t w = send(fd, buf + sent, len - sent, MSG_NOSIGNAL);
+        if (w > 0) { sent += w; continue; }
+        if (w < 0 && errno == EINTR) continue;
+        return -1;
+    }
+    return 0;
+}
+
+/*
+ * tunnel_reader_thread: unico consumidor del socket del tunel.
+ *
+ * Lee frames completos (header 7 bytes + payload) de forma bloqueante.
+ * No comparte el tfd con nadie mas durante la lectura, por lo que no
+ * necesita locks ni MSG_DONTWAIT — el kernel serializa la entrega.
+ *
+ * Cuando detecta error o cierre, escribe en wake_w para despertar al
+ * client loop y termina. El client loop hace join antes de cerrar tfd.
+ */
+static void *tunnel_reader_thread(void *arg) {
+    tun_reader_arg_t *a = (tun_reader_arg_t *)arg;
+    int tfd    = a->tfd;
+    int epfd   = a->epfd;
+    int wake_w = a->wake_w;
+
+    /*
+     * Buffer de ensamblado persistente: evita que un recv() parcial
+     * en el header o payload cause perdida de datos o desincronizacion
+     * del framing. Acumula bytes hasta tener un frame completo.
+     */
+    uint8_t  rbuf[FRAME_HDR + MAX_PAYLOAD];
+    int      roff = 0;   /* bytes validos en rbuf */
+    int      need = FRAME_HDR; /* cuantos bytes necesitamos para el proximo frame completo */
+
+    while (1) {
+        /* Leer lo que haya disponible hasta completar el proximo frame */
+        ssize_t r = recv(tfd, rbuf + roff, need - roff, 0);
+        if (r <= 0) {
+            if (r < 0 && errno == EINTR) continue;
+            break; /* cierre o error irrecuperable */
+        }
+        roff += (int)r;
+
+        /* Procesar todos los frames completos que haya en el buffer */
+        while (roff >= need) {
+            if (need == FRAME_HDR) {
+                /* Tenemos el header completo: calcular longitud del payload */
+                uint16_t plen = ((uint16_t)rbuf[5] << 8) | rbuf[6];
+                if (plen > MAX_PAYLOAD) goto reader_end;
+                need = FRAME_HDR + (int)plen;
+                /* Si ya tenemos el frame completo, caemos al siguiente if */
+            }
+
+            if (roff < need) break; /* payload incompleto, esperar mas bytes */
+
+            /* Frame completo disponible */
+            uint8_t  ft  = rbuf[0];
+            uint32_t sid = ((uint32_t)rbuf[1] << 24) | ((uint32_t)rbuf[2] << 16) |
+                           ((uint32_t)rbuf[3] <<  8) |  (uint32_t)rbuf[4];
+            uint16_t len = (uint16_t)(need - FRAME_HDR);
+
+            switch (ft) {
+            case T_DATA: {
+                int cfd = ht_get(sid);
+                if (cfd >= 0 && len > 0)
+                    send_all(cfd, rbuf + FRAME_HDR, len);
+                break;
+            }
+            case T_CLOSE: {
+                int cfd = ht_get(sid);
+                if (cfd >= 0) {
+                    epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
+                    ht_del(sid);
+                    close(cfd);
+                }
+                break;
+            }
+            case T_PING:
+                tun_send(tfd, T_PONG, 0, NULL, 0);
+                break;
+            case T_PONG:
+                atomic_store(&g_last_pong, (long)time(NULL));
+                break;
+            default:
+                break;
+            }
+
+            /* Mover bytes restantes al inicio del buffer */
+            int consumed = need;
+            roff -= consumed;
+            if (roff > 0) memmove(rbuf, rbuf + consumed, roff);
+            need = FRAME_HDR; /* esperar el proximo header */
+        }
+    }
+
+reader_end:
+    /* Despertar al client loop para que termine la sesion */
+    { uint8_t b = 1; write(wake_w, &b, 1); }
+    return NULL;
+}
+
 static void *proxy_thread(void *arg) {
     int port = (int)(intptr_t)arg;
 
+    /* --- Socket de escucha local (hev-socks5 se conecta aqui) --- */
     int rfd = socket(AF_INET, SOCK_STREAM, 0);
     if (rfd < 0) { signal_ready(TUNNEL_ERR_NET); goto done; }
     {
@@ -336,148 +461,131 @@ static void *proxy_thread(void *arg) {
         la.sin_family      = AF_INET;
         la.sin_port        = htons((uint16_t)port);
         la.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        if (bind(rfd, (struct sockaddr *)&la, sizeof(la)) < 0 || listen(rfd, RELAY_BACKLOG) < 0)
-            { push_log("E", "relay bind errno=%d", errno); close(rfd); signal_ready(TUNNEL_ERR_NET); goto done; }
+        if (bind(rfd, (struct sockaddr *)&la, sizeof(la)) < 0 ||
+            listen(rfd, RELAY_BACKLOG) < 0) {
+            push_log("E", "relay bind errno=%d", errno);
+            close(rfd); signal_ready(TUNNEL_ERR_NET); goto done;
+        }
         fcntl(rfd, F_SETFL, fcntl(rfd, F_GETFL, 0) | O_NONBLOCK);
     }
 
+    /* --- Conexion al servidor remoto --- */
     int tfd = open_tunnel();
     if (tfd < 0) { signal_ready(tfd); close(rfd); goto done; }
 
+    /* --- Pipe de shutdown: cualquier thread escribe 1 byte para despertar al epoll --- */
     int wfds[2] = {-1, -1};
-    if (pipe(wfds) < 0)
-        { push_log("E", "pipe errno=%d", errno); signal_ready(TUNNEL_ERR_NET); close(tfd); close(rfd); goto done; }
+    if (pipe(wfds) < 0) {
+        push_log("E", "pipe errno=%d", errno);
+        signal_ready(TUNNEL_ERR_NET); close(tfd); close(rfd); goto done;
+    }
     fcntl(wfds[0], F_SETFL, O_NONBLOCK); fcntl(wfds[1], F_SETFL, O_NONBLOCK);
     fcntl(wfds[0], F_SETFD, FD_CLOEXEC); fcntl(wfds[1], F_SETFD, FD_CLOEXEC);
 
+    /* --- epoll: solo wfds[0] y rfd y los cfd de clientes locales ---
+     * tfd NO va en el epoll: lo lee exclusivamente el tunnel_reader_thread. */
     int epfd = epoll_create1(EPOLL_CLOEXEC);
-    if (epfd < 0)
-        { push_log("E", "epoll errno=%d", errno); signal_ready(TUNNEL_ERR_NET); close(wfds[0]); close(wfds[1]); close(tfd); close(rfd); goto done; }
-
+    if (epfd < 0) {
+        push_log("E", "epoll errno=%d", errno);
+        signal_ready(TUNNEL_ERR_NET);
+        close(wfds[0]); close(wfds[1]); close(tfd); close(rfd); goto done;
+    }
     {
         struct epoll_event ev;
-        ev.events = EPOLLIN; ev.data.fd = wfds[0]; epoll_ctl(epfd, EPOLL_CTL_ADD, wfds[0], &ev);
-        ev.events = EPOLLIN; ev.data.fd = rfd;      epoll_ctl(epfd, EPOLL_CTL_ADD, rfd,      &ev);
-        ev.events = EPOLLIN; ev.data.fd = tfd;      epoll_ctl(epfd, EPOLL_CTL_ADD, tfd,      &ev);
+        ev.events = EPOLLIN; ev.data.fd = wfds[0];
+        epoll_ctl(epfd, EPOLL_CTL_ADD, wfds[0], &ev);
+        ev.events = EPOLLIN; ev.data.fd = rfd;
+        epoll_ctl(epfd, EPOLL_CTL_ADD, rfd, &ev);
     }
 
+    /* --- Lanzar tunnel_reader_thread --- */
+    tun_reader_arg_t tr_arg = { tfd, epfd, wfds[1] };
+    pthread_t tr_thread;
+    if (pthread_create(&tr_thread, NULL, tunnel_reader_thread, &tr_arg) != 0) {
+        push_log("E", "pthread_create tunnel_reader errno=%d", errno);
+        signal_ready(TUNNEL_ERR_NET);
+        close(epfd); close(wfds[0]); close(wfds[1]); close(tfd); close(rfd); goto done;
+    }
+
+    /* Publicar fds globales para nativeStop */
     pthread_mutex_lock(&g_mu);
-    g_tfd = tfd; g_rfd = rfd; g_epfd = epfd; g_wake_r = wfds[0]; g_wake_w = wfds[1];
+    g_tfd = tfd; g_rfd = rfd; g_epfd = epfd;
+    g_wake_r = wfds[0]; g_wake_w = wfds[1];
     pthread_mutex_unlock(&g_mu);
 
     signal_ready(1);
     push_log("I", "sesion activa");
 
+    /* ================================================================
+     * CLIENT LOOP: maneja accepts, reads de clientes locales y ping.
+     * No toca tfd — ese es terreno exclusivo del tunnel_reader_thread.
+     * ================================================================ */
     {
         long last_ping = time(NULL);
         struct epoll_event ev;
-        int has_pending = 0;
 
         while (1) {
-            int timeout = has_pending ? 200 : 5000;
-            int n = epoll_wait(epfd, &ev, 1, timeout);
+            int n = epoll_wait(epfd, &ev, 1, KEEPALIVE_INTERVAL_SEC * 1000);
             if (n < 0 && errno == EINTR) continue;
 
             long now = time(NULL);
 
+            /* Verificar pong timeout */
             if (now - atomic_load(&g_last_pong) > PONG_TIMEOUT_SEC) {
                 push_log("E", "pong timeout");
                 break;
             }
 
+            /* Enviar ping periodico */
             if (now - last_ping >= KEEPALIVE_INTERVAL_SEC) {
                 last_ping = now;
                 if (tun_send(tfd, T_PING, 0, NULL, 0) < 0) break;
             }
 
-            if (n == 0) { has_pending = 0; continue; }
-            if (n < 0) continue;
+            if (n <= 0) continue; /* timeout o EINTR ya manejado */
 
             int efd = ev.data.fd;
 
+            /* Shutdown: pipe despertado por tunnel_reader o por nativeStop */
             if (efd == wfds[0]) break;
 
-            if (efd == tfd) {
-                for (;;) {
-                uint8_t hdr[FRAME_HDR], payload[MAX_PAYLOAD];
-                int off = 0;
-                while (off < FRAME_HDR) {
-                    ssize_t r = recv(tfd, hdr + off, FRAME_HDR - off, MSG_DONTWAIT);
-                    if (r > 0) { off += r; continue; }
-                    if (r == 0) goto session_end;
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) goto tfd_drained;
-                    if (errno == EINTR) continue;
-                    goto session_end;
-                }
-                uint8_t  ft  = hdr[0];
-                uint32_t sid = ((uint32_t)hdr[1] << 24) | ((uint32_t)hdr[2] << 16) |
-                               ((uint32_t)hdr[3] <<  8) |  (uint32_t)hdr[4];
-                uint16_t len = ((uint16_t)hdr[5] << 8) | hdr[6];
-                if (len > MAX_PAYLOAD) goto session_end;
-                off = 0;
-                while (off < (int)len) {
-                    ssize_t r = recv(tfd, payload + off, len - off, 0);
-                    if (r > 0) { off += r; continue; }
-                    if (r == 0 || (errno != EINTR && errno != EAGAIN)) goto session_end;
-                }
-                switch (ft) {
-                case T_DATA: {
-                    int cfd = ht_get(sid);
-                    if (cfd >= 0 && len > 0) {
-                        ssize_t sent = 0;
-                        while (sent < (ssize_t)len) {
-                            ssize_t w = send(cfd, payload + sent, len - sent, MSG_NOSIGNAL);
-                            if (w > 0) { sent += w; continue; }
-                            if (w < 0 && errno == EINTR) continue;
-                            break;
-                        }
-                    }
-                    break;
-                }
-                case T_CLOSE: {
-                    int cfd = ht_get(sid);
-                    if (cfd >= 0) {
-                        epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
-                        ht_del(sid);
-                        close(cfd);
-                    }
-                    break;
-                }
-                case T_PING: tun_send(tfd, T_PONG, 0, NULL, 0); break;
-                case T_PONG: atomic_store(&g_last_pong, (long)time(NULL)); break;
-                }
-                } /* end drain loop */
-                tfd_drained:
-                continue;
-            }
-
+            /* Nueva conexion del hev-socks5 */
             if (efd == rfd) {
                 struct sockaddr_in ca; socklen_t cl = sizeof(ca);
                 int cfd = accept(rfd, (struct sockaddr *)&ca, &cl);
                 if (cfd < 0) continue;
                 fcntl(cfd, F_SETFD, FD_CLOEXEC);
                 fcntl(cfd, F_SETFL, fcntl(cfd, F_GETFL, 0) | O_NONBLOCK);
-                uint32_t sid;
-                do { sid = (uint32_t)atomic_fetch_add(&g_next_sid, 1) & 0x7FFFFFFF; }
-                while (!sid || ht_get(sid) != -1);
+
+                /* Leer el primer bloque (handshake SOCKS5 o datos iniciales) */
                 uint8_t buf[MAX_PAYLOAD];
                 ssize_t first = recv(cfd, buf, sizeof(buf), 0);
                 if (first <= 0) { close(cfd); continue; }
+
+                /* Asignar stream id unico */
+                uint32_t sid;
+                do { sid = (uint32_t)atomic_fetch_add(&g_next_sid, 1) & 0x7FFFFFFF; }
+                while (!sid || ht_get(sid) != -1);
+
                 ht_put(sid, cfd);
-                if (tun_send(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0)
-                    { ht_del(sid); close(cfd); goto session_end; }
-                has_pending = 1;
+                if (tun_send(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0) {
+                    ht_del(sid); close(cfd); break;
+                }
+
                 struct epoll_event cev;
                 cev.events   = EPOLLIN | EPOLLERR | EPOLLHUP;
                 cev.data.u64 = ((uint64_t)sid << 32) | (uint32_t)cfd;
-                if (epoll_ctl(epfd, EPOLL_CTL_ADD, cfd, &cev) < 0)
-                    { ht_del(sid); close(cfd); }
+                if (epoll_ctl(epfd, EPOLL_CTL_ADD, cfd, &cev) < 0) {
+                    ht_del(sid); close(cfd);
+                }
                 continue;
             }
 
+            /* Datos o cierre de un cliente local existente */
             {
                 uint32_t sid = (uint32_t)(ev.data.u64 >> 32);
                 int      cfd = (int)(uint32_t)ev.data.u64;
+
                 if (ev.events & (EPOLLERR | EPOLLHUP)) {
                     epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
                     ht_del(sid); close(cfd);
@@ -486,25 +594,33 @@ static void *proxy_thread(void *arg) {
                     uint8_t buf[MAX_PAYLOAD];
                     ssize_t nr = recv(cfd, buf, sizeof(buf), 0);
                     if (nr > 0) {
-                        if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)nr) < 0) goto session_end;
-                        has_pending = 1;
+                        if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)nr) < 0) break;
                     } else if (nr == 0) {
                         epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
                         ht_del(sid); close(cfd);
                         tun_send(tfd, T_CLOSE, sid, NULL, 0);
                     }
+                    /* nr < 0 con EAGAIN: loopback no-bloqueante, ignorar */
                 }
             }
         }
     }
 
-session_end:
+    /* ================================================================
+     * CLEANUP: orden importa.
+     * 1. Cerrar tfd para que el tunnel_reader salga de su recv() bloqueante.
+     * 2. Join al tunnel_reader.
+     * 3. Cerrar el resto.
+     * ================================================================ */
+    shutdown(tfd, SHUT_RDWR);
+    pthread_join(tr_thread, NULL);
+
     ht_close_all(epfd);
     pthread_mutex_lock(&g_mu);
     g_tfd = -1; g_rfd = -1; g_epfd = -1; g_wake_r = -1; g_wake_w = -1;
     pthread_mutex_unlock(&g_mu);
     close(epfd);
-    shutdown(tfd, SHUT_RDWR); close(tfd);
+    close(tfd);
     close(wfds[0]); close(wfds[1]);
     close(rfd);
 
