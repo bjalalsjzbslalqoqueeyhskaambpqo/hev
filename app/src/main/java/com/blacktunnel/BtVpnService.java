@@ -390,7 +390,7 @@ public class BtVpnService extends VpnService {
             "socks5:\n  address: 127.0.0.1\n  port: " + BtProxy.SOCKS5_PORT + "\n  udp: 'tcp'\n  pipeline: false\n" +
             "mapdns:\n  address: 198.18.0.2\n  port: 53\n  network: 198.18.0.0\n  netmask: 255.254.0.0\n  cache-size: 8192\n" +
             "misc:\n" +
-            "  connect-timeout: 3000\n" +
+            "  connect-timeout: 4000\n" +
             "  tcp-read-write-timeout: 1800000\n" +
             "  udp-read-write-timeout: 900000\n" +
             "  max-session-count: 4096\n" +
