@@ -351,13 +351,17 @@ static void *tunnel_reader(void *arg) {
         if (rc == -2) {
             if ((long)time(NULL) - atomic_load(&g_last_pong) > PONG_TIMEOUT_SEC) {
                 push_log("E", "pong timeout");
-                uint8_t b = 1; write(wake_w, &b, 1);
+                if (atomic_load(&g_tunnel_epoch) == epoch) {
+                    uint8_t b = 1; write(wake_w, &b, 1);
+                }
             }
             continue;
         }
         if (rc < 0) {
             push_log("E", "tunnel read failed");
-            uint8_t b = 1; write(wake_w, &b, 1);
+            if (atomic_load(&g_tunnel_epoch) == epoch) {
+                uint8_t b = 1; write(wake_w, &b, 1);
+            }
             break;
         }
 
@@ -368,28 +372,42 @@ static void *tunnel_reader(void *arg) {
 
         if (len > MAX_PAYLOAD) {
             push_log("E", "payload too large");
-            uint8_t b = 1; write(wake_w, &b, 1);
+            if (atomic_load(&g_tunnel_epoch) == epoch) {
+                uint8_t b = 1; write(wake_w, &b, 1);
+            }
             break;
         }
         if (len > 0 && tun_recv_full(tfd, payload, len, 30000) < 0) {
             push_log("E", "payload read failed");
-            uint8_t b = 1; write(wake_w, &b, 1);
+            if (atomic_load(&g_tunnel_epoch) == epoch) {
+                uint8_t b = 1; write(wake_w, &b, 1);
+            }
             break;
         }
 
         switch (ft) {
         case T_DATA: {
             int cfd = ht_get(sid);
-            if (cfd >= 0 && len > 0) send(cfd, payload, len, MSG_NOSIGNAL);
+            if (cfd < 0 || len == 0) break;
+            ssize_t sent = 0;
+            while (sent < len) {
+                ssize_t n = send(cfd, payload + sent, len - sent, MSG_NOSIGNAL);
+                if (n > 0) { sent += n; continue; }
+                if (errno == EINTR) continue;
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    struct pollfd pw = {cfd, POLLOUT, 0};
+                    if (poll(&pw, 1, 200) > 0) continue;
+                }
+                tun_send(tfd, T_CLOSE, sid, NULL, 0);
+                epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
+                ht_del(sid); close(cfd);
+                break;
+            }
             break;
         }
         case T_CLOSE: {
             int cfd = ht_get(sid);
-            if (cfd >= 0) {
-                epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
-                ht_del(sid);
-                close(cfd);
-            }
+            if (cfd >= 0) shutdown(cfd, SHUT_RDWR);
             break;
         }
         case T_PING: tun_send(tfd, T_PONG, 0, NULL, 0); break;
@@ -419,14 +437,18 @@ static void *keepalive(void *arg) {
         long now = time(NULL);
         if (now - atomic_load(&g_last_pong) > PONG_TIMEOUT_SEC) {
             push_log("E", "pong timeout keepalive");
-            uint8_t b = 1; write(wake_w, &b, 1);
+            if (atomic_load(&g_tunnel_epoch) == epoch) {
+                uint8_t b = 1; write(wake_w, &b, 1);
+            }
             break;
         }
         if (now - last < KEEPALIVE_INTERVAL_SEC) continue;
         last = now;
         atomic_store(&g_last_ping_ts_ms, now_mono_ms());
         if (tun_send(tfd, T_PING, 0, NULL, 0) < 0) {
-            uint8_t b = 1; write(wake_w, &b, 1);
+            if (atomic_load(&g_tunnel_epoch) == epoch) {
+                uint8_t b = 1; write(wake_w, &b, 1);
+            }
             break;
         }
     }
@@ -522,29 +544,34 @@ static void *main_thread(void *arg) {
                 if (efd == wfds[0]) { dead = 1; break; }
 
                 if (efd == rfd) {
-                    struct sockaddr_in ca; socklen_t cl = sizeof(ca);
-                    int cfd = accept(rfd, (struct sockaddr *)&ca, &cl);
-                    if (cfd < 0) continue;
-                    fcntl(cfd, F_SETFD, FD_CLOEXEC);
+                    while (1) {
+                        struct sockaddr_in ca; socklen_t cl = sizeof(ca);
+                        int cfd = accept(rfd, (struct sockaddr *)&ca, &cl);
+                        if (cfd < 0) break;
+                        fcntl(cfd, F_SETFD, FD_CLOEXEC);
 
-                    uint32_t sid;
-                    do { sid = (uint32_t)atomic_fetch_add(&g_next_sid, 1) & 0x7FFFFFFF; }
-                    while (!sid || ht_get(sid) != -1);
+                        uint32_t sid;
+                        do { sid = (uint32_t)atomic_fetch_add(&g_next_sid, 1) & 0x7FFFFFFF; }
+                        while (!sid || ht_get(sid) != -1);
 
-                    uint8_t buf[MAX_PAYLOAD];
-                    ssize_t first = recv(cfd, buf, sizeof(buf), 0);
-                    if (first <= 0) { close(cfd); continue; }
+                        struct pollfd pf = {cfd, POLLIN, 0};
+                        if (poll(&pf, 1, 500) <= 0) { close(cfd); continue; }
 
-                    ht_put(sid, cfd);
-                    if (tun_send(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0) {
-                        ht_del(sid); close(cfd); dead = 1; break;
+                        uint8_t buf[MAX_PAYLOAD];
+                        ssize_t first = recv(cfd, buf, sizeof(buf), 0);
+                        if (first <= 0) { close(cfd); continue; }
+
+                        ht_put(sid, cfd);
+                        if (tun_send(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0) {
+                            ht_del(sid); close(cfd); dead = 1; break;
+                        }
+
+                        struct epoll_event cev;
+                        cev.events   = EPOLLIN;
+                        cev.data.u64 = ((uint64_t)sid << 32) | (uint32_t)cfd;
+                        if (epoll_ctl(epfd, EPOLL_CTL_ADD, cfd, &cev) < 0)
+                            { ht_del(sid); close(cfd); }
                     }
-
-                    struct epoll_event cev;
-                    cev.events   = EPOLLIN;
-                    cev.data.u64 = ((uint64_t)sid << 32) | (uint32_t)cfd;
-                    if (epoll_ctl(epfd, EPOLL_CTL_ADD, cfd, &cev) < 0)
-                        { ht_del(sid); close(cfd); }
                     continue;
                 }
 
@@ -705,6 +732,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *r) {
     (*env)->DeleteLocalRef(env, cls);
     return JNI_VERSION_1_6;
 }
+
 static long now_mono_ms(void) {
     struct timespec ts = {0};
     clock_gettime(CLOCK_MONOTONIC, &ts);
