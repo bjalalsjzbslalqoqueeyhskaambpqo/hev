@@ -412,13 +412,7 @@ static void *proxy_thread(void *arg) {
 
             int efd = ev.data.fd;
 
-            /* Byte de wake: drena y continua sin cerrar el pipe */
-            if (efd == wfds[0]) {
-                uint8_t drain[64];
-                while (read(wfds[0], drain, sizeof(drain)) > 0) {}
-                if (!g_running) break;
-                continue;
-            }
+            if (efd == wfds[0]) break;
 
             if (efd == tfd) {
                 uint8_t hdr[FRAME_HDR], payload[MAX_PAYLOAD];
@@ -627,11 +621,7 @@ Java_com_blacktunnel_BtProxy_nativeSetGamingMode(JNIEnv *e, jclass c, jboolean e
     (void)e; (void)c;
     atomic_store(&g_gaming_mode, enabled ? 1 : 0);
     push_log("I", "gaming_mode=%d", enabled ? 1 : 0);
-    /* Despertar el epoll para que tome efecto inmediato */
-    pthread_mutex_lock(&g_mu);
-    int ww = g_wake_w;
-    pthread_mutex_unlock(&g_mu);
-    if (ww >= 0) { uint8_t b = 0; write(ww, &b, 1); }
+    /* El atomic se lee en el proximo ciclo del epoll, no hace falta despertar */
 }
 
 static JNINativeMethod g_methods[] = {
