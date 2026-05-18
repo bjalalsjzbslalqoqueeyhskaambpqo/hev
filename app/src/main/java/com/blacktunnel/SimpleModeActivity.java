@@ -52,34 +52,34 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class SimpleModeActivity extends ComponentActivity {
-    private static final String PREF_UI    = "ui_state";
+    private static final String PREF_UI     = "ui_state";
     private static final String KEY_HIDE_ID = "hide_internal_id";
     private static final int    HOTSPOT_PROXY_PORT = 7071;
 
     private enum UiState { DISCONNECTED, CONNECTING, CONNECTED }
 
-    private Button    connectBtn;
-    private Button    copyIdBtn;
-    private TextView  statusBadgeView;
-    private View      statusDotView;
-    private View      statusHaloView;
-    private TextView  statusDetailsView;
-    private TextView  deviceIdView;
-    private TextView  userValueView;
-    private TextView  daysValueView;
-    private TextView  pingValueView;
-    private Switch    gamingModeSwitch;
-    private TextView  gamingModeBadgeView;
-    private TextView  gamingDescriptionView;
-    private TextView  gamingSelectedCountView;
-    private Button    selectGamingAppsBtn;
+    private Button       connectBtn;
+    private Button       copyIdBtn;
+    private TextView     statusBadgeView;
+    private View         statusDotView;
+    private View         statusHaloView;
+    private TextView     statusDetailsView;
+    private TextView     deviceIdView;
+    private TextView     userValueView;
+    private TextView     daysValueView;
+    private TextView     pingValueView;
+    private Switch       gamingModeSwitch;
+    private TextView     gamingModeBadgeView;
+    private TextView     gamingDescriptionView;
+    private TextView     gamingSelectedCountView;
+    private Button       selectGamingAppsBtn;
     private LinearLayout gamingModePanel;
     private LinearLayout gamingControlsLayout;
     private View         panelConnectionView;
-    private Switch    hotspotSwitch;
-    private TextView  hotspotInfoView;
-    private Animator  statusPulseAnimator;
-    private Animator  statusHaloAnimator;
+    private Switch       hotspotSwitch;
+    private TextView     hotspotInfoView;
+    private Animator     statusPulseAnimator;
+    private Animator     statusHaloAnimator;
 
     private final ExecutorService appLoadExecutor = Executors.newSingleThreadExecutor();
     private String  internalId           = "";
@@ -102,8 +102,9 @@ public class SimpleModeActivity extends ComponentActivity {
     private final Runnable stateTicker = new Runnable() {
         @Override public void run() {
             try {
-                syncStateFromService();
-                refreshServiceState();
+                String logs = BtVpnService.dumpLogs();
+                syncStateFromLogs(logs);
+                refreshFromLogs(logs);
             } catch (Throwable ignored) {}
             handler.postDelayed(this, 3000);
         }
@@ -130,26 +131,26 @@ public class SimpleModeActivity extends ComponentActivity {
             }
         );
 
-        connectBtn            = findViewById(R.id.btnConnect);
-        copyIdBtn             = findViewById(R.id.btnCopyLogs);
-        statusBadgeView       = findViewById(R.id.txtStatusBadge);
-        statusDotView         = findViewById(R.id.viewStatusDot);
-        statusHaloView        = findViewById(R.id.viewStatusHalo);
-        statusDetailsView     = findViewById(R.id.txtStatusDetails);
-        deviceIdView          = findViewById(R.id.txtDeviceId);
-        userValueView         = findViewById(R.id.txtUser);
-        daysValueView         = findViewById(R.id.txtDays);
-        pingValueView         = findViewById(R.id.txtPingValue);
-        gamingModeSwitch      = findViewById(R.id.switchGamingMode);
-        gamingModeBadgeView   = findViewById(R.id.txtGamingBadge);
-        gamingDescriptionView = findViewById(R.id.txtGamingDescription);
+        connectBtn              = findViewById(R.id.btnConnect);
+        copyIdBtn               = findViewById(R.id.btnCopyLogs);
+        statusBadgeView         = findViewById(R.id.txtStatusBadge);
+        statusDotView           = findViewById(R.id.viewStatusDot);
+        statusHaloView          = findViewById(R.id.viewStatusHalo);
+        statusDetailsView       = findViewById(R.id.txtStatusDetails);
+        deviceIdView            = findViewById(R.id.txtDeviceId);
+        userValueView           = findViewById(R.id.txtUser);
+        daysValueView           = findViewById(R.id.txtDays);
+        pingValueView           = findViewById(R.id.txtPingValue);
+        gamingModeSwitch        = findViewById(R.id.switchGamingMode);
+        gamingModeBadgeView     = findViewById(R.id.txtGamingBadge);
+        gamingDescriptionView   = findViewById(R.id.txtGamingDescription);
         gamingSelectedCountView = findViewById(R.id.txtGamingSelectedCount);
-        selectGamingAppsBtn   = findViewById(R.id.btnSelectGamingApps);
-        gamingModePanel       = findViewById(R.id.panelGamingMode);
-        gamingControlsLayout  = findViewById(R.id.layoutGamingControls);
-        panelConnectionView   = findViewById(R.id.panelConnection);
-        hotspotSwitch         = findViewById(R.id.switchHotspot);
-        hotspotInfoView       = findViewById(R.id.txtHotspotInfo);
+        selectGamingAppsBtn     = findViewById(R.id.btnSelectGamingApps);
+        gamingModePanel         = findViewById(R.id.panelGamingMode);
+        gamingControlsLayout    = findViewById(R.id.layoutGamingControls);
+        panelConnectionView     = findViewById(R.id.panelConnection);
+        hotspotSwitch           = findViewById(R.id.switchHotspot);
+        hotspotInfoView         = findViewById(R.id.txtHotspotInfo);
 
         internalId = BtProxy.getOrCreateInternalId(this);
         BtProxy.applyStoredGamingMode(this);
@@ -160,7 +161,6 @@ public class SimpleModeActivity extends ComponentActivity {
         boolean running = BtVpnService.isRunningState();
         setUiState(running ? UiState.CONNECTED : UiState.DISCONNECTED);
         lastRunning = running;
-        refreshServiceState();
 
         connectBtn.setOnClickListener(v -> {
             if (uiState == UiState.CONNECTING) return;
@@ -298,7 +298,7 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void refreshGamingModeUi() {
-        boolean enabled  = BtProxy.isGamingMode(this);
+        boolean enabled = BtProxy.isGamingMode(this);
         List<String> selected = BtProxy.getGamingSelectedPackages(this);
 
         if (gamingModeBadgeView != null) {
@@ -350,10 +350,10 @@ public class SimpleModeActivity extends ComponentActivity {
 
     private void openGamingAppsDialog() {
         View dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_gaming_apps, null, false);
-        EditText     searchView    = dialogView.findViewById(R.id.editSearchApps);
-        TextView     counterView   = dialogView.findViewById(R.id.txtPickerCounter);
-        LinearLayout selectedLayout= dialogView.findViewById(R.id.layoutSelectedApps);
-        ListView     listView      = dialogView.findViewById(R.id.listGamingApps);
+        EditText     searchView     = dialogView.findViewById(R.id.editSearchApps);
+        TextView     counterView    = dialogView.findViewById(R.id.txtPickerCounter);
+        LinearLayout selectedLayout = dialogView.findViewById(R.id.layoutSelectedApps);
+        ListView     listView       = dialogView.findViewById(R.id.listGamingApps);
 
         counterView.setText(getString(R.string.gaming_loading_apps));
         Set<String> selectedPackages = new HashSet<>(BtProxy.getGamingSelectedPackages(this));
@@ -491,9 +491,9 @@ public class SimpleModeActivity extends ComponentActivity {
             notifyDataSetChanged();
         }
 
-        @Override public int      getCount()              { return filteredApps.size(); }
+        @Override public int       getCount()             { return filteredApps.size(); }
         @Override public AppOption getItem(int position)  { return filteredApps.get(position); }
-        @Override public long     getItemId(int position) { return position; }
+        @Override public long      getItemId(int position){ return position; }
 
         @Override
         public View getView(int position, View convertView, ViewGroup parent) {
@@ -528,7 +528,7 @@ public class SimpleModeActivity extends ComponentActivity {
         i.setAction(BtVpnService.ACTION_START);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
         else startService(i);
-        connectingSinceMs = SystemClock.elapsedRealtime();
+        connectingSinceMs  = SystemClock.elapsedRealtime();
         handshakeConfirmed = false;
         setUiState(UiState.CONNECTING);
     }
@@ -578,23 +578,22 @@ public class SimpleModeActivity extends ComponentActivity {
         }, 500);
     }
 
-    private void syncStateFromService() {
-        boolean running = BtVpnService.isRunningState();
-        String logs = BtVpnService.dumpLogs();
-        String connState = findLatestConnectionState(logs);
+    private void syncStateFromLogs(String logs) {
+        boolean running    = BtVpnService.isRunningState();
+        String  connState  = findLatestConnectionState(logs);
         if ("connected".equals(connState)) handshakeConfirmed = true;
 
         if (running && !lastRunning) {
             authState = "";
             applyingRuntimeChanges = false;
-            if (handshakeConfirmed) setUiState(UiState.CONNECTED);
-            else setUiState(UiState.CONNECTING);
+            setUiState(handshakeConfirmed ? UiState.CONNECTED : UiState.CONNECTING);
         } else if (!running && lastRunning) {
-            applyingRuntimeChanges = false; setUiState(UiState.DISCONNECTED);
-            handshakeConfirmed = false;
+            applyingRuntimeChanges = false;
+            handshakeConfirmed     = false;
+            setUiState(UiState.DISCONNECTED);
         } else if (running && "failed".equals(connState) && uiState != UiState.DISCONNECTED) {
             applyingRuntimeChanges = false;
-            handshakeConfirmed = false;
+            handshakeConfirmed     = false;
             stopVpn();
             setUiState(UiState.DISCONNECTED);
         } else if (running && handshakeConfirmed && uiState != UiState.CONNECTED) {
@@ -604,16 +603,17 @@ public class SimpleModeActivity extends ComponentActivity {
             setUiState(UiState.CONNECTING);
         } else if (!running && uiState == UiState.CONNECTING) {
             if (SystemClock.elapsedRealtime() - connectingSinceMs > 9000) {
-                applyingRuntimeChanges = false; setUiState(UiState.DISCONNECTED);
+                applyingRuntimeChanges = false;
+                setUiState(UiState.DISCONNECTED);
             }
         } else if (running && applyingRuntimeChanges && handshakeConfirmed) {
-            applyingRuntimeChanges = false; setUiState(UiState.CONNECTED);
+            applyingRuntimeChanges = false;
+            setUiState(UiState.CONNECTED);
         }
         lastRunning = running;
     }
 
-    private void refreshServiceState() {
-        String logs = BtVpnService.dumpLogs();
+    private void refreshFromLogs(String logs) {
         updateServerAuthStatus(logs);
         updateUserMetadata(logs);
     }
@@ -642,7 +642,8 @@ public class SimpleModeActivity extends ComponentActivity {
             statusDetailsView.setTextColor(c(R.color.color_connecting));
             if (connectBtn != null) connectBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
         } else if ("ok".equals(latestAuth)) {
-            authState = ""; setHideInternalId(true);
+            authState = "";
+            setHideInternalId(true);
         }
     }
 
@@ -654,7 +655,7 @@ public class SimpleModeActivity extends ComponentActivity {
             String lower = line.trim().toLowerCase(Locale.ROOT);
             if (lower.isEmpty()) continue;
             if (lower.contains("usuario no registrado") || lower.contains("not_registered")) return "not_registered";
-            if (lower.contains("usuario expirado")     || lower.contains("expired"))       return "expired";
+            if (lower.contains("usuario expirado")      || lower.contains("expired"))        return "expired";
             if (lower.contains("user_name=") || lower.contains("user_days=") || lower.contains("ping_ms=")) return "ok";
         }
         return "";
@@ -668,13 +669,13 @@ public class SimpleModeActivity extends ComponentActivity {
             if (line == null) continue;
             String lower = line.trim().toLowerCase(Locale.ROOT);
             if (lower.isEmpty()) continue;
-            if (lower.contains("tunnel ok") ||
-                lower.contains("user_name=") ||
-                lower.contains("user_days=") ||
-                lower.contains("ping_ms=")) return "connected";
+            if (lower.contains("tunnel ok")   ||
+                lower.contains("user_name=")  ||
+                lower.contains("user_days=")  ||
+                lower.contains("ping_ms="))    return "connected";
             if (lower.contains("handshake failed") ||
                 lower.contains("proxy no responde") ||
-                lower.contains("connect failed")) return "failed";
+                lower.contains("connect failed"))   return "failed";
         }
         return "";
     }
@@ -747,7 +748,7 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private int resolvePingColor(int ping) {
-        if (ping < 80)  return c(R.color.color_connected);
+        if (ping < 80)   return c(R.color.color_connected);
         if (ping <= 150) return c(R.color.color_accent);
         return c(R.color.color_connecting);
     }
@@ -795,13 +796,13 @@ public class SimpleModeActivity extends ComponentActivity {
             }
         }
         if (statusDotView != null) {
-            int col = newState == UiState.CONNECTED ? c(R.color.color_connected)
+            int col = newState == UiState.CONNECTED  ? c(R.color.color_connected)
                     : newState == UiState.CONNECTING ? c(R.color.color_connecting)
                     : c(R.color.color_text_disabled);
             statusDotView.setBackgroundTintList(ColorStateList.valueOf(col));
         }
         if (statusHaloView != null) {
-            int col = newState == UiState.CONNECTED ? c(R.color.color_connected)
+            int col = newState == UiState.CONNECTED  ? c(R.color.color_connected)
                     : newState == UiState.CONNECTING ? c(R.color.color_connecting)
                     : c(R.color.color_text_disabled);
             statusHaloView.setBackgroundTintList(ColorStateList.valueOf(col));
