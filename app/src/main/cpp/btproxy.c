@@ -394,7 +394,7 @@ static void *proxy_thread(void *arg) {
             if (n < 0 && errno == EINTR) continue;
 
             /* Timeout sin eventos: limpiar bandera de pendiente */
-            if (n == 0) { has_pending = 0; continue; }
+            if (n == 0) has_pending = 0;
 
             long now = time(NULL);
 
