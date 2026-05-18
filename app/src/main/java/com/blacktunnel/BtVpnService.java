@@ -47,6 +47,8 @@ public class BtVpnService extends VpnService {
     private static final Object        LOG_LOCK      = new Object();
     private static final StringBuilder LOGS          = new StringBuilder(8192);
     private static final int           MAX_LOG_CHARS = 24000;
+    private static final long          HANDSHAKE_WAIT_TIMEOUT_MS = 12000L;
+    private static final long          HANDSHAKE_POLL_MS = 250L;
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
@@ -138,6 +140,13 @@ public class BtVpnService extends VpnService {
             return;
         }
 
+        if (!waitForTunnelHandshake()) {
+            log("E startAll: tunnel handshake timeout/failure");
+            BtProxy.stop();
+            stopForeground(STOP_FOREGROUND_REMOVE);
+            return;
+        }
+
         registerNet();
 
         if (!startHevStack()) {
@@ -151,6 +160,36 @@ public class BtVpnService extends VpnService {
         running  = true;
         sRunning = true;
         log("I startAll ok");
+    }
+
+    private boolean waitForTunnelHandshake() {
+        long deadline = System.currentTimeMillis() + HANDSHAKE_WAIT_TIMEOUT_MS;
+        while (System.currentTimeMillis() < deadline) {
+            String nativeLogs = BtProxy.drainLogs();
+            if (nativeLogs != null && !nativeLogs.isBlank()) {
+                synchronized (LOG_LOCK) {
+                    LOGS.append(nativeLogs);
+                    if (LOGS.length() > MAX_LOG_CHARS)
+                        LOGS.delete(0, LOGS.length() - MAX_LOG_CHARS);
+                }
+                String[] lines = nativeLogs.split("\n");
+                for (String line : lines) {
+                    if (line == null) continue;
+                    String lower = line.trim().toLowerCase(Locale.ROOT);
+                    if (lower.isEmpty()) continue;
+                    if (lower.contains("tunnel ok") ||
+                        lower.contains("user_name=") ||
+                        lower.contains("user_days=")) return true;
+                    if (lower.contains("handshake failed") ||
+                        lower.contains("proxy no responde") ||
+                        lower.contains("connect failed") ||
+                        lower.contains("not_registered") ||
+                        lower.contains("expired")) return false;
+                }
+            }
+            try { Thread.sleep(HANDSHAKE_POLL_MS); } catch (InterruptedException ignored) { return false; }
+        }
+        return false;
     }
 
     private void stopAll() {

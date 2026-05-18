@@ -592,7 +592,7 @@ public class SimpleModeActivity extends ComponentActivity {
         } else if (!running && lastRunning) {
             applyingRuntimeChanges = false; setUiState(UiState.DISCONNECTED);
             handshakeConfirmed = false;
-        } else if (running && "failed".equals(connState)) {
+        } else if (running && "failed".equals(connState) && uiState != UiState.DISCONNECTED) {
             applyingRuntimeChanges = false;
             handshakeConfirmed = false;
             stopVpn();
