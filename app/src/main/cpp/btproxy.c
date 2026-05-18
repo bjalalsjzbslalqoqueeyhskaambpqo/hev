@@ -39,10 +39,6 @@
 #define CONNECT_TIMEOUT_SEC    15
 #define HANDSHAKE_TIMEOUT_SEC  4
 
-#define EPOLL_TIMEOUT_GAMING   0
-#define EPOLL_TIMEOUT_PENDING  200
-#define EPOLL_TIMEOUT_IDLE     5000
-
 #define PROXY_HOST  "emailmarketing.personal.com.ar"
 #define PROXY_PORT  80
 #define TUNNEL_HOST "2.brawlpass.com.ar"
@@ -79,9 +75,6 @@ static pthread_cond_t  g_ready_cv     = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t g_log_mu = PTHREAD_MUTEX_INITIALIZER;
 static char            g_logbuf[32768];
 static size_t          g_loglen = 0;
-
-/* Gaming mode: 0 = normal (ahorro bateria), 1 = gaming (inmediato) */
-static atomic_int      g_gaming_mode = 0;
 
 static void push_log(const char *lvl, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
@@ -237,10 +230,11 @@ static int try_connect_ip(const char *ip, int timeout_ms) {
     if (inet_pton(AF_INET6, ip, &a.sin6_addr) != 1) return -1;
     int fd = socket(AF_INET6, SOCK_STREAM, 0); if (fd < 0) return -1;
     protect_fd(fd);
-    /* Socket del tunel real: TCP_NODELAY + KEEPALIVE, sin buffers gigantes */
-    int one = 1;
+    int one = 1, v = 524288;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &one, sizeof(one));
     setsockopt(fd, SOL_SOCKET,  SO_KEEPALIVE, &one, sizeof(one));
+    setsockopt(fd, SOL_SOCKET,  SO_SNDBUF,    &v,   sizeof(v));
+    setsockopt(fd, SOL_SOCKET,  SO_RCVBUF,    &v,   sizeof(v));
     int fl = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, fl | O_NONBLOCK);
     fcntl(fd, F_SETFD, FD_CLOEXEC);
@@ -378,23 +372,10 @@ static void *proxy_thread(void *arg) {
     {
         long last_ping = time(NULL);
         struct epoll_event ev;
-        int has_pending = 0;
 
         while (1) {
-            int timeout;
-            if (atomic_load(&g_gaming_mode)) {
-                timeout = EPOLL_TIMEOUT_GAMING;
-            } else if (has_pending) {
-                timeout = EPOLL_TIMEOUT_PENDING;
-            } else {
-                timeout = EPOLL_TIMEOUT_IDLE;
-            }
-
-            int n = epoll_wait(epfd, &ev, 1, timeout);
+            int n = epoll_wait(epfd, &ev, 1, 5000);
             if (n < 0 && errno == EINTR) continue;
-
-            /* Timeout sin eventos: limpiar bandera de pendiente */
-            if (n == 0) has_pending = 0;
 
             long now = time(NULL);
 
@@ -461,9 +442,6 @@ static void *proxy_thread(void *arg) {
                 if (cfd < 0) continue;
                 fcntl(cfd, F_SETFD, FD_CLOEXEC);
                 fcntl(cfd, F_SETFL, fcntl(cfd, F_GETFL, 0) | O_NONBLOCK);
-                /* Socket local (loopback): inmediato, sin Nagle */
-                int one = 1;
-                setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
                 uint32_t sid;
                 do { sid = (uint32_t)atomic_fetch_add(&g_next_sid, 1) & 0x7FFFFFFF; }
                 while (!sid || ht_get(sid) != -1);
@@ -473,7 +451,6 @@ static void *proxy_thread(void *arg) {
                 ht_put(sid, cfd);
                 if (tun_send(tfd, T_OPEN, sid, buf, (uint16_t)first) < 0)
                     { ht_del(sid); close(cfd); goto session_end; }
-                has_pending = 1;
                 struct epoll_event cev;
                 cev.events   = EPOLLIN | EPOLLERR | EPOLLHUP;
                 cev.data.u64 = ((uint64_t)sid << 32) | (uint32_t)cfd;
@@ -494,7 +471,6 @@ static void *proxy_thread(void *arg) {
                     ssize_t nr = recv(cfd, buf, sizeof(buf), 0);
                     if (nr > 0) {
                         if (tun_send(tfd, T_DATA, sid, buf, (uint16_t)nr) < 0) goto session_end;
-                        has_pending = 1;
                     } else if (nr == 0) {
                         epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
                         ht_del(sid); close(cfd);
@@ -540,7 +516,6 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     atomic_store(&g_next_sid, 1);
     atomic_store(&g_last_pong, (long)time(NULL));
     atomic_store(&g_tunnel_ready, 0);
-    atomic_store(&g_gaming_mode, 0);
     g_tfd = g_rfd = g_epfd = g_wake_r = g_wake_w = -1;
     g_running = 1;
     pthread_mutex_unlock(&g_mu);
@@ -616,20 +591,11 @@ Java_com_blacktunnel_BtProxy_nativeSetNetwork(JNIEnv *e, jclass c, jlong net) {
     pthread_mutex_lock(&g_mu); g_net = (net_handle_t)net; pthread_mutex_unlock(&g_mu);
 }
 
-JNIEXPORT void JNICALL
-Java_com_blacktunnel_BtProxy_nativeSetGamingMode(JNIEnv *e, jclass c, jboolean enabled) {
-    (void)e; (void)c;
-    atomic_store(&g_gaming_mode, enabled ? 1 : 0);
-    push_log("I", "gaming_mode=%d", enabled ? 1 : 0);
-    /* El atomic se lee en el proximo ciclo del epoll, no hace falta despertar */
-}
-
 static JNINativeMethod g_methods[] = {
-    {"nativeStart",       "(ILandroid/net/VpnService;Ljava/lang/String;)I", (void *)Java_com_blacktunnel_BtProxy_nativeStart},
-    {"nativeStop",        "()V",                                             (void *)Java_com_blacktunnel_BtProxy_nativeStop},
-    {"nativeDrainLogs",   "()Ljava/lang/String;",                           (void *)Java_com_blacktunnel_BtProxy_nativeDrainLogs},
-    {"nativeSetNetwork",  "(J)V",                                            (void *)Java_com_blacktunnel_BtProxy_nativeSetNetwork},
-    {"nativeSetGamingMode","(Z)V",                                           (void *)Java_com_blacktunnel_BtProxy_nativeSetGamingMode},
+    {"nativeStart",      "(ILandroid/net/VpnService;Ljava/lang/String;)I", (void *)Java_com_blacktunnel_BtProxy_nativeStart},
+    {"nativeStop",       "()V",                                             (void *)Java_com_blacktunnel_BtProxy_nativeStop},
+    {"nativeDrainLogs",  "()Ljava/lang/String;",                           (void *)Java_com_blacktunnel_BtProxy_nativeDrainLogs},
+    {"nativeSetNetwork", "(J)V",                                            (void *)Java_com_blacktunnel_BtProxy_nativeSetNetwork},
 };
 
 JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *r) {
