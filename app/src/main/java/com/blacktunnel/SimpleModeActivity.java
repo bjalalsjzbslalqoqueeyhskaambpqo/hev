@@ -106,23 +106,21 @@ public class SimpleModeActivity extends ComponentActivity {
     private ValueAnimator   dotBlinkAnimator;
 
     private final ExecutorService appLoadExecutor = Executors.newSingleThreadExecutor();
-    private String  internalId           = "";
-    private UiState uiState              = UiState.DISCONNECTED;
-    private long    connectingSinceMs    = 0L;
-    private boolean lastRunning          = false;
-    private long    autoDisconnectAtMs   = -1L;
-    private String  authState            = "";
-    private boolean hideInternalId       = false;
+    private String  internalId             = "";
+    private UiState uiState                = UiState.DISCONNECTED;
+    private long    connectingSinceMs      = 0L;
+    private boolean lastRunning            = false;
+    private String  authState             = "";
+    private boolean hideInternalId         = false;
     private boolean applyingRuntimeChanges = false;
-    private int     lastPingMs           = -1;
-    private boolean handshakeConfirmed   = false;
-    private String  lastKnownConnState   = "";
-    private String  lastDetailText       = "";
-    private boolean settingUiState       = false;
+    private int     lastPingMs             = -1;
+    private boolean handshakeConfirmed     = false;
+    private String  lastKnownConnState     = "";
+    private String  lastDetailText         = "";
+    private boolean settingUiState         = false;
 
     private final Deque<Integer> pingHistory = new ArrayDeque<>();
 
-    private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
     private ConnectivityManager connectivityManager;
     private ConnectivityManager.NetworkCallback networkCallback;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -140,20 +138,20 @@ public class SimpleModeActivity extends ComponentActivity {
         }
     };
 
-    // ─── Vista interna de gráfica de ping ────────────────────────────────────
-
     public static final class PingGraphView extends View {
 
-        private final Paint linePaint   = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint fillPaint   = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint dotPaint    = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Path  linePath    = new Path();
-        private final Path  fillPath    = new Path();
+        private final Paint linePaint  = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint fillPaint  = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint dotPaint   = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint glowPaint  = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path  linePath   = new Path();
+        private final Path  fillPath   = new Path();
         private final Deque<Integer> data;
-        private int maxPoints           = 20;
-        private int activeColor         = Color.parseColor("#4CFFA500");
-        private int lineColor           = Color.parseColor("#FFA500");
-        private boolean blinkOn         = true;
+        private int   maxPoints        = 20;
+        private int   activeColor      = Color.parseColor("#4CFFA500");
+        private int   lineColor        = Color.parseColor("#FFA500");
+        private boolean blinkOn        = true;
+        private float   blinkAlpha     = 1f;
 
         public PingGraphView(Context ctx) {
             super(ctx);
@@ -163,6 +161,8 @@ public class SimpleModeActivity extends ComponentActivity {
             linePaint.setStrokeJoin(Paint.Join.ROUND);
             fillPaint.setStyle(Paint.Style.FILL);
             dotPaint.setStyle(Paint.Style.FILL);
+            glowPaint.setStyle(Paint.Style.FILL);
+            glowPaint.setMaskFilter(null);
             data = new ArrayDeque<>();
         }
 
@@ -170,11 +170,18 @@ public class SimpleModeActivity extends ComponentActivity {
             data.clear();
             data.addAll(source);
             maxPoints = maxPts;
+            invalidate();
         }
 
         public void setColors(int line, int fill) {
             lineColor   = line;
             activeColor = fill;
+            invalidate();
+        }
+
+        public void setBlinkAlpha(float alpha) {
+            blinkAlpha = alpha;
+            blinkOn    = true;
             invalidate();
         }
 
@@ -193,11 +200,10 @@ public class SimpleModeActivity extends ComponentActivity {
             int visMax = 0;
             for (int v : pts) if (v > visMax) visMax = v;
             if (visMax < 50) visMax = 50;
-            float pad = h * 0.12f;
+            float pad     = h * 0.12f;
             float usableH = h - pad * 2;
-
-            float step = (float) w / Math.max(maxPoints - 1, 1);
-            float startX = w - step * (pts.length - 1);
+            float step    = (float) w / Math.max(maxPoints - 1, 1);
+            float startX  = w - step * (pts.length - 1);
 
             linePath.reset();
             fillPath.reset();
@@ -212,8 +218,10 @@ public class SimpleModeActivity extends ComponentActivity {
                 float x  = startX + step * i;
                 float y  = pad + usableH - (pts[i] / (float) visMax) * usableH;
                 float cx = (startX + step * (i - 1) + x) / 2f;
-                linePath.cubicTo(cx, pad + usableH - (pts[i-1] / (float) visMax) * usableH, cx, y, x, y);
-                fillPath.cubicTo(cx, pad + usableH - (pts[i-1] / (float) visMax) * usableH, cx, y, x, y);
+                float prevY = pad + usableH - (pts[i - 1] / (float) visMax) * usableH;
+                linePaint.setColor(lineColor);
+                linePath.cubicTo(cx, prevY, cx, y, x, y);
+                fillPath.cubicTo(cx, prevY, cx, y, x, y);
             }
 
             float lastX = startX + step * (pts.length - 1);
@@ -227,18 +235,25 @@ public class SimpleModeActivity extends ComponentActivity {
             canvas.drawPath(linePath, linePaint);
 
             if (blinkOn) {
-                float lastY = pad + usableH - (pts[pts.length - 1] / (float) visMax) * usableH;
-                dotPaint.setColor(lineColor);
-                canvas.drawCircle(lastX, lastY, 5f, dotPaint);
-                dotPaint.setColor(Color.argb(60, Color.red(lineColor), Color.green(lineColor), Color.blue(lineColor)));
-                canvas.drawCircle(lastX, lastY, 10f, dotPaint);
+                float lastY  = pad + usableH - (pts[pts.length - 1] / (float) visMax) * usableH;
+                int   r      = Color.red(lineColor);
+                int   g      = Color.green(lineColor);
+                int   b      = Color.blue(lineColor);
+
+                int solidAlpha = (int) (255 * blinkAlpha);
+                dotPaint.setColor(Color.argb(solidAlpha, r, g, b));
+                canvas.drawCircle(lastX, lastY, 5.5f, dotPaint);
+
+                int halo1Alpha = (int) (80 * blinkAlpha);
+                dotPaint.setColor(Color.argb(halo1Alpha, r, g, b));
+                canvas.drawCircle(lastX, lastY, 11f, dotPaint);
+
+                int halo2Alpha = (int) (30 * blinkAlpha);
+                dotPaint.setColor(Color.argb(halo2Alpha, r, g, b));
+                canvas.drawCircle(lastX, lastY, 19f, dotPaint);
             }
         }
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Ciclo de vida
-    // ─────────────────────────────────────────────────────────────────────────
 
     @Override
     protected void attachBaseContext(Context newBase) {
@@ -272,7 +287,6 @@ public class SimpleModeActivity extends ComponentActivity {
     @Override
     protected void onDestroy() {
         handler.removeCallbacks(stateTicker);
-        handler.removeCallbacks(autoDisconnectRunnable);
         cancelAllAnimators();
         if (connectivityManager != null && networkCallback != null) {
             try { connectivityManager.unregisterNetworkCallback(networkCallback); }
@@ -282,10 +296,6 @@ public class SimpleModeActivity extends ComponentActivity {
         appLoadExecutor.shutdownNow();
         super.onDestroy();
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Inicialización
-    // ─────────────────────────────────────────────────────────────────────────
 
     private void bindViews() {
         connectBtn              = findViewById(R.id.btnConnect);
@@ -377,10 +387,6 @@ public class SimpleModeActivity extends ComponentActivity {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Animación de entrada
-    // ─────────────────────────────────────────────────────────────────────────
-
     private void animateInitialEntrance() {
         if (!canAnimate()) return;
         View[] panels = {
@@ -404,10 +410,6 @@ public class SimpleModeActivity extends ComponentActivity {
                 .start();
         }
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Conectividad
-    // ─────────────────────────────────────────────────────────────────────────
 
     private void setupConnectivityMonitor() {
         connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
@@ -440,10 +442,6 @@ public class SimpleModeActivity extends ComponentActivity {
         } catch (Throwable ignored) {}
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // VPN
-    // ─────────────────────────────────────────────────────────────────────────
-
     private void startVpnWithPermission() {
         setUiState(UiState.CONNECTING);
         authState          = "";
@@ -471,8 +469,6 @@ public class SimpleModeActivity extends ComponentActivity {
         handshakeConfirmed = false;
         lastKnownConnState = "";
         setUiState(UiState.DISCONNECTED);
-        handler.removeCallbacks(autoDisconnectRunnable);
-        autoDisconnectAtMs = -1L;
     }
 
     private void applyGamingChangesIfRunning() {
@@ -485,10 +481,6 @@ public class SimpleModeActivity extends ComponentActivity {
         i.setAction(BtVpnService.ACTION_APPLY);
         startService(i);
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Sincronización de estado desde logs
-    // ─────────────────────────────────────────────────────────────────────────
 
     private void syncStateFromLogs(String logs) {
         boolean running   = BtVpnService.isRunningState();
@@ -563,10 +555,6 @@ public class SimpleModeActivity extends ComponentActivity {
             default:         return "• Estableciendo conexión…";
         }
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Lectores de logs
-    // ─────────────────────────────────────────────────────────────────────────
 
     private void refreshFromLogs(String logs) {
         updateServerAuthStatus(logs);
@@ -696,7 +684,6 @@ public class SimpleModeActivity extends ComponentActivity {
                                 ? R.color.color_connecting
                                 : R.color.color_connected;
                         daysValueView.setTextColor(c(colorRes));
-                        scheduleAutoDisconnectFromDays(days);
                     } catch (Exception ignored) {}
                 }
                 break;
@@ -712,17 +699,13 @@ public class SimpleModeActivity extends ComponentActivity {
                     try {
                         int ping = Integer.parseInt(v.replaceAll("[^0-9]", ""));
                         pushPingHistory(ping);
-                        animatePingTo(ping);
+                        updatePingLabel(ping);
                     } catch (Exception ignored) { resetPingView(); }
                 }
                 break;
             }
         }
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Historial y gráfica de ping
-    // ─────────────────────────────────────────────────────────────────────────
 
     private void pushPingHistory(int ping) {
         pingHistory.addLast(ping);
@@ -734,31 +717,56 @@ public class SimpleModeActivity extends ComponentActivity {
             pingGraphView.setColors(color, fill);
             pingGraphView.setVisibility(View.VISIBLE);
         }
+        if (pingValueView != null) {
+            pingValueView.setText(ping + " ms");
+            pingValueView.setTextColor(resolvePingColor(ping));
+        }
+    }
+
+    private void updatePingLabel(int ping) {
+        if (pingValueView == null) return;
+        int color = resolvePingColor(ping);
+        if (!canAnimate() || lastPingMs < 0) {
+            pingValueView.setText(ping + " ms");
+            pingValueView.setTextColor(color);
+            lastPingMs = ping;
+            return;
+        }
+        ValueAnimator colorAnim = ValueAnimator.ofObject(
+            new ArgbEvaluator(), pingValueView.getCurrentTextColor(), color);
+        colorAnim.setDuration(500);
+        colorAnim.addUpdateListener(a -> pingValueView.setTextColor((Integer) a.getAnimatedValue()));
+        colorAnim.start();
+        pingValueView.setText(ping + " ms");
+        lastPingMs = ping;
     }
 
     private void startPingGraphBlink() {
         if (pingGraphView == null) return;
         handler.removeCallbacksAndMessages("ping_blink");
-        final boolean[] state = { true };
+        final float[] alpha = { 1f };
+        final boolean[] increasing = { false };
         Runnable blinkRunnable = new Runnable() {
             @Override
             public void run() {
-                state[0] = !state[0];
-                pingGraphView.setBlinkState(state[0]);
-                handler.postDelayed(this, 700);
+                if (increasing[0]) {
+                    alpha[0] += 0.18f;
+                    if (alpha[0] >= 1f) { alpha[0] = 1f; increasing[0] = false; }
+                } else {
+                    alpha[0] -= 0.18f;
+                    if (alpha[0] <= 0.25f) { alpha[0] = 0.25f; increasing[0] = true; }
+                }
+                pingGraphView.setBlinkAlpha(alpha[0]);
+                handler.postDelayed(this, 60);
             }
         };
-        handler.postDelayed(blinkRunnable, 700);
+        handler.postDelayed(blinkRunnable, 60);
     }
 
     private void stopPingGraphBlink() {
         handler.removeCallbacksAndMessages("ping_blink");
         if (pingGraphView != null) pingGraphView.setBlinkState(false);
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // UI de estado principal
-    // ─────────────────────────────────────────────────────────────────────────
 
     private void setUiState(UiState newState) {
         if (settingUiState) return;
@@ -855,9 +863,9 @@ public class SimpleModeActivity extends ComponentActivity {
             dotColorAnimator.setDuration(duration);
             dotColorAnimator.addUpdateListener(a -> {
                 int col = (Integer) a.getAnimatedValue();
-                applyTint(statusDotView,       col);
-                applyTint(statusHaloView,      col);
-                applyTint(statusHaloMidView,   col);
+                applyTint(statusDotView,     col);
+                applyTint(statusHaloView,    col);
+                applyTint(statusHaloMidView, col);
             });
             dotColorAnimator.start();
         } else {
@@ -962,10 +970,6 @@ public class SimpleModeActivity extends ComponentActivity {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Gaming mode
-    // ─────────────────────────────────────────────────────────────────────────
-
     private void refreshGamingModeUi() {
         boolean      enabled  = BtProxy.isGamingMode(this);
         List<String> selected = BtProxy.getGamingSelectedPackages(this);
@@ -1052,10 +1056,6 @@ public class SimpleModeActivity extends ComponentActivity {
             handler.postDelayed(this::refreshGamingModeUi, 600);
         }, 600);
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Diálogo de selección de apps para Gaming
-    // ─────────────────────────────────────────────────────────────────────────
 
     private void openGamingAppsDialog() {
         View dialogView = LayoutInflater.from(this)
@@ -1188,32 +1188,6 @@ public class SimpleModeActivity extends ComponentActivity {
         return out;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Auto-disconnect
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private void scheduleAutoDisconnectFromDays(int days) {
-        handler.removeCallbacks(autoDisconnectRunnable);
-        if (days <= 0) { runAutoDisconnect(); return; }
-        long delay = days * 24L * 60L * 60L * 1000L;
-        autoDisconnectAtMs = SystemClock.elapsedRealtime() + delay;
-        handler.postDelayed(autoDisconnectRunnable, delay);
-    }
-
-    private void runAutoDisconnect() {
-        if (!BtVpnService.isRunningState()) return;
-        stopVpn();
-        setHideInternalId(false);
-        showErrorDetail(
-            "✖ Acceso expirado\nID: " + internalId,
-            c(R.color.color_connecting)
-        );
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Device ID
-    // ─────────────────────────────────────────────────────────────────────────
-
     private void setHideInternalId(boolean hide) {
         if (hideInternalId == hide) return;
         hideInternalId = hide;
@@ -1237,56 +1211,22 @@ public class SimpleModeActivity extends ComponentActivity {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Ping
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private void animatePingTo(int targetPing) {
-        if (pingValueView == null) return;
-        int start = lastPingMs >= 0 ? lastPingMs : targetPing;
-
-        if (!canAnimate() || lastPingMs < 0) {
-            pingValueView.setText(String.valueOf(targetPing));
-            pingValueView.setTextColor(resolvePingColor(targetPing));
-            lastPingMs = targetPing;
-            return;
-        }
-
-        ValueAnimator counter = ValueAnimator.ofInt(start, targetPing);
-        counter.setDuration(450);
-        counter.setInterpolator(new DecelerateInterpolator());
-        counter.addUpdateListener(a -> pingValueView.setText(
-            String.valueOf((int) a.getAnimatedValue())));
-        counter.start();
-
-        ValueAnimator colorAnim = ValueAnimator.ofObject(
-            new ArgbEvaluator(),
-            pingValueView.getCurrentTextColor(),
-            resolvePingColor(targetPing)
-        );
-        colorAnim.setDuration(600);
-        colorAnim.addUpdateListener(a ->
-            pingValueView.setTextColor((Integer) a.getAnimatedValue()));
-        colorAnim.start();
-
-        lastPingMs = targetPing;
-    }
-
     private void resetPingView() {
-        if (pingValueView == null) return;
-        if (canAnimate()) {
-            ValueAnimator va = ValueAnimator.ofObject(
-                new ArgbEvaluator(),
-                pingValueView.getCurrentTextColor(),
-                c(R.color.color_text_disabled)
-            );
-            va.setDuration(350);
-            va.addUpdateListener(a -> pingValueView.setTextColor((Integer) a.getAnimatedValue()));
-            va.start();
-        } else {
-            pingValueView.setTextColor(c(R.color.color_text_disabled));
+        if (pingValueView != null) {
+            if (canAnimate()) {
+                ValueAnimator va = ValueAnimator.ofObject(
+                    new ArgbEvaluator(),
+                    pingValueView.getCurrentTextColor(),
+                    c(R.color.color_text_disabled)
+                );
+                va.setDuration(350);
+                va.addUpdateListener(a -> pingValueView.setTextColor((Integer) a.getAnimatedValue()));
+                va.start();
+            } else {
+                pingValueView.setTextColor(c(R.color.color_text_disabled));
+            }
+            pingValueView.setText("--");
         }
-        pingValueView.setText("--");
         lastPingMs = -1;
     }
 
@@ -1296,10 +1236,6 @@ public class SimpleModeActivity extends ComponentActivity {
         if (ping <= 200) return c(R.color.color_connecting);
         return c(R.color.color_disconnected);
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Animadores del dot
-    // ─────────────────────────────────────────────────────────────────────────
 
     private void startStatusPulse() {
         if (statusDotView == null || !canAnimate()) return;
@@ -1338,10 +1274,6 @@ public class SimpleModeActivity extends ComponentActivity {
         if (dotColorAnimator    != null) dotColorAnimator.cancel();
         if (dotBlinkAnimator    != null) dotBlinkAnimator.cancel();
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Helpers
-    // ─────────────────────────────────────────────────────────────────────────
 
     private boolean canAnimate() { return ValueAnimator.areAnimatorsEnabled(); }
 
@@ -1409,10 +1341,6 @@ public class SimpleModeActivity extends ComponentActivity {
         return c(R.color.color_disconnected);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Clases internas
-    // ─────────────────────────────────────────────────────────────────────────
-
     private static final class AppOption {
         final String   packageName;
         final String   appName;
@@ -1450,9 +1378,9 @@ public class SimpleModeActivity extends ComponentActivity {
             notifyDataSetChanged();
         }
 
-        @Override public int       getCount()              { return filteredApps.size(); }
-        @Override public AppOption getItem(int p)          { return filteredApps.get(p); }
-        @Override public long      getItemId(int p)        { return p; }
+        @Override public int       getCount()     { return filteredApps.size(); }
+        @Override public AppOption getItem(int p) { return filteredApps.get(p); }
+        @Override public long      getItemId(int p) { return p; }
 
         @Override
         public View getView(int position, View convertView, ViewGroup parent) {
