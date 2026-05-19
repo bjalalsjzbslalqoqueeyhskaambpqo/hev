@@ -418,7 +418,7 @@ public class BtVpnService extends VpnService {
             "misc:\n" +
             "  task-stack-size: 86016\n" +
             "  tcp-buffer-size: 65536\n" +
-            "  connect-timeout: 5000\n" +
+            "  connect-timeout: 10000\n" +
             "  read-write-timeout: 300000\n" +
             "  max-session-count: 4096\n" +
             "  limit-nofile: 65535\n" +
