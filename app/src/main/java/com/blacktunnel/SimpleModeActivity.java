@@ -602,7 +602,7 @@ public class SimpleModeActivity extends ComponentActivity {
         } else if (running && !handshakeConfirmed && uiState != UiState.CONNECTING) {
             setUiState(UiState.CONNECTING);
         } else if (!running && uiState == UiState.CONNECTING) {
-            if (SystemClock.elapsedRealtime() - connectingSinceMs > 9000) {
+            if (SystemClock.elapsedRealtime() - connectingSinceMs > 20000) {
                 applyingRuntimeChanges = false;
                 setUiState(UiState.DISCONNECTED);
             }
