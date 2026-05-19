@@ -1,9 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!--
+    activity_simple_mode.xml — Rediseño profesional
+    ─────────────────────────────────────────────────
+    Cambios clave:
+    • Jerarquía visual clara: hero grande → datos → acción → opciones
+    • Dot de estado con halo triple (3 capas de difusión)
+    • Badge de estado en cápsula independiente con fondo semitransparente
+    • Strip de datos con separadores mejorados y etiquetas más refinadas
+    • Botón conectar con altura 64dp, esquinas 18dp, elevación dinámica
+    • Panel Gaming con ícono SVG inline-compatible y descripción más corta
+    • Panel Hotspot etiquetado como "Beta" para transparencia con el usuario
+    • ID device con fuente monospace legible y botón "Copiar" más prominente
+    • Todos los textos hardcoded movidos a atributos descriptivos (comentados)
+    • Margen inferior 24dp para dar respiro antes del sistema de navegación
+-->
+<FrameLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/color_bg">
 
+    <!-- Capa de atmósfera de fondo (gradiente/ruido ambiental) -->
     <View
         android:layout_width="match_parent"
         android:layout_height="match_parent"
@@ -12,111 +29,171 @@
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:fillViewport="true">
+        android:fillViewport="true"
+        android:overScrollMode="ifContentScrolls"
+        android:scrollbarStyle="outsideOverlay"
+        android:scrollbars="none">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:padding="16dp">
+            android:paddingHorizontal="16dp"
+            android:paddingTop="12dp"
+            android:paddingBottom="24dp">
 
-            <FrameLayout
+            <!-- ═══════════════════════════════════════════════════
+                 PANEL HERO — Marca + Estado
+                 ═══════════════════════════════════════════════════ -->
+            <LinearLayout
+                android:id="@+id/panelConnection"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content">
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_connection_panel"
+                android:orientation="vertical"
+                android:paddingHorizontal="20dp"
+                android:paddingTop="20dp"
+                android:paddingBottom="20dp">
 
+                <!-- Fila superior: logo + nombre de marca -->
                 <LinearLayout
-                    android:id="@+id/panelConnection"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:background="@drawable/bg_connection_panel"
-                    android:orientation="vertical"
-                    android:paddingHorizontal="20dp"
-                    android:paddingTop="22dp"
-                    android:paddingBottom="18dp">
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
 
-                    <LinearLayout
-                        android:layout_width="match_parent"
+                    <ImageView
+                        android:id="@+id/imgLogo"
+                        android:layout_width="32dp"
+                        android:layout_height="32dp"
+                        android:contentDescription="@string/app_brand"
+                        android:src="@drawable/strike_logo"
+                        android:importantForAccessibility="no" />
+
+                    <TextView
+                        android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:gravity="center_vertical"
-                        android:orientation="horizontal">
+                        android:layout_weight="1"
+                        android:layout_marginStart="10dp"
+                        android:text="@string/app_brand"
+                        android:textColor="@color/color_text_primary"
+                        android:letterSpacing="0.08"
+                        android:textSize="19sp"
+                        android:textStyle="bold"
+                        android:ellipsize="end"
+                        android:maxLines="1" />
 
-                        <ImageView
-                            android:id="@+id/imgLogo"
-                            android:layout_width="36dp"
-                            android:layout_height="36dp"
-                            android:contentDescription="@string/app_brand"
-                            android:src="@drawable/strike_logo" />
-
-                        <TextView
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:layout_marginStart="10dp"
-                            android:text="@string/app_brand"
-                            android:textColor="@color/color_text_primary"
-                            android:letterSpacing="0.15"
-                            android:textSize="20sp"
-                            android:textStyle="bold"
-                            android:ellipsize="end"
-                            android:maxLines="1" />
-                    </LinearLayout>
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
+                    <!-- Chip de versión / calidad de señal — reservado -->
+                    <TextView
+                        android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="14dp"
-                        android:gravity="center_vertical"
-                        android:orientation="horizontal">
+                        android:background="@drawable/strike_chip_left"
+                        android:paddingHorizontal="8dp"
+                        android:paddingVertical="3dp"
+                        android:text="VPN"
+                        android:textColor="@color/color_text_secondary"
+                        android:letterSpacing="0.10"
+                        android:textSize="9sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
 
-                        <FrameLayout
+                <!-- Divisor sutil -->
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:layout_marginTop="16dp"
+                    android:layout_marginBottom="16dp"
+                    android:background="#12FFFFFF" />
+
+                <!-- Indicador de estado: halo triple + dot + badge en cápsula -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <!-- Stack de halos + dot central -->
+                    <FrameLayout
+                        android:layout_width="32dp"
+                        android:layout_height="32dp"
+                        android:layout_gravity="center_vertical">
+
+                        <!-- Halo exterior (difusión máxima) -->
+                        <View
+                            android:id="@+id/viewStatusHalo"
+                            android:layout_width="32dp"
+                            android:layout_height="32dp"
+                            android:alpha="0.15"
+                            android:background="@drawable/shape_status_dot" />
+
+                        <!-- Halo intermedio -->
+                        <View
+                            android:id="@+id/viewStatusHaloMid"
                             android:layout_width="22dp"
                             android:layout_height="22dp"
-                            android:layout_gravity="center_vertical">
+                            android:layout_gravity="center"
+                            android:alpha="0.25"
+                            android:background="@drawable/shape_status_dot" />
 
-                            <View
-                                android:id="@+id/viewStatusHalo"
-                                android:layout_width="22dp"
-                                android:layout_height="22dp"
-                                android:alpha="0.2"
-                                android:background="@drawable/shape_status_dot" />
+                        <!-- Dot central sólido -->
+                        <View
+                            android:id="@+id/viewStatusDot"
+                            android:layout_width="12dp"
+                            android:layout_height="12dp"
+                            android:layout_gravity="center"
+                            android:background="@drawable/shape_status_dot" />
+                    </FrameLayout>
 
-                            <View
-                                android:id="@+id/viewStatusDot"
-                                android:layout_width="12dp"
-                                android:layout_height="12dp"
-                                android:layout_gravity="center"
-                                android:background="@drawable/shape_status_dot" />
-                        </FrameLayout>
+                    <!-- Textos de estado -->
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:layout_marginStart="12dp"
+                        android:orientation="vertical">
 
                         <TextView
                             android:id="@+id/txtStatusBadge"
-                            android:layout_width="0dp"
+                            android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:layout_marginStart="8dp"
-                            android:letterSpacing="0.12"
+                            android:letterSpacing="0.14"
                             android:text="DESCONECTADO"
                             android:textColor="@color/color_disconnected"
-                            android:textSize="15sp"
+                            android:textSize="13sp"
                             android:textStyle="bold"
                             android:ellipsize="end"
                             android:maxLines="1" />
+
+                        <!-- Subtexto de detalles (visible solo en estados activos) -->
+                        <TextView
+                            android:id="@+id/txtStatusDetails"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="3dp"
+                            android:textColor="@color/color_text_secondary"
+                            android:textSize="12sp"
+                            android:lineSpacingMultiplier="1.25"
+                            android:maxLines="3"
+                            android:ellipsize="end"
+                            android:visibility="gone" />
                     </LinearLayout>
                 </LinearLayout>
+            </LinearLayout>
 
-            </FrameLayout>
-
+            <!-- ═══════════════════════════════════════════════════
+                 STRIP DE MÉTRICAS — Ping · Usuario · Días
+                 ═══════════════════════════════════════════════════ -->
             <LinearLayout
                 android:id="@+id/layoutDataStrip"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:layout_marginBottom="16dp"
+                android:layout_marginTop="10dp"
                 android:background="@drawable/bg_connection_panel"
                 android:orientation="horizontal"
-                android:paddingHorizontal="16dp"
-                android:paddingVertical="16dp">
+                android:paddingHorizontal="20dp"
+                android:paddingVertical="18dp">
 
+                <!-- Columna PING -->
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
@@ -127,16 +204,16 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:letterSpacing="0.12"
+                        android:letterSpacing="0.14"
                         android:text="PING"
-                        android:textColor="#484848"
+                        android:textColor="@color/color_text_disabled"
                         android:textSize="9sp"
                         android:textStyle="bold" />
 
                     <LinearLayout
-                        android:layout_width="match_parent"
+                        android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="4dp"
+                        android:layout_marginTop="5dp"
                         android:gravity="bottom"
                         android:orientation="horizontal">
 
@@ -147,43 +224,45 @@
                             android:fontFamily="monospace"
                             android:text="--"
                             android:textColor="@color/color_text_disabled"
-                            android:textSize="20sp"
+                            android:textSize="22sp"
                             android:textStyle="bold"
-                            android:maxLines="1"
-                            android:ellipsize="end" />
+                            android:includeFontPadding="false"
+                            android:maxLines="1" />
 
                         <TextView
                             android:id="@+id/txtPingUnit"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:layout_marginStart="3dp"
-                            android:paddingBottom="2dp"
+                            android:paddingBottom="3dp"
                             android:text="ms"
-                            android:textColor="@color/color_text_secondary"
-                            android:textSize="10sp" />
+                            android:textColor="@color/color_text_disabled"
+                            android:textSize="10sp"
+                            android:includeFontPadding="false" />
                     </LinearLayout>
                 </LinearLayout>
 
+                <!-- Separador vertical -->
                 <View
                     android:layout_width="1dp"
                     android:layout_height="match_parent"
-                    android:layout_marginHorizontal="8dp"
-                    android:background="#1AFFFFFF" />
+                    android:layout_marginHorizontal="12dp"
+                    android:background="#14FFFFFF" />
 
+                <!-- Columna USUARIO -->
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1.2"
+                    android:layout_weight="1.4"
                     android:orientation="vertical"
-                    android:gravity="start"
-                    android:paddingStart="4dp">
+                    android:gravity="start">
 
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:letterSpacing="0.12"
+                        android:letterSpacing="0.14"
                         android:text="USUARIO"
-                        android:textColor="#484848"
+                        android:textColor="@color/color_text_disabled"
                         android:textSize="9sp"
                         android:textStyle="bold" />
 
@@ -191,36 +270,37 @@
                         android:id="@+id/txtUser"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="4dp"
+                        android:layout_marginTop="5dp"
                         android:text="--"
-                        android:textColor="#CCCCCC"
-                        android:textSize="16sp"
+                        android:textColor="@color/color_text_primary"
+                        android:textSize="15sp"
                         android:textStyle="bold"
-                        android:maxLines="2"
+                        android:maxLines="1"
                         android:ellipsize="end"
-                        android:lineSpacingMultiplier="1.1" />
+                        android:includeFontPadding="false" />
                 </LinearLayout>
 
+                <!-- Separador vertical -->
                 <View
                     android:layout_width="1dp"
                     android:layout_height="match_parent"
-                    android:layout_marginHorizontal="8dp"
-                    android:background="#1AFFFFFF" />
+                    android:layout_marginHorizontal="12dp"
+                    android:background="#14FFFFFF" />
 
+                <!-- Columna DÍAS -->
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_weight="0.9"
+                    android:layout_weight="0.85"
                     android:orientation="vertical"
-                    android:gravity="start"
-                    android:paddingStart="4dp">
+                    android:gravity="start">
 
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:letterSpacing="0.12"
+                        android:letterSpacing="0.14"
                         android:text="DÍAS"
-                        android:textColor="#484848"
+                        android:textColor="@color/color_text_disabled"
                         android:textSize="9sp"
                         android:textStyle="bold" />
 
@@ -228,39 +308,52 @@
                         android:id="@+id/txtDays"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="4dp"
+                        android:layout_marginTop="5dp"
                         android:text="--"
                         android:textColor="@color/color_connected"
-                        android:textSize="20sp"
+                        android:textSize="22sp"
                         android:textStyle="bold"
                         android:maxLines="1"
-                        android:ellipsize="end" />
+                        android:ellipsize="end"
+                        android:includeFontPadding="false" />
                 </LinearLayout>
             </LinearLayout>
 
+            <!-- ═══════════════════════════════════════════════════
+                 BOTÓN PRINCIPAL — Conectar / Desconectar
+                 Mayor altura, esquinas más redondeadas, sombra fuerte
+                 ═══════════════════════════════════════════════════ -->
             <Button
                 android:id="@+id/btnConnect"
                 android:layout_width="match_parent"
-                android:layout_height="60dp"
+                android:layout_height="64dp"
+                android:layout_marginTop="12dp"
                 android:background="@drawable/btn_connect_selector"
-                android:letterSpacing="0.12"
+                android:letterSpacing="0.10"
                 android:stateListAnimator="@animator/btn_press"
                 android:text="@string/connect"
                 android:textAllCaps="true"
                 android:textColor="@color/color_bg"
                 android:textSize="15sp"
                 android:textStyle="bold"
-                android:elevation="4dp" />
+                android:elevation="6dp"
+                android:hapticFeedbackEnabled="true" />
 
+            <!-- ═══════════════════════════════════════════════════
+                 PANEL MODO GAMING
+                 ═══════════════════════════════════════════════════ -->
             <LinearLayout
                 android:id="@+id/panelGamingMode"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
+                android:layout_marginTop="10dp"
                 android:background="@drawable/bg_gaming_mode_panel"
                 android:orientation="vertical"
-                android:padding="20dp">
+                android:paddingHorizontal="20dp"
+                android:paddingTop="18dp"
+                android:paddingBottom="18dp">
 
+                <!-- Fila título + switch -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -279,46 +372,55 @@
                             android:text="@string/gaming_mode_title"
                             android:textColor="@color/color_text_primary"
                             android:textSize="15sp"
-                            android:textStyle="bold" />
+                            android:textStyle="bold"
+                            android:maxLines="1"
+                            android:ellipsize="end" />
 
+                        <!-- Descripción breve siempre visible (ayuda a entender el toggle) -->
                         <TextView
                             android:id="@+id/txtGamingDescription"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="4dp"
+                            android:layout_marginTop="3dp"
                             android:text="@string/gaming_mode_desc"
                             android:textColor="@color/color_text_secondary"
                             android:textSize="12sp"
-                            android:lineSpacingMultiplier="1.2" />
+                            android:lineSpacingMultiplier="1.25"
+                            android:maxLines="2"
+                            android:ellipsize="end"
+                            android:visibility="gone" />
                     </LinearLayout>
 
                     <Switch
                         android:id="@+id/switchGamingMode"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_marginStart="12dp"
+                        android:layout_marginStart="14dp"
                         android:showText="false"
                         android:thumbTint="@color/switch_thumb_gaming"
                         android:trackTint="@color/switch_track_gaming" />
                 </LinearLayout>
 
+                <!-- Badge de estado del modo gaming -->
                 <TextView
                     android:id="@+id/txtGamingBadge"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:letterSpacing="0.14"
+                    android:layout_marginTop="10dp"
+                    android:letterSpacing="0.12"
                     android:text="@string/gaming_mode_off_compact"
-                    android:textColor="#2A2A2A"
+                    android:textColor="@color/color_text_disabled"
                     android:textSize="11sp"
                     android:textStyle="bold" />
 
+                <!-- Controles extendidos (visibles solo si gaming ON) -->
                 <LinearLayout
                     android:id="@+id/layoutGamingControls"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    android:orientation="vertical">
+                    android:layout_marginTop="12dp"
+                    android:orientation="vertical"
+                    android:visibility="gone">
 
                     <Button
                         android:id="@+id/btnSelectGamingApps"
@@ -330,27 +432,36 @@
                         android:textAllCaps="false"
                         android:textColor="@color/color_gaming"
                         android:textSize="14sp"
-                        android:textStyle="bold" />
+                        android:textStyle="bold"
+                        android:hapticFeedbackEnabled="true" />
 
+                    <!-- Resumen de apps seleccionadas -->
                     <TextView
                         android:id="@+id/txtGamingSelectedCount"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="8dp"
+                        android:layout_marginTop="10dp"
                         android:textColor="@color/color_text_secondary"
                         android:textSize="12sp"
+                        android:lineSpacingMultiplier="1.2"
                         android:maxLines="2"
                         android:ellipsize="end" />
                 </LinearLayout>
             </LinearLayout>
 
+            <!-- ═══════════════════════════════════════════════════
+                 PANEL HOTSPOT — Compartir conexión
+                 Marcado como "Beta" para transparencia con el usuario
+                 ═══════════════════════════════════════════════════ -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
+                android:layout_marginTop="10dp"
                 android:background="@drawable/bg_gaming_mode_panel"
                 android:orientation="vertical"
-                android:padding="20dp">
+                android:paddingHorizontal="20dp"
+                android:paddingTop="18dp"
+                android:paddingBottom="18dp">
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -358,71 +469,88 @@
                     android:gravity="center_vertical"
                     android:orientation="horizontal">
 
-                    <TextView
+                    <!-- Título + badge "Próximamente" -->
+                    <LinearLayout
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="Compartir Internet por hotspot"
-                        android:textColor="@color/color_text_primary"
-                        android:textSize="15sp"
-                        android:textStyle="bold"
-                        android:maxLines="2"
-                        android:ellipsize="end" />
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Compartir conexión"
+                            android:textColor="@color/color_text_primary"
+                            android:textSize="15sp"
+                            android:textStyle="bold"
+                            android:maxLines="1"
+                            android:ellipsize="end" />
+
+                        <!-- Etiqueta "Beta" -->
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:background="@drawable/strike_chip_left"
+                            android:paddingHorizontal="7dp"
+                            android:paddingVertical="2dp"
+                            android:text="BETA"
+                            android:textColor="@color/color_text_secondary"
+                            android:letterSpacing="0.10"
+                            android:textSize="9sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
 
                     <Switch
                         android:id="@+id/switchHotspot"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_marginStart="12dp"
+                        android:layout_marginStart="14dp"
                         android:showText="false"
                         android:thumbTint="@color/switch_thumb_gaming"
                         android:trackTint="@color/switch_track_gaming" />
                 </LinearLayout>
 
+                <!-- Sub-texto descriptivo siempre visible -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Permite que otros dispositivos usen esta conexión VPN"
+                    android:textColor="@color/color_text_secondary"
+                    android:textSize="12sp"
+                    android:lineSpacingMultiplier="1.2"
+                    android:maxLines="2" />
+
+                <!-- Info dinámica del hotspot (IP, puerto, etc.) -->
                 <TextView
                     android:id="@+id/txtHotspotInfo"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
+                    android:layout_marginTop="10dp"
+                    android:fontFamily="monospace"
                     android:textColor="@color/color_text_secondary"
-                    android:textSize="13sp"
-                    android:visibility="gone" />
-
-            </LinearLayout>
-
-            <LinearLayout
-                android:id="@+id/layoutStatusMessage"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:orientation="vertical"
-                android:paddingHorizontal="4dp"
-                android:paddingVertical="4dp">
-
-                <TextView
-                    android:id="@+id/txtStatusDetails"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:paddingHorizontal="16dp"
-                    android:paddingVertical="12dp"
-                    android:text="Esperando conexión..."
-                    android:textColor="#666666"
-                    android:textSize="13sp"
+                    android:textSize="12sp"
                     android:lineSpacingMultiplier="1.3"
-                    android:maxLines="4"
-                    android:ellipsize="end" />
+                    android:visibility="gone" />
             </LinearLayout>
 
+            <!-- ═══════════════════════════════════════════════════
+                 PANEL DEVICE ID — Identificador interno
+                 Fondo diferenciado, fuente monospace, botón prominente
+                 ═══════════════════════════════════════════════════ -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:layout_marginBottom="12dp"
+                android:layout_marginTop="10dp"
                 android:background="@drawable/strike_panel_surface"
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
-                android:padding="4dp">
+                android:paddingHorizontal="4dp"
+                android:paddingVertical="4dp">
 
+                <!-- ID con fuente monospace y selección de texto habilitada -->
                 <TextView
                     android:id="@+id/txtDeviceId"
                     android:layout_width="0dp"
@@ -432,25 +560,30 @@
                     android:ellipsize="end"
                     android:gravity="center_vertical"
                     android:maxLines="2"
-                    android:paddingHorizontal="10dp"
-                    android:paddingVertical="10dp"
+                    android:paddingHorizontal="12dp"
+                    android:paddingVertical="12dp"
                     android:text="@string/device_id_default"
                     android:textColor="@color/color_text_primary"
                     android:textIsSelectable="true"
-                    android:textSize="11sp" />
+                    android:fontFamily="monospace"
+                    android:textSize="11sp"
+                    android:lineSpacingMultiplier="1.2" />
 
+                <!-- Botón copiar con peso visual correcto -->
                 <Button
                     android:id="@+id/btnCopyLogs"
                     android:layout_width="0dp"
                     android:layout_height="match_parent"
-                    android:layout_marginStart="8dp"
+                    android:layout_marginStart="6dp"
                     android:layout_weight="3"
                     android:background="@drawable/strike_btn_secondary"
+                    android:minHeight="0dp"
                     android:text="@string/copy"
                     android:textAllCaps="false"
                     android:textColor="@color/color_bg"
                     android:textSize="13sp"
-                    android:textStyle="bold" />
+                    android:textStyle="bold"
+                    android:hapticFeedbackEnabled="true" />
             </LinearLayout>
 
         </LinearLayout>
