@@ -3,6 +3,8 @@ package com.blacktunnel;
 import android.app.AlertDialog;
 import android.animation.Animator;
 import android.animation.AnimatorInflater;
+import android.animation.ArgbEvaluator;
+import android.animation.ValueAnimator;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -52,9 +54,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class SimpleModeActivity extends ComponentActivity {
-    private static final String PREF_UI     = "ui_state";
-    private static final String KEY_HIDE_ID = "hide_internal_id";
+    private static final String PREF_UI          = "ui_state";
+    private static final String KEY_HIDE_ID      = "hide_internal_id";
     private static final int    HOTSPOT_PROXY_PORT = 7071;
+    private static final long   CONNECTING_TIMEOUT_MS = 40000L;
 
     private enum UiState { DISCONNECTED, CONNECTING, CONNECTED }
 
@@ -81,19 +84,21 @@ public class SimpleModeActivity extends ComponentActivity {
     private Animator     statusPulseAnimator;
     private Animator     statusHaloAnimator;
 
-    private final ExecutorService appLoadExecutor = Executors.newSingleThreadExecutor();
-    private String  internalId           = "";
-    private UiState uiState              = UiState.DISCONNECTED;
-    private long    connectingSinceMs    = 0L;
-    private boolean lastRunning          = false;
-    private long    autoDisconnectAtMs   = -1L;
-    private String  authState            = "";
-    private boolean hideInternalId       = false;
-    private boolean applyingRuntimeChanges = false;
-    private int     lastPingMs           = -1;
-    private boolean handshakeConfirmed   = false;
+    private final ExecutorService appLoadExecutor    = Executors.newSingleThreadExecutor();
+    private String  internalId                       = "";
+    private UiState uiState                          = UiState.DISCONNECTED;
+    private long    connectingSinceMs                = 0L;
+    private boolean lastRunning                      = false;
+    private long    autoDisconnectAtMs               = -1L;
+    private String  authState                        = "";
+    private boolean hideInternalId                   = false;
+    private boolean applyingRuntimeChanges           = false;
+    private int     lastPingMs                       = -1;
+    private boolean handshakeConfirmed               = false;
+    private String  lastKnownConnState               = "";
+    private String  lastDetailText                   = "";
 
-    private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
+    private final Runnable autoDisconnectRunnable    = this::runAutoDisconnect;
     private ConnectivityManager connectivityManager;
     private ConnectivityManager.NetworkCallback networkCallback;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -260,11 +265,12 @@ public class SimpleModeActivity extends ComponentActivity {
 
     private int c(int colorRes) { return getColor(colorRes); }
 
-    private boolean canAnimate() { return android.animation.ValueAnimator.areAnimatorsEnabled(); }
+    private boolean canAnimate() { return ValueAnimator.areAnimatorsEnabled(); }
 
     private void startStatusPulse() {
         if (statusDotView == null || !canAnimate()) return;
-        if (statusPulseAnimator == null) statusPulseAnimator = AnimatorInflater.loadAnimator(this, R.animator.pulse);
+        if (statusPulseAnimator == null)
+            statusPulseAnimator = AnimatorInflater.loadAnimator(this, R.animator.pulse);
         statusPulseAnimator.setTarget(statusDotView);
         if (!statusPulseAnimator.isStarted()) statusPulseAnimator.start();
     }
@@ -272,13 +278,16 @@ public class SimpleModeActivity extends ComponentActivity {
     private void stopStatusPulse() {
         if (statusPulseAnimator != null) statusPulseAnimator.cancel();
         if (statusDotView != null) {
-            statusDotView.setScaleX(1f); statusDotView.setScaleY(1f); statusDotView.setAlpha(1f);
+            statusDotView.setScaleX(1f);
+            statusDotView.setScaleY(1f);
+            statusDotView.setAlpha(1f);
         }
     }
 
     private void startStatusHaloWave() {
         if (statusHaloView == null || !canAnimate()) return;
-        if (statusHaloAnimator == null) statusHaloAnimator = AnimatorInflater.loadAnimator(this, R.animator.status_halo_wave);
+        if (statusHaloAnimator == null)
+            statusHaloAnimator = AnimatorInflater.loadAnimator(this, R.animator.status_halo_wave);
         statusHaloAnimator.setTarget(statusHaloView);
         if (!statusHaloAnimator.isStarted()) statusHaloAnimator.start();
     }
@@ -286,8 +295,44 @@ public class SimpleModeActivity extends ComponentActivity {
     private void stopStatusHaloWave() {
         if (statusHaloAnimator != null) statusHaloAnimator.cancel();
         if (statusHaloView != null) {
-            statusHaloView.setScaleX(1f); statusHaloView.setScaleY(1f); statusHaloView.setAlpha(0.20f);
+            statusHaloView.setScaleX(1f);
+            statusHaloView.setScaleY(1f);
+            statusHaloView.setAlpha(0.20f);
         }
+    }
+
+    private void animateViewFadeIn(View v, long durationMs) {
+        if (v == null || !canAnimate()) { if (v != null) v.setAlpha(1f); return; }
+        v.setAlpha(0f);
+        v.animate().alpha(1f).setDuration(durationMs).start();
+    }
+
+    private void animateBadgeColor(TextView tv, int toColor, long durationMs) {
+        if (tv == null || !canAnimate()) { if (tv != null) tv.setTextColor(toColor); return; }
+        int from = tv.getCurrentTextColor();
+        ValueAnimator va = ValueAnimator.ofObject(new ArgbEvaluator(), from, toColor);
+        va.setDuration(durationMs);
+        va.addUpdateListener(a -> tv.setTextColor((Integer) a.getAnimatedValue()));
+        va.start();
+    }
+
+    private void animateDotColor(View dot, View halo, int toColor, long durationMs) {
+        if (dot == null) return;
+        if (!canAnimate()) {
+            dot.setBackgroundTintList(ColorStateList.valueOf(toColor));
+            if (halo != null) halo.setBackgroundTintList(ColorStateList.valueOf(toColor));
+            return;
+        }
+        int fromDot = dot.getBackgroundTintList() != null
+            ? dot.getBackgroundTintList().getDefaultColor() : toColor;
+        ValueAnimator va = ValueAnimator.ofObject(new ArgbEvaluator(), fromDot, toColor);
+        va.setDuration(durationMs);
+        va.addUpdateListener(a -> {
+            int col = (Integer) a.getAnimatedValue();
+            dot.setBackgroundTintList(ColorStateList.valueOf(col));
+            if (halo != null) halo.setBackgroundTintList(ColorStateList.valueOf(col));
+        });
+        va.start();
     }
 
     private static final class AppOption {
@@ -344,7 +389,7 @@ public class SimpleModeActivity extends ComponentActivity {
         if (gamingModePanel != null) gamingModePanel.setActivated(enabled);
         if (panelConnectionView != null)
             panelConnectionView.setSelected(enabled && uiState == UiState.CONNECTED);
-        if (connectBtn != null && uiState != UiState.CONNECTED)
+        if (connectBtn != null && uiState != UiState.CONNECTED && uiState != UiState.CONNECTING)
             connectBtn.setText(enabled ? getString(R.string.connect_gaming) : getString(R.string.connect));
     }
 
@@ -491,9 +536,9 @@ public class SimpleModeActivity extends ComponentActivity {
             notifyDataSetChanged();
         }
 
-        @Override public int       getCount()             { return filteredApps.size(); }
-        @Override public AppOption getItem(int position)  { return filteredApps.get(position); }
-        @Override public long      getItemId(int position){ return position; }
+        @Override public int       getCount()              { return filteredApps.size(); }
+        @Override public AppOption getItem(int position)   { return filteredApps.get(position); }
+        @Override public long      getItemId(int position) { return position; }
 
         @Override
         public View getView(int position, View convertView, ViewGroup parent) {
@@ -517,7 +562,8 @@ public class SimpleModeActivity extends ComponentActivity {
 
     private void startVpnWithPermission() {
         setUiState(UiState.CONNECTING);
-        authState = "";
+        authState          = "";
+        lastKnownConnState = "";
         Intent prepare = VpnService.prepare(this);
         if (prepare != null) vpnPermissionLauncher.launch(prepare);
         else startVpn();
@@ -530,6 +576,7 @@ public class SimpleModeActivity extends ComponentActivity {
         else startService(i);
         connectingSinceMs  = SystemClock.elapsedRealtime();
         handshakeConfirmed = false;
+        lastKnownConnState = "";
         setUiState(UiState.CONNECTING);
     }
 
@@ -538,6 +585,7 @@ public class SimpleModeActivity extends ComponentActivity {
         i.setAction(BtVpnService.ACTION_STOP);
         startService(i);
         handshakeConfirmed = false;
+        lastKnownConnState = "";
         setUiState(UiState.DISCONNECTED);
         handler.removeCallbacks(autoDisconnectRunnable);
         autoDisconnectAtMs = -1L;
@@ -546,7 +594,8 @@ public class SimpleModeActivity extends ComponentActivity {
     private void applyGamingChangesIfRunning() {
         if (!BtVpnService.isRunningState()) return;
         applyingRuntimeChanges = true;
-        connectingSinceMs = SystemClock.elapsedRealtime();
+        connectingSinceMs      = SystemClock.elapsedRealtime();
+        lastKnownConnState     = "";
         setUiState(UiState.CONNECTING);
         Intent i = new Intent(this, BtVpnService.class);
         i.setAction(BtVpnService.ACTION_APPLY);
@@ -579,38 +628,82 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void syncStateFromLogs(String logs) {
-        boolean running    = BtVpnService.isRunningState();
-        String  connState  = findLatestConnectionState(logs);
-        if ("connected".equals(connState)) handshakeConfirmed = true;
+        boolean running   = BtVpnService.isRunningState();
+        String  connState = findLatestConnectionState(logs);
+
+        if (!connState.isEmpty() && !connState.equals(lastKnownConnState)) {
+            lastKnownConnState = connState;
+        }
+
+        if ("connected".equals(connState)) {
+            handshakeConfirmed = true;
+        }
 
         if (running && !lastRunning) {
-            authState = "";
+            authState              = "";
             applyingRuntimeChanges = false;
             setUiState(handshakeConfirmed ? UiState.CONNECTED : UiState.CONNECTING);
+
         } else if (!running && lastRunning) {
             applyingRuntimeChanges = false;
             handshakeConfirmed     = false;
             setUiState(UiState.DISCONNECTED);
-        } else if (running && "failed".equals(connState) && uiState != UiState.DISCONNECTED) {
+
+        } else if (running && handshakeConfirmed) {
             applyingRuntimeChanges = false;
-            handshakeConfirmed     = false;
-            stopVpn();
-            setUiState(UiState.DISCONNECTED);
-        } else if (running && handshakeConfirmed && uiState != UiState.CONNECTED) {
-            applyingRuntimeChanges = false;
-            setUiState(UiState.CONNECTED);
-        } else if (running && !handshakeConfirmed && uiState != UiState.CONNECTING) {
-            setUiState(UiState.CONNECTING);
+            if (uiState != UiState.CONNECTED) setUiState(UiState.CONNECTED);
+
+        } else if (running && !handshakeConfirmed) {
+            if ("failed".equals(lastKnownConnState)) {
+                long elapsed = SystemClock.elapsedRealtime() - connectingSinceMs;
+                if (elapsed > CONNECTING_TIMEOUT_MS) {
+                    applyingRuntimeChanges = false;
+                    stopVpn();
+                    setUiState(UiState.DISCONNECTED);
+                }
+            } else if (uiState != UiState.CONNECTING) {
+                setUiState(UiState.CONNECTING);
+            } else {
+                refreshConnectingDetail();
+            }
+
         } else if (!running && uiState == UiState.CONNECTING) {
-            if (SystemClock.elapsedRealtime() - connectingSinceMs > 20000) {
+            long elapsed = SystemClock.elapsedRealtime() - connectingSinceMs;
+            if (elapsed > CONNECTING_TIMEOUT_MS) {
                 applyingRuntimeChanges = false;
                 setUiState(UiState.DISCONNECTED);
+            } else {
+                refreshConnectingDetail();
             }
-        } else if (running && applyingRuntimeChanges && handshakeConfirmed) {
-            applyingRuntimeChanges = false;
-            setUiState(UiState.CONNECTED);
         }
+
         lastRunning = running;
+    }
+
+    private void refreshConnectingDetail() {
+        if (statusDetailsView == null) return;
+        String detail;
+        if ("retrying".equals(lastKnownConnState)) {
+            detail = "• Buscando servidor disponible...";
+        } else if ("dropped".equals(lastKnownConnState)) {
+            detail = "• Reconectando al servidor...";
+        } else if ("failed".equals(lastKnownConnState)) {
+            detail = "• Reintentando conexión...";
+        } else {
+            detail = "• Estableciendo conexión...";
+        }
+        if (!detail.equals(lastDetailText)) {
+            lastDetailText = detail;
+            statusDetailsView.setVisibility(View.VISIBLE);
+            if (canAnimate()) {
+                statusDetailsView.animate().cancel();
+                statusDetailsView.setAlpha(0.4f);
+                statusDetailsView.setText(detail);
+                statusDetailsView.animate().alpha(1f).setDuration(300).start();
+            } else {
+                statusDetailsView.setText(detail);
+            }
+        }
     }
 
     private void refreshFromLogs(String logs) {
@@ -669,12 +762,27 @@ public class SimpleModeActivity extends ComponentActivity {
             if (line == null) continue;
             String lower = line.trim().toLowerCase(Locale.ROOT);
             if (lower.isEmpty()) continue;
-            if (lower.contains("tunnel ok")   ||
-                lower.contains("user_name=")  ||
-                lower.contains("user_days=")  ||
-                lower.contains("ping_ms="))    return "connected";
+
+            if (lower.contains("tunnel ok")  ||
+                lower.contains("user_name=") ||
+                lower.contains("user_days=") ||
+                lower.contains("ping_ms="))   return "connected";
+
+            if (lower.contains("conectando...") ||
+                lower.contains("probando ")     ||
+                lower.contains("ips estaticas fallaron") ||
+                lower.contains("dns ")          ||
+                lower.contains("relay listo"))   return "retrying";
+
+            if (lower.contains("tunnel caido")       ||
+                lower.contains("pong timeout")        ||
+                lower.contains("tunnel read failed")  ||
+                lower.contains("payload too large")   ||
+                lower.contains("payload read failed")) return "dropped";
+
             if (lower.contains("handshake failed") ||
                 lower.contains("proxy no responde") ||
+                lower.contains("getaddrinfo fallo") ||
                 lower.contains("connect failed"))   return "failed";
         }
         return "";
@@ -734,12 +842,12 @@ public class SimpleModeActivity extends ComponentActivity {
             lastPingMs = targetPing;
             return;
         }
-        android.animation.ValueAnimator counter = android.animation.ValueAnimator.ofInt(start, targetPing);
+        ValueAnimator counter = ValueAnimator.ofInt(start, targetPing);
         counter.setDuration(400);
         counter.addUpdateListener(a -> pingValueView.setText(String.valueOf((int) a.getAnimatedValue())));
         counter.start();
-        android.animation.ValueAnimator colorAnim = android.animation.ValueAnimator.ofObject(
-            new android.animation.ArgbEvaluator(),
+        ValueAnimator colorAnim = ValueAnimator.ofObject(
+            new ArgbEvaluator(),
             pingValueView.getCurrentTextColor(), resolvePingColor(targetPing));
         colorAnim.setDuration(600);
         colorAnim.addUpdateListener(a -> pingValueView.setTextColor((Integer) a.getAnimatedValue()));
@@ -773,7 +881,10 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void setUiState(UiState newState) {
+        UiState prev = uiState;
         uiState = newState;
+        boolean stateChanged = (prev != newState);
+
         if (connectBtn != null) {
             if (newState == UiState.CONNECTING) {
                 connectBtn.setEnabled(false);
@@ -781,70 +892,137 @@ public class SimpleModeActivity extends ComponentActivity {
                 connectBtn.setText("Conectando...");
                 connectBtn.setBackgroundResource(R.drawable.btn_connecting_selector);
                 connectBtn.setTextColor(c(R.color.color_text_primary));
+                if (stateChanged && canAnimate()) {
+                    connectBtn.setAlpha(0.7f);
+                    connectBtn.animate().alpha(1f).setDuration(300).start();
+                }
             } else if (newState == UiState.CONNECTED) {
                 connectBtn.setEnabled(true);
                 connectBtn.setActivated(true);
                 connectBtn.setText(R.string.disconnect);
                 connectBtn.setBackgroundResource(R.drawable.btn_disconnect_selector);
                 connectBtn.setTextColor(c(R.color.color_text_primary));
+                if (stateChanged && canAnimate()) {
+                    connectBtn.setScaleX(0.92f);
+                    connectBtn.setScaleY(0.92f);
+                    connectBtn.animate().scaleX(1f).scaleY(1f).setDuration(250).start();
+                }
             } else {
                 connectBtn.setEnabled(true);
                 connectBtn.setActivated(false);
                 connectBtn.setText(BtProxy.isGamingMode(this) ? getString(R.string.connect_gaming) : getString(R.string.connect));
                 connectBtn.setBackgroundResource(R.drawable.btn_connect_selector);
                 connectBtn.setTextColor(0xFF050505);
+                if (stateChanged && prev == UiState.CONNECTED && canAnimate()) {
+                    connectBtn.setAlpha(0.6f);
+                    connectBtn.animate().alpha(1f).setDuration(400).start();
+                }
             }
         }
-        if (statusDotView != null) {
-            int col = newState == UiState.CONNECTED  ? c(R.color.color_connected)
-                    : newState == UiState.CONNECTING ? c(R.color.color_connecting)
-                    : c(R.color.color_text_disabled);
-            statusDotView.setBackgroundTintList(ColorStateList.valueOf(col));
+
+        int dotColor = newState == UiState.CONNECTED  ? c(R.color.color_connected)
+                     : newState == UiState.CONNECTING ? c(R.color.color_connecting)
+                     : c(R.color.color_text_disabled);
+
+        if (stateChanged) {
+            animateDotColor(statusDotView, statusHaloView, dotColor, 400);
+        } else {
+            if (statusDotView != null) statusDotView.setBackgroundTintList(ColorStateList.valueOf(dotColor));
+            if (statusHaloView != null) statusHaloView.setBackgroundTintList(ColorStateList.valueOf(dotColor));
         }
-        if (statusHaloView != null) {
-            int col = newState == UiState.CONNECTED  ? c(R.color.color_connected)
-                    : newState == UiState.CONNECTING ? c(R.color.color_connecting)
-                    : c(R.color.color_text_disabled);
-            statusHaloView.setBackgroundTintList(ColorStateList.valueOf(col));
-        }
+
         if (statusBadgeView != null) {
+            String badgeText;
+            int    badgeColor;
             if (newState == UiState.CONNECTING) {
-                statusBadgeView.setText("CONECTANDO...");
-                statusBadgeView.setTextColor(c(R.color.color_connecting));
-                startStatusPulse(); startStatusHaloWave();
+                badgeText  = "CONECTANDO...";
+                badgeColor = c(R.color.color_connecting);
+                startStatusPulse();
+                startStatusHaloWave();
             } else if (newState == UiState.CONNECTED) {
-                statusBadgeView.setText("CONECTADO");
-                statusBadgeView.setTextColor(BtProxy.isGamingMode(this) ? c(R.color.color_gaming) : c(R.color.color_connected));
-                stopStatusPulse(); stopStatusHaloWave();
+                badgeText  = "CONECTADO";
+                badgeColor = BtProxy.isGamingMode(this) ? c(R.color.color_gaming) : c(R.color.color_connected);
+                stopStatusPulse();
+                stopStatusHaloWave();
                 if (statusHaloView != null) statusHaloView.setAlpha(0.15f);
             } else {
-                statusBadgeView.setText("DESCONECTADO");
-                statusBadgeView.setTextColor(c(R.color.color_disconnected));
-                stopStatusPulse(); stopStatusHaloWave();
+                badgeText  = "DESCONECTADO";
+                badgeColor = c(R.color.color_disconnected);
+                stopStatusPulse();
+                stopStatusHaloWave();
                 if (statusHaloView != null) statusHaloView.setAlpha(0.20f);
+            }
+            if (stateChanged) {
+                animateBadgeColor(statusBadgeView, badgeColor, 350);
+                if (!statusBadgeView.getText().toString().equals(badgeText)) {
+                    if (canAnimate()) {
+                        statusBadgeView.animate().cancel();
+                        statusBadgeView.setAlpha(0f);
+                        statusBadgeView.setText(badgeText);
+                        statusBadgeView.animate().alpha(1f).setDuration(250).start();
+                    } else {
+                        statusBadgeView.setText(badgeText);
+                        statusBadgeView.setTextColor(badgeColor);
+                    }
+                }
+            } else {
+                statusBadgeView.setText(badgeText);
+                statusBadgeView.setTextColor(badgeColor);
             }
             statusBadgeView.setShadowLayer(0f, 0f, 0f, 0);
         }
+
         if (statusDetailsView != null) {
             if (newState == UiState.CONNECTING) {
+                String detail;
+                if ("retrying".equals(lastKnownConnState)) {
+                    detail = "• Buscando servidor disponible...";
+                } else if ("dropped".equals(lastKnownConnState)) {
+                    detail = "• Reconectando al servidor...";
+                } else if ("failed".equals(lastKnownConnState)) {
+                    detail = "• Reintentando conexión...";
+                } else {
+                    detail = "• Estableciendo conexión...";
+                }
+                lastDetailText = detail;
                 statusDetailsView.setVisibility(View.VISIBLE);
-                statusDetailsView.setText("• Estableciendo conexión...");
                 statusDetailsView.setTextColor(c(R.color.color_connecting));
+                if (stateChanged && canAnimate()) {
+                    statusDetailsView.setAlpha(0f);
+                    statusDetailsView.setText(detail);
+                    statusDetailsView.animate().alpha(1f).setDuration(300).start();
+                } else {
+                    statusDetailsView.setText(detail);
+                }
             } else if (newState == UiState.CONNECTED) {
                 String eta = autoDisconnectAtMs > 0 ? "Autodesconexión local activa" : "Conexión activa";
+                String full = "✓ " + eta;
+                lastDetailText = full;
                 statusDetailsView.setVisibility(View.VISIBLE);
-                statusDetailsView.setText("✓ " + eta);
                 statusDetailsView.setTextColor(0xFF555555);
-                if (canAnimate()) statusDetailsView.startAnimation(AnimationUtils.loadAnimation(this, R.anim.fade_slide_in));
+                if (stateChanged && canAnimate()) {
+                    statusDetailsView.startAnimation(AnimationUtils.loadAnimation(this, R.anim.fade_slide_in));
+                }
+                statusDetailsView.setText(full);
             } else {
+                lastDetailText = "";
                 statusDetailsView.setVisibility(View.GONE);
                 if (pingValueView != null) {
                     pingValueView.setText("--");
-                    pingValueView.setTextColor(c(R.color.color_text_disabled));
+                    if (canAnimate()) {
+                        ValueAnimator va = ValueAnimator.ofObject(new ArgbEvaluator(),
+                            pingValueView.getCurrentTextColor(), c(R.color.color_text_disabled));
+                        va.setDuration(300);
+                        va.addUpdateListener(a -> pingValueView.setTextColor((Integer) a.getAnimatedValue()));
+                        va.start();
+                    } else {
+                        pingValueView.setTextColor(c(R.color.color_text_disabled));
+                    }
                     lastPingMs = -1;
                 }
             }
         }
+
         refreshGamingModeUi();
     }
 }
