@@ -129,7 +129,6 @@ public class BtVpnService extends VpnService {
         startForeground(NF_ID, buildNotif());
 
         BtProxy.stop();
-
         cleanupSessionResources();
 
         String internalId  = BtProxy.getOrCreateInternalId(this);
@@ -172,8 +171,7 @@ public class BtVpnService extends VpnService {
                     if (LOGS.length() > MAX_LOG_CHARS)
                         LOGS.delete(0, LOGS.length() - MAX_LOG_CHARS);
                 }
-                String[] lines = nativeLogs.split("\n");
-                for (String line : lines) {
+                for (String line : nativeLogs.split("\n")) {
                     if (line == null) continue;
                     String lower = line.trim().toLowerCase(Locale.ROOT);
                     if (lower.isEmpty()) continue;
@@ -202,11 +200,8 @@ public class BtVpnService extends VpnService {
         sRunning = false;
 
         stopHevStack();
-
         BtProxy.stop();
-
         unregisterNet();
-
         cleanupSessionResources();
 
         stopForeground(STOP_FOREGROUND_REMOVE);
@@ -253,7 +248,7 @@ public class BtVpnService extends VpnService {
         if (old != null) {
             try { old.join(3000); } catch (InterruptedException ignored) {}
             if (old.isAlive()) {
-                log("W stopHevStack: hev thread no terminó en 3s, forzando interrupción");
+                log("W stopHevStack: hev thread no terminó en 3s");
                 old.interrupt();
                 try { old.join(1000); } catch (InterruptedException ignored) {}
             }
@@ -281,20 +276,24 @@ public class BtVpnService extends VpnService {
         hevThread.start();
     }
 
-    private void closeTunPfd() {
-        ParcelFileDescriptor pfd = tunPfd; tunPfd = null;
-        if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
-    }
-
     private ParcelFileDescriptor buildTunInterface() {
         Builder builder = new Builder()
                 .setSession("bt-hev")
                 .setMtu(1420)
-                .addAddress("198.18.0.1", 15)
+                // /32: interfaz punto a punto, sin red local ambigua
+                .addAddress("198.18.0.1", 32)
+                // IPv6 del túnel, /128 punto a punto
                 .addAddress("fc00::1", 128)
-                .addDnsServer("198.18.0.2");
+                // DNS apunta al mapdns interno de hev
+                .addDnsServer("198.18.0.2")
+                // El rango mapdns debe ser alcanzable dentro del TUN
+                .addRoute("198.18.0.0", 15);
+
         addPublicRoutes(builder);
+
+        // Excluir la propia app para que el tráfico SOCKS5 no entre al túnel
         try { builder.addDisallowedApplication(getPackageName()); } catch (Exception ignored) {}
+
         return builder.establish();
     }
 
@@ -335,10 +334,21 @@ public class BtVpnService extends VpnService {
     }
 
     private void addPublicRoutes(Builder builder) {
+        // Rangos privados/reservados que NO deben ir al túnel
         String[] excludes = {
-            "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
-            "169.254.0.0/16", "224.0.0.0/4", "240.0.0.0/4", "255.255.255.255/32"
+            "0.0.0.0/8",        // "this" network
+            "10.0.0.0/8",       // RFC1918
+            "100.64.0.0/10",    // CGNAT (operadoras móviles)
+            "127.0.0.0/8",      // loopback
+            "169.254.0.0/16",   // link-local
+            "172.16.0.0/12",    // RFC1918
+            "192.168.0.0/16",   // RFC1918
+            "198.18.0.0/15",    // rango mapdns — lo añadimos aparte como ruta TUN
+            "224.0.0.0/4",      // multicast
+            "240.0.0.0/4",      // reservado
+            "255.255.255.255/32"
         };
+
         List<long[]> excluded = new ArrayList<>();
         for (String cidr : excludes) {
             try {
@@ -351,14 +361,17 @@ public class BtVpnService extends VpnService {
             } catch (UnknownHostException ignored) {}
         }
         excluded.sort((a, b) -> Long.compare(a[0], b[0]));
-        long cur = 0L;
+
+        long cur = 1L; // empezar desde 0.0.0.1, no 0.0.0.0
         for (long[] ex : excluded) {
             if (cur < ex[0]) addCIDRs(builder, cur, ex[0] - 1);
             if (cur <= ex[1]) cur = ex[1] + 1;
         }
         if (cur <= 0xFFFFFFFEL) addCIDRs(builder, cur, 0xFFFFFFFEL);
+
+        // IPv6: solo rango global unicast (2000::/3)
+        // fc00::/7 son direcciones privadas, no deben ir al túnel
         builder.addRoute("2000::", 3);
-        builder.addRoute("fc00::", 7);
     }
 
     private void addCIDRs(Builder builder, long start, long end) {
@@ -386,16 +399,31 @@ public class BtVpnService extends VpnService {
 
     private File writeHevCfg() {
         String yml =
-            "tunnel:\n  name: bt-hev\n  mtu: 1420\n  ipv4: 198.18.0.1\n  ipv6: 'fc00::1'\n" +
-            "socks5:\n  address: 127.0.0.1\n  port: " + BtProxy.SOCKS5_PORT + "\n  udp: 'tcp'\n  pipeline: false\n" +
-            "mapdns:\n  address: 198.18.0.2\n  port: 53\n  network: 198.18.0.0\n  netmask: 255.254.0.0\n  cache-size: 8192\n" +
+            "tunnel:\n" +
+            "  name: bt-hev\n" +
+            "  mtu: 1420\n" +
+            "  ipv4: 198.18.0.1\n" +
+            "  ipv6: 'fc00::1'\n" +
+            "socks5:\n" +
+            "  address: 127.0.0.1\n" +
+            "  port: " + BtProxy.SOCKS5_PORT + "\n" +
+            "  udp: 'tcp'\n" +
+            "  pipeline: false\n" +
+            "mapdns:\n" +
+            "  address: 198.18.0.2\n" +
+            "  port: 53\n" +
+            "  network: 198.18.0.0\n" +
+            "  netmask: 255.254.0.0\n" +
+            "  cache-size: 8192\n" +
             "misc:\n" +
-            "  connect-timeout: 4000\n" +
-            "  tcp-read-write-timeout: 1800000\n" +
-            "  udp-read-write-timeout: 900000\n" +
+            "  task-stack-size: 86016\n" +
+            "  tcp-buffer-size: 65536\n" +
+            "  connect-timeout: 5000\n" +
+            "  read-write-timeout: 300000\n" +
             "  max-session-count: 4096\n" +
-            "  log-level: warn\n" +
-            "  limit-nofile: 65535\n";
+            "  limit-nofile: 65535\n" +
+            "  log-file: stderr\n" +
+            "  log-level: warn\n";
         File f = new File(getFilesDir(), "hev.yml");
         try (FileOutputStream o = new FileOutputStream(f, false)) {
             o.write(yml.getBytes(StandardCharsets.UTF_8));
