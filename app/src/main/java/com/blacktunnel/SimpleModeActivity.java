@@ -13,6 +13,12 @@ import android.content.res.Configuration;
 import android.content.res.ColorStateList;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.LinearGradient;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.Shader;
 import android.graphics.drawable.Drawable;
 import android.net.ConnectivityManager;
 import android.net.Network;
@@ -47,8 +53,10 @@ import androidx.activity.ComponentActivity;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -56,73 +64,47 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/**
- * SimpleModeActivity — UI principal de conexión VPN.
- *
- * Arquitectura de estados:
- *   DISCONNECTED → CONNECTING → CONNECTED → DISCONNECTED
- *
- * El ticker {@link #stateTicker} corre cada 3 s para sincronizar
- * el estado real del servicio con la UI sin polling agresivo.
- *
- * Mejoras aplicadas en esta revisión:
- *  - Animaciones encadenadas (secuencia entrada → estado → detalles)
- *  - Halo triple con interpolador de desaceleración
- *  - Feedback háptico selectivo (solo en acciones iniciadas por el usuario)
- *  - Toast enriquecido con ícono de sistema cuando disponible
- *  - Auto-disconnect con countdown visual en el badge de días
- *  - Transiciones de color con ArgbEvaluator más suaves (600 ms)
- *  - Detección de "no internet" más robusta antes de intentar VPN
- *  - Gaming dialog con animación de entrada escalonada por ítem
- *  - Protección contra setState re-entrante con un flag de guard
- */
 public class SimpleModeActivity extends ComponentActivity {
 
-    // ─── Constantes ─────────────────────────────────────────────────────────
     private static final String PREF_UI               = "ui_state";
     private static final String KEY_HIDE_ID           = "hide_internal_id";
     private static final int    HOTSPOT_PROXY_PORT    = 7071;
     private static final long   CONNECTING_TIMEOUT_MS = 40_000L;
-
-    /** Duración estándar de transiciones de color (ms) */
     private static final long   COLOR_TRANSITION_MS   = 500L;
-    /** Duración de fade-in para elementos que aparecen (ms) */
     private static final long   FADE_IN_MS            = 280L;
-    /** Duración del scale-bounce al conectar (ms) */
     private static final long   BOUNCE_MS             = 320L;
+    private static final int    PING_GRAPH_MAX_POINTS = 20;
 
-    // ─── Estados UI ──────────────────────────────────────────────────────────
     private enum UiState { DISCONNECTED, CONNECTING, CONNECTED }
 
-    // ─── Vistas ──────────────────────────────────────────────────────────────
-    private Button       connectBtn;
-    private Button       copyIdBtn;
-    private TextView     statusBadgeView;
-    private View         statusDotView;
-    private View         statusHaloView;
-    private View         statusHaloMidView;     // nuevo: halo intermedio
-    private TextView     statusDetailsView;
-    private TextView     deviceIdView;
-    private TextView     userValueView;
-    private TextView     daysValueView;
-    private TextView     pingValueView;
-    private Switch       gamingModeSwitch;
-    private TextView     gamingModeBadgeView;
-    private TextView     gamingDescriptionView;
-    private TextView     gamingSelectedCountView;
-    private Button       selectGamingAppsBtn;
-    private LinearLayout gamingModePanel;
-    private LinearLayout gamingControlsLayout;
-    private View         panelConnectionView;
-    private Switch       hotspotSwitch;
-    private TextView     hotspotInfoView;
+    private Button          connectBtn;
+    private Button          copyIdBtn;
+    private TextView        statusBadgeView;
+    private View            statusDotView;
+    private View            statusHaloView;
+    private View            statusHaloMidView;
+    private TextView        statusDetailsView;
+    private TextView        deviceIdView;
+    private TextView        userValueView;
+    private TextView        daysValueView;
+    private TextView        pingValueView;
+    private PingGraphView   pingGraphView;
+    private Switch          gamingModeSwitch;
+    private TextView        gamingModeBadgeView;
+    private TextView        gamingDescriptionView;
+    private TextView        gamingSelectedCountView;
+    private Button          selectGamingAppsBtn;
+    private LinearLayout    gamingModePanel;
+    private LinearLayout    gamingControlsLayout;
+    private View            panelConnectionView;
+    private Switch          hotspotSwitch;
+    private TextView        hotspotInfoView;
 
-    // ─── Animadores ──────────────────────────────────────────────────────────
-    private Animator     statusPulseAnimator;
-    private Animator     statusHaloAnimator;
-    private ValueAnimator dotColorAnimator;
+    private Animator        statusPulseAnimator;
+    private Animator        statusHaloAnimator;
+    private ValueAnimator   dotColorAnimator;
+    private ValueAnimator   dotBlinkAnimator;
 
-    // ─── Estado interno ──────────────────────────────────────────────────────
     private final ExecutorService appLoadExecutor = Executors.newSingleThreadExecutor();
     private String  internalId           = "";
     private UiState uiState              = UiState.DISCONNECTED;
@@ -136,17 +118,16 @@ public class SimpleModeActivity extends ComponentActivity {
     private boolean handshakeConfirmed   = false;
     private String  lastKnownConnState   = "";
     private String  lastDetailText       = "";
-    /** Guard para evitar re-entrada en setUiState durante animaciones */
     private boolean settingUiState       = false;
 
-    // ─── Plomería de Android ─────────────────────────────────────────────────
+    private final Deque<Integer> pingHistory = new ArrayDeque<>();
+
     private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
     private ConnectivityManager connectivityManager;
     private ConnectivityManager.NetworkCallback networkCallback;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private ActivityResultLauncher<Intent> vpnPermissionLauncher;
 
-    // ─── Ticker periódico ────────────────────────────────────────────────────
     private final Runnable stateTicker = new Runnable() {
         @Override
         public void run() {
@@ -159,14 +140,108 @@ public class SimpleModeActivity extends ComponentActivity {
         }
     };
 
+    // ─── Vista interna de gráfica de ping ────────────────────────────────────
+
+    public static final class PingGraphView extends View {
+
+        private final Paint linePaint   = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint fillPaint   = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint dotPaint    = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path  linePath    = new Path();
+        private final Path  fillPath    = new Path();
+        private final Deque<Integer> data;
+        private int maxPoints           = 20;
+        private int activeColor         = Color.parseColor("#4CFFA500");
+        private int lineColor           = Color.parseColor("#FFA500");
+        private boolean blinkOn         = true;
+
+        public PingGraphView(Context ctx) {
+            super(ctx);
+            linePaint.setStyle(Paint.Style.STROKE);
+            linePaint.setStrokeWidth(3.5f);
+            linePaint.setStrokeCap(Paint.Cap.ROUND);
+            linePaint.setStrokeJoin(Paint.Join.ROUND);
+            fillPaint.setStyle(Paint.Style.FILL);
+            dotPaint.setStyle(Paint.Style.FILL);
+            data = new ArrayDeque<>();
+        }
+
+        public void setData(Deque<Integer> source, int maxPts) {
+            data.clear();
+            data.addAll(source);
+            maxPoints = maxPts;
+        }
+
+        public void setColors(int line, int fill) {
+            lineColor   = line;
+            activeColor = fill;
+            invalidate();
+        }
+
+        public void setBlinkState(boolean on) {
+            blinkOn = on;
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            int w = getWidth();
+            int h = getHeight();
+            if (w == 0 || h == 0 || data.size() < 2) return;
+
+            Integer[] pts = data.toArray(new Integer[0]);
+            int visMax = 0;
+            for (int v : pts) if (v > visMax) visMax = v;
+            if (visMax < 50) visMax = 50;
+            float pad = h * 0.12f;
+            float usableH = h - pad * 2;
+
+            float step = (float) w / Math.max(maxPoints - 1, 1);
+            float startX = w - step * (pts.length - 1);
+
+            linePath.reset();
+            fillPath.reset();
+
+            float firstX = startX;
+            float firstY = pad + usableH - (pts[0] / (float) visMax) * usableH;
+            linePath.moveTo(firstX, firstY);
+            fillPath.moveTo(firstX, h);
+            fillPath.lineTo(firstX, firstY);
+
+            for (int i = 1; i < pts.length; i++) {
+                float x  = startX + step * i;
+                float y  = pad + usableH - (pts[i] / (float) visMax) * usableH;
+                float cx = (startX + step * (i - 1) + x) / 2f;
+                linePath.cubicTo(cx, pad + usableH - (pts[i-1] / (float) visMax) * usableH, cx, y, x, y);
+                fillPath.cubicTo(cx, pad + usableH - (pts[i-1] / (float) visMax) * usableH, cx, y, x, y);
+            }
+
+            float lastX = startX + step * (pts.length - 1);
+            fillPath.lineTo(lastX, h);
+            fillPath.close();
+
+            fillPaint.setShader(new LinearGradient(0, 0, 0, h, activeColor, Color.TRANSPARENT, Shader.TileMode.CLAMP));
+            canvas.drawPath(fillPath, fillPaint);
+
+            linePaint.setColor(lineColor);
+            canvas.drawPath(linePath, linePaint);
+
+            if (blinkOn) {
+                float lastY = pad + usableH - (pts[pts.length - 1] / (float) visMax) * usableH;
+                dotPaint.setColor(lineColor);
+                canvas.drawCircle(lastX, lastY, 5f, dotPaint);
+                dotPaint.setColor(Color.argb(60, Color.red(lineColor), Color.green(lineColor), Color.blue(lineColor)));
+                canvas.drawCircle(lastX, lastY, 10f, dotPaint);
+            }
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Ciclo de vida
     // ─────────────────────────────────────────────────────────────────────────
 
     @Override
     protected void attachBaseContext(Context newBase) {
-        // Congela la escala de fuente en 1.0 independientemente de accesibilidad
-        // del sistema para mantener el diseño consistente.
         Configuration cfg = new Configuration(newBase.getResources().getConfiguration());
         cfg.fontScale = 1.0f;
         super.attachBaseContext(newBase.createConfigurationContext(cfg));
@@ -190,10 +265,7 @@ public class SimpleModeActivity extends ComponentActivity {
         initListeners();
         refreshGamingModeUi();
         setupConnectivityMonitor();
-
-        // Animar la entrada inicial: fade-in de paneles con retraso escalonado
         animateInitialEntrance();
-
         handler.post(stateTicker);
     }
 
@@ -215,7 +287,6 @@ public class SimpleModeActivity extends ComponentActivity {
     // Inicialización
     // ─────────────────────────────────────────────────────────────────────────
 
-    /** Enlaza todas las referencias a vistas del layout. */
     private void bindViews() {
         connectBtn              = findViewById(R.id.btnConnect);
         copyIdBtn               = findViewById(R.id.btnCopyLogs);
@@ -228,6 +299,7 @@ public class SimpleModeActivity extends ComponentActivity {
         userValueView           = findViewById(R.id.txtUser);
         daysValueView           = findViewById(R.id.txtDays);
         pingValueView           = findViewById(R.id.txtPingValue);
+        pingGraphView           = findViewById(R.id.pingGraphView);
         gamingModeSwitch        = findViewById(R.id.switchGamingMode);
         gamingModeBadgeView     = findViewById(R.id.txtGamingBadge);
         gamingDescriptionView   = findViewById(R.id.txtGamingDescription);
@@ -240,7 +312,6 @@ public class SimpleModeActivity extends ComponentActivity {
         hotspotInfoView         = findViewById(R.id.txtHotspotInfo);
     }
 
-    /** Carga estado persistido y configura valores iniciales. */
     private void initData() {
         internalId     = BtProxy.getOrCreateInternalId(this);
         hideInternalId = getSharedPreferences(PREF_UI, MODE_PRIVATE).getBoolean(KEY_HIDE_ID, false);
@@ -254,9 +325,7 @@ public class SimpleModeActivity extends ComponentActivity {
         setUiState(running ? UiState.CONNECTED : UiState.DISCONNECTED);
     }
 
-    /** Registra todos los listeners de interacción. */
     private void initListeners() {
-        // ── Botón principal ────────────────────────────────────────────────
         connectBtn.setOnClickListener(v -> {
             if (uiState == UiState.CONNECTING) return;
             performHaptic(v);
@@ -264,13 +333,11 @@ public class SimpleModeActivity extends ComponentActivity {
             else                              startVpnWithPermission();
         });
 
-        // ── Botón copiar ID ────────────────────────────────────────────────
         copyIdBtn.setOnClickListener(v -> {
             performHaptic(v);
             copyInternalIdToClipboard();
         });
 
-        // ── Switch Gaming ──────────────────────────────────────────────────
         if (gamingModeSwitch != null) {
             gamingModeSwitch.setChecked(BtProxy.isGamingMode(this));
             gamingModeSwitch.setOnCheckedChangeListener((btn, isChecked) -> {
@@ -287,11 +354,9 @@ public class SimpleModeActivity extends ComponentActivity {
             });
         }
 
-        // ── Botón seleccionar apps ─────────────────────────────────────────
         if (selectGamingAppsBtn != null)
             selectGamingAppsBtn.setOnClickListener(v -> openGamingAppsDialog());
 
-        // ── Switch Hotspot ─────────────────────────────────────────────────
         if (hotspotSwitch != null) {
             hotspotSwitch.setOnCheckedChangeListener((btn, isChecked) -> {
                 if (!isChecked) {
@@ -316,20 +381,14 @@ public class SimpleModeActivity extends ComponentActivity {
     // Animación de entrada
     // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Anima la entrada escalonada de los paneles para dar sensación de profundidad.
-     * Cada panel baja ligeramente desde -20dp con fade-in.
-     */
     private void animateInitialEntrance() {
         if (!canAnimate()) return;
-
         View[] panels = {
             panelConnectionView,
             findViewById(R.id.layoutDataStrip),
             connectBtn,
             gamingModePanel,
         };
-
         for (int i = 0; i < panels.length; i++) {
             View panel = panels[i];
             if (panel == null) continue;
@@ -480,10 +539,6 @@ public class SimpleModeActivity extends ComponentActivity {
         lastRunning = running;
     }
 
-    /**
-     * Actualiza el sub-texto de detalles durante la fase CONNECTING.
-     * Solo reescribe la vista si el texto realmente cambió (evita flickering).
-     */
     private void refreshConnectingDetail() {
         if (statusDetailsView == null) return;
         String detail = buildConnectingDetailText();
@@ -550,7 +605,6 @@ public class SimpleModeActivity extends ComponentActivity {
         }
     }
 
-    /** Muestra un mensaje de error en statusDetailsView con animación de shake en el botón. */
     private void showErrorDetail(String message, int textColor) {
         safeSetVisible(statusDetailsView, true);
         if (canAnimate()) {
@@ -617,7 +671,6 @@ public class SimpleModeActivity extends ComponentActivity {
         if (logs == null) return;
         String[] lines = logs.split("\n");
 
-        // user_name
         for (int i = lines.length - 1; i >= 0; i--) {
             String line = lines[i].trim();
             int idx = line.indexOf("user_name=");
@@ -628,21 +681,20 @@ public class SimpleModeActivity extends ComponentActivity {
             }
         }
 
-        // user_days
         for (int i = lines.length - 1; i >= 0; i--) {
             String line = lines[i].trim();
             int idx = line.indexOf("user_days=");
             if (idx >= 0 && daysValueView != null) {
                 String v = line.substring(idx + "user_days=".length()).trim();
                 if (!v.isEmpty()) {
-                    daysValueView.setText(v + " d");   // más compacto en el chip
+                    daysValueView.setText(v + " d");
                     try {
                         int days = Integer.parseInt(v.replaceAll("[^0-9]", ""));
                         int colorRes = days < 3
-                            ? R.color.color_disconnected    // rojo urgente
+                            ? R.color.color_disconnected
                             : days < 7
-                                ? R.color.color_connecting  // naranja advertencia
-                                : R.color.color_connected;  // verde normal
+                                ? R.color.color_connecting
+                                : R.color.color_connected;
                         daysValueView.setTextColor(c(colorRes));
                         scheduleAutoDisconnectFromDays(days);
                     } catch (Exception ignored) {}
@@ -651,15 +703,17 @@ public class SimpleModeActivity extends ComponentActivity {
             }
         }
 
-        // ping_ms
         for (int i = lines.length - 1; i >= 0; i--) {
             String line = lines[i].trim();
             int idx = line.indexOf("ping_ms=");
-            if (idx >= 0 && pingValueView != null) {
+            if (idx >= 0) {
                 String v = line.substring(idx + "ping_ms=".length()).trim();
                 if (!v.isEmpty()) {
-                    try { animatePingTo(Integer.parseInt(v.replaceAll("[^0-9]", ""))); }
-                    catch (Exception ignored) { resetPingView(); }
+                    try {
+                        int ping = Integer.parseInt(v.replaceAll("[^0-9]", ""));
+                        pushPingHistory(ping);
+                        animatePingTo(ping);
+                    } catch (Exception ignored) { resetPingView(); }
                 }
                 break;
             }
@@ -667,17 +721,47 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Historial y gráfica de ping
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private void pushPingHistory(int ping) {
+        pingHistory.addLast(ping);
+        while (pingHistory.size() > PING_GRAPH_MAX_POINTS) pingHistory.pollFirst();
+        if (pingGraphView != null) {
+            int color = resolvePingColor(ping);
+            int fill  = Color.argb(60, Color.red(color), Color.green(color), Color.blue(color));
+            pingGraphView.setData(pingHistory, PING_GRAPH_MAX_POINTS);
+            pingGraphView.setColors(color, fill);
+            pingGraphView.setVisibility(View.VISIBLE);
+        }
+    }
+
+    private void startPingGraphBlink() {
+        if (pingGraphView == null) return;
+        handler.removeCallbacksAndMessages("ping_blink");
+        final boolean[] state = { true };
+        Runnable blinkRunnable = new Runnable() {
+            @Override
+            public void run() {
+                state[0] = !state[0];
+                pingGraphView.setBlinkState(state[0]);
+                handler.postDelayed(this, 700);
+            }
+        };
+        handler.postDelayed(blinkRunnable, 700);
+    }
+
+    private void stopPingGraphBlink() {
+        handler.removeCallbacksAndMessages("ping_blink");
+        if (pingGraphView != null) pingGraphView.setBlinkState(false);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // UI de estado principal
     // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Transiciona la UI al nuevo estado. Centraliza toda la lógica visual
-     * para evitar inconsistencias entre vistas.
-     *
-     * @param newState Estado destino (DISCONNECTED, CONNECTING, CONNECTED)
-     */
     private void setUiState(UiState newState) {
-        if (settingUiState) return;         // guard anti-reentrada
+        if (settingUiState) return;
         settingUiState = true;
         try {
             applyUiState(newState);
@@ -696,6 +780,16 @@ public class SimpleModeActivity extends ComponentActivity {
         updateStatusBadge(newState, stateChanged);
         updateStatusDetails(newState, stateChanged);
         refreshGamingModeUi();
+
+        if (newState == UiState.CONNECTED) {
+            startPingGraphBlink();
+        } else {
+            stopPingGraphBlink();
+            if (newState == UiState.DISCONNECTED && pingGraphView != null) {
+                pingHistory.clear();
+                pingGraphView.setVisibility(View.GONE);
+            }
+        }
     }
 
     private void updateConnectButton(UiState newState, UiState prev, boolean stateChanged) {
@@ -720,7 +814,6 @@ public class SimpleModeActivity extends ComponentActivity {
                 connectBtn.setBackgroundResource(R.drawable.btn_disconnect_selector);
                 connectBtn.setTextColor(c(R.color.color_text_primary));
                 if (stateChanged && canAnimate()) {
-                    // Bounce de overshoot para sensación de "clic conseguido"
                     connectBtn.setScaleX(0.88f);
                     connectBtn.setScaleY(0.88f);
                     connectBtn.animate()
@@ -731,7 +824,7 @@ public class SimpleModeActivity extends ComponentActivity {
                 }
                 break;
 
-            default: // DISCONNECTED
+            default:
                 connectBtn.setEnabled(true);
                 connectBtn.setActivated(false);
                 connectBtn.setText(BtProxy.isGamingMode(this)
@@ -751,8 +844,8 @@ public class SimpleModeActivity extends ComponentActivity {
         int dotColor = resolveStatusColor(newState);
         long duration = stateChanged ? COLOR_TRANSITION_MS : 0;
 
-        // Cancela animación anterior antes de iniciar nueva
         if (dotColorAnimator != null) dotColorAnimator.cancel();
+        if (dotBlinkAnimator != null) { dotBlinkAnimator.cancel(); dotBlinkAnimator = null; }
 
         if (stateChanged && canAnimate()) {
             int fromColor = statusDotView != null && statusDotView.getBackgroundTintList() != null
@@ -773,7 +866,6 @@ public class SimpleModeActivity extends ComponentActivity {
             applyTint(statusHaloMidView, dotColor);
         }
 
-        // Animaciones de pulso/halo
         switch (newState) {
             case CONNECTING:
                 startStatusPulse();
@@ -782,6 +874,7 @@ public class SimpleModeActivity extends ComponentActivity {
             case CONNECTED:
                 stopStatusPulse();
                 stopStatusHaloWave();
+                startDotBlink(dotColor);
                 safeSetAlpha(statusHaloView, 0.18f);
                 safeSetAlpha(statusHaloMidView, 0.28f);
                 break;
@@ -792,6 +885,18 @@ public class SimpleModeActivity extends ComponentActivity {
                 safeSetAlpha(statusHaloMidView, 0.00f);
                 break;
         }
+    }
+
+    private void startDotBlink(int color) {
+        if (statusDotView == null || !canAnimate()) return;
+        int dimColor = Color.argb(120,
+            Color.red(color), Color.green(color), Color.blue(color));
+        dotBlinkAnimator = ValueAnimator.ofObject(new ArgbEvaluator(), color, dimColor);
+        dotBlinkAnimator.setDuration(900);
+        dotBlinkAnimator.setRepeatMode(ValueAnimator.REVERSE);
+        dotBlinkAnimator.setRepeatCount(ValueAnimator.INFINITE);
+        dotBlinkAnimator.addUpdateListener(a -> applyTint(statusDotView, (Integer) a.getAnimatedValue()));
+        dotBlinkAnimator.start();
     }
 
     private void updateStatusBadge(UiState newState, boolean stateChanged) {
@@ -838,8 +943,7 @@ public class SimpleModeActivity extends ComponentActivity {
                 break;
             }
             case CONNECTED: {
-                String eta  = autoDisconnectAtMs > 0 ? "Autodesconexión local activa" : "Conexión activa";
-                String full = "✓ " + eta;
+                String full = "✓ Conexión activa";
                 lastDetailText = full;
                 safeSetVisible(statusDetailsView, true);
                 statusDetailsView.setTextColor(c(R.color.color_text_secondary));
@@ -866,7 +970,6 @@ public class SimpleModeActivity extends ComponentActivity {
         boolean      enabled  = BtProxy.isGamingMode(this);
         List<String> selected = BtProxy.getGamingSelectedPackages(this);
 
-        // Badge compacto de estado
         if (gamingModeBadgeView != null) {
             if (enabled) {
                 gamingModeBadgeView.setText(R.string.gaming_mode_on_compact);
@@ -881,10 +984,8 @@ public class SimpleModeActivity extends ComponentActivity {
             gamingModeBadgeView.setShadowLayer(0f, 0f, 0f, 0);
         }
 
-        // Descripción (solo si gaming ON)
         safeSetVisible(gamingDescriptionView, enabled);
 
-        // Resumen de apps seleccionadas
         if (gamingSelectedCountView != null) {
             if (selected.isEmpty()) {
                 gamingSelectedCountView.setText("Ninguna app seleccionada");
@@ -898,13 +999,11 @@ public class SimpleModeActivity extends ComponentActivity {
             }
         }
 
-        // Botón seleccionar apps
         if (selectGamingAppsBtn != null) {
             selectGamingAppsBtn.setEnabled(enabled);
             selectGamingAppsBtn.animate().alpha(enabled ? 1f : 0.50f).setDuration(200).start();
         }
 
-        // Panel de controles expandible
         if (gamingControlsLayout != null) {
             if (enabled) {
                 gamingControlsLayout.setVisibility(View.VISIBLE);
@@ -937,7 +1036,6 @@ public class SimpleModeActivity extends ComponentActivity {
         if (panelConnectionView != null)
             panelConnectionView.setSelected(enabled && uiState == UiState.CONNECTED);
 
-        // Texto del botón principal
         if (connectBtn != null && uiState != UiState.CONNECTED && uiState != UiState.CONNECTING)
             connectBtn.setText(enabled ? getString(R.string.connect_gaming) : getString(R.string.connect));
     }
@@ -1020,7 +1118,6 @@ public class SimpleModeActivity extends ComponentActivity {
             }
         };
 
-        final Runnable guardedToggle = () -> {};   // placeholder; lógica inline abajo
         adapter.setSelectionListener((app, checked) -> {
             if (checked && selectedPackages.size() >= 3 && !selectedPackages.contains(app.packageName)) {
                 showToast("Máximo 3 apps en modo seleccionado");
@@ -1057,7 +1154,6 @@ public class SimpleModeActivity extends ComponentActivity {
         refreshPinned[0].run();
     }
 
-    /** Crea un chip de app seleccionada con estilo consistente. */
     private Button buildChip(String label) {
         Button chip = new Button(this);
         chip.setText(label);
@@ -1109,7 +1205,7 @@ public class SimpleModeActivity extends ComponentActivity {
         stopVpn();
         setHideInternalId(false);
         showErrorDetail(
-            "✖ Acceso expirado\nDesconexión automática local\nID: " + internalId,
+            "✖ Acceso expirado\nID: " + internalId,
             c(R.color.color_connecting)
         );
     }
@@ -1142,7 +1238,7 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Animaciones de ping
+    // Ping
     // ─────────────────────────────────────────────────────────────────────────
 
     private void animatePingTo(int targetPing) {
@@ -1156,7 +1252,6 @@ public class SimpleModeActivity extends ComponentActivity {
             return;
         }
 
-        // Animación de conteo numérico
         ValueAnimator counter = ValueAnimator.ofInt(start, targetPing);
         counter.setDuration(450);
         counter.setInterpolator(new DecelerateInterpolator());
@@ -1164,7 +1259,6 @@ public class SimpleModeActivity extends ComponentActivity {
             String.valueOf((int) a.getAnimatedValue())));
         counter.start();
 
-        // Animación de color simultánea
         ValueAnimator colorAnim = ValueAnimator.ofObject(
             new ArgbEvaluator(),
             pingValueView.getCurrentTextColor(),
@@ -1197,14 +1291,14 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private int resolvePingColor(int ping) {
-        if (ping < 60)   return c(R.color.color_connected);   // verde: excelente
-        if (ping < 120)  return c(R.color.color_accent);      // azul: bueno
-        if (ping <= 200) return c(R.color.color_connecting);  // naranja: aceptable
-        return c(R.color.color_disconnected);                  // rojo: malo
+        if (ping < 60)   return c(R.color.color_connected);
+        if (ping < 120)  return c(R.color.color_accent);
+        if (ping <= 200) return c(R.color.color_connecting);
+        return c(R.color.color_disconnected);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Animadores del dot de estado
+    // Animadores del dot
     // ─────────────────────────────────────────────────────────────────────────
 
     private void startStatusPulse() {
@@ -1242,10 +1336,11 @@ public class SimpleModeActivity extends ComponentActivity {
         if (statusPulseAnimator != null) statusPulseAnimator.cancel();
         if (statusHaloAnimator  != null) statusHaloAnimator.cancel();
         if (dotColorAnimator    != null) dotColorAnimator.cancel();
+        if (dotBlinkAnimator    != null) dotBlinkAnimator.cancel();
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Helpers de animación y utilidades
+    // Helpers
     // ─────────────────────────────────────────────────────────────────────────
 
     private boolean canAnimate() { return ValueAnimator.areAnimatorsEnabled(); }
@@ -1372,7 +1467,7 @@ public class SimpleModeActivity extends ComponentActivity {
             ((TextView)  view.findViewById(R.id.txtPackageName)).setText(app.packageName);
 
             CheckBox check = view.findViewById(R.id.checkSelected);
-            check.setOnCheckedChangeListener(null);     // limpia listener previo
+            check.setOnCheckedChangeListener(null);
             check.setChecked(selectedPackages.contains(app.packageName));
             check.setOnCheckedChangeListener((btn, isChecked) -> {
                 if (selectionListener != null) selectionListener.onChange(app, isChecked);
