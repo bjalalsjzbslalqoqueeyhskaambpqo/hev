@@ -280,18 +280,13 @@ public class BtVpnService extends VpnService {
         Builder builder = new Builder()
                 .setSession("bt-hev")
                 .setMtu(1420)
-                // /32: interfaz punto a punto, sin red local ambigua
                 .addAddress("198.18.0.1", 32)
-                // IPv6 del túnel, /128 punto a punto
                 .addAddress("fc00::1", 128)
-                // DNS apunta al mapdns interno de hev
                 .addDnsServer("198.18.0.2")
-                // El rango mapdns debe ser alcanzable dentro del TUN
                 .addRoute("198.18.0.0", 15);
 
         addPublicRoutes(builder);
 
-        // Excluir la propia app para que el tráfico SOCKS5 no entre al túnel
         try { builder.addDisallowedApplication(getPackageName()); } catch (Exception ignored) {}
 
         return builder.establish();
@@ -334,18 +329,17 @@ public class BtVpnService extends VpnService {
     }
 
     private void addPublicRoutes(Builder builder) {
-        // Rangos privados/reservados que NO deben ir al túnel
         String[] excludes = {
-            "0.0.0.0/8",        // "this" network
-            "10.0.0.0/8",       // RFC1918
-            "100.64.0.0/10",    // CGNAT (operadoras móviles)
-            "127.0.0.0/8",      // loopback
-            "169.254.0.0/16",   // link-local
-            "172.16.0.0/12",    // RFC1918
-            "192.168.0.0/16",   // RFC1918
-            "198.18.0.0/15",    // rango mapdns — lo añadimos aparte como ruta TUN
-            "224.0.0.0/4",      // multicast
-            "240.0.0.0/4",      // reservado
+            "0.0.0.0/8",
+            "10.0.0.0/8",
+            "100.64.0.0/10",
+            "127.0.0.0/8",
+            "169.254.0.0/16",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "198.18.0.0/15",
+            "224.0.0.0/4",
+            "240.0.0.0/4",
             "255.255.255.255/32"
         };
 
@@ -362,15 +356,13 @@ public class BtVpnService extends VpnService {
         }
         excluded.sort((a, b) -> Long.compare(a[0], b[0]));
 
-        long cur = 1L; // empezar desde 0.0.0.1, no 0.0.0.0
+        long cur = 1L;
         for (long[] ex : excluded) {
             if (cur < ex[0]) addCIDRs(builder, cur, ex[0] - 1);
             if (cur <= ex[1]) cur = ex[1] + 1;
         }
         if (cur <= 0xFFFFFFFEL) addCIDRs(builder, cur, 0xFFFFFFFEL);
 
-        // IPv6: solo rango global unicast (2000::/3)
-        // fc00::/7 son direcciones privadas, no deben ir al túnel
         builder.addRoute("2000::", 3);
     }
 
