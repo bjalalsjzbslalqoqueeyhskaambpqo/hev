@@ -1,26 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-    activity_simple_mode.xml — Rediseño profesional
-    ─────────────────────────────────────────────────
-    Cambios clave:
-    • Jerarquía visual clara: hero grande → datos → acción → opciones
-    • Dot de estado con halo triple (3 capas de difusión)
-    • Badge de estado en cápsula independiente con fondo semitransparente
-    • Strip de datos con separadores mejorados y etiquetas más refinadas
-    • Botón conectar con altura 64dp, esquinas 18dp, elevación dinámica
-    • Panel Gaming con ícono SVG inline-compatible y descripción más corta
-    • Panel Hotspot etiquetado como "Beta" para transparencia con el usuario
-    • ID device con fuente monospace legible y botón "Copiar" más prominente
-    • Todos los textos hardcoded movidos a atributos descriptivos (comentados)
-    • Margen inferior 24dp para dar respiro antes del sistema de navegación
--->
 <FrameLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/color_bg">
 
-    <!-- Capa de atmósfera de fondo (gradiente/ruido ambiental) -->
     <View
         android:layout_width="match_parent"
         android:layout_height="match_parent"
@@ -42,9 +26,7 @@
             android:paddingTop="12dp"
             android:paddingBottom="24dp">
 
-            <!-- ═══════════════════════════════════════════════════
-                 PANEL HERO — Marca + Estado
-                 ═══════════════════════════════════════════════════ -->
+            <!-- PANEL HERO -->
             <LinearLayout
                 android:id="@+id/panelConnection"
                 android:layout_width="match_parent"
@@ -55,7 +37,6 @@
                 android:paddingTop="20dp"
                 android:paddingBottom="20dp">
 
-                <!-- Fila superior: logo + nombre de marca -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -83,7 +64,6 @@
                         android:ellipsize="end"
                         android:maxLines="1" />
 
-                    <!-- Chip de versión / calidad de señal — reservado -->
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
@@ -97,7 +77,6 @@
                         android:textStyle="bold" />
                 </LinearLayout>
 
-                <!-- Divisor sutil -->
                 <View
                     android:layout_width="match_parent"
                     android:layout_height="1dp"
@@ -105,20 +84,17 @@
                     android:layout_marginBottom="16dp"
                     android:background="#12FFFFFF" />
 
-                <!-- Indicador de estado: halo triple + dot + badge en cápsula -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:gravity="center_vertical"
                     android:orientation="horizontal">
 
-                    <!-- Stack de halos + dot central -->
                     <FrameLayout
                         android:layout_width="32dp"
                         android:layout_height="32dp"
                         android:layout_gravity="center_vertical">
 
-                        <!-- Halo exterior (difusión máxima) -->
                         <View
                             android:id="@+id/viewStatusHalo"
                             android:layout_width="32dp"
@@ -126,7 +102,6 @@
                             android:alpha="0.15"
                             android:background="@drawable/shape_status_dot" />
 
-                        <!-- Halo intermedio -->
                         <View
                             android:id="@+id/viewStatusHaloMid"
                             android:layout_width="22dp"
@@ -135,7 +110,6 @@
                             android:alpha="0.25"
                             android:background="@drawable/shape_status_dot" />
 
-                        <!-- Dot central sólido -->
                         <View
                             android:id="@+id/viewStatusDot"
                             android:layout_width="12dp"
@@ -144,7 +118,6 @@
                             android:background="@drawable/shape_status_dot" />
                     </FrameLayout>
 
-                    <!-- Textos de estado -->
                     <LinearLayout
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
@@ -164,7 +137,6 @@
                             android:ellipsize="end"
                             android:maxLines="1" />
 
-                        <!-- Subtexto de detalles (visible solo en estados activos) -->
                         <TextView
                             android:id="@+id/txtStatusDetails"
                             android:layout_width="match_parent"
@@ -180,9 +152,7 @@
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- ═══════════════════════════════════════════════════
-                 STRIP DE MÉTRICAS — Ping · Usuario · Días
-                 ═══════════════════════════════════════════════════ -->
+            <!-- STRIP DE MÉTRICAS — Ping (gráfica + valor) · Usuario · Días -->
             <LinearLayout
                 android:id="@+id/layoutDataStrip"
                 android:layout_width="match_parent"
@@ -193,11 +163,11 @@
                 android:paddingHorizontal="20dp"
                 android:paddingVertical="18dp">
 
-                <!-- Columna PING -->
+                <!-- Columna PING: gráfica de pulso + valor numérico -->
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
+                    android:layout_weight="1.4"
                     android:orientation="vertical"
                     android:gravity="start">
 
@@ -210,10 +180,19 @@
                         android:textSize="9sp"
                         android:textStyle="bold" />
 
+                    <!-- Gráfica de pulso: oculta hasta recibir datos -->
+                    <com.blacktunnel.SimpleModeActivity.PingGraphView
+                        android:id="@+id/pingGraphView"
+                        android:layout_width="match_parent"
+                        android:layout_height="36dp"
+                        android:layout_marginTop="6dp"
+                        android:visibility="gone" />
+
+                    <!-- Valor numérico debajo de la gráfica -->
                     <LinearLayout
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="5dp"
+                        android:layout_marginTop="4dp"
                         android:gravity="bottom"
                         android:orientation="horizontal">
 
@@ -224,7 +203,7 @@
                             android:fontFamily="monospace"
                             android:text="--"
                             android:textColor="@color/color_text_disabled"
-                            android:textSize="22sp"
+                            android:textSize="18sp"
                             android:textStyle="bold"
                             android:includeFontPadding="false"
                             android:maxLines="1" />
@@ -234,7 +213,7 @@
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:layout_marginStart="3dp"
-                            android:paddingBottom="3dp"
+                            android:paddingBottom="2dp"
                             android:text="ms"
                             android:textColor="@color/color_text_disabled"
                             android:textSize="10sp"
@@ -242,7 +221,6 @@
                     </LinearLayout>
                 </LinearLayout>
 
-                <!-- Separador vertical -->
                 <View
                     android:layout_width="1dp"
                     android:layout_height="match_parent"
@@ -280,7 +258,6 @@
                         android:includeFontPadding="false" />
                 </LinearLayout>
 
-                <!-- Separador vertical -->
                 <View
                     android:layout_width="1dp"
                     android:layout_height="match_parent"
@@ -319,10 +296,7 @@
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- ═══════════════════════════════════════════════════
-                 BOTÓN PRINCIPAL — Conectar / Desconectar
-                 Mayor altura, esquinas más redondeadas, sombra fuerte
-                 ═══════════════════════════════════════════════════ -->
+            <!-- BOTÓN PRINCIPAL -->
             <Button
                 android:id="@+id/btnConnect"
                 android:layout_width="match_parent"
@@ -339,9 +313,7 @@
                 android:elevation="6dp"
                 android:hapticFeedbackEnabled="true" />
 
-            <!-- ═══════════════════════════════════════════════════
-                 PANEL MODO GAMING
-                 ═══════════════════════════════════════════════════ -->
+            <!-- PANEL MODO GAMING -->
             <LinearLayout
                 android:id="@+id/panelGamingMode"
                 android:layout_width="match_parent"
@@ -353,7 +325,6 @@
                 android:paddingTop="18dp"
                 android:paddingBottom="18dp">
 
-                <!-- Fila título + switch -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -376,7 +347,6 @@
                             android:maxLines="1"
                             android:ellipsize="end" />
 
-                        <!-- Descripción breve siempre visible (ayuda a entender el toggle) -->
                         <TextView
                             android:id="@+id/txtGamingDescription"
                             android:layout_width="match_parent"
@@ -401,7 +371,6 @@
                         android:trackTint="@color/switch_track_gaming" />
                 </LinearLayout>
 
-                <!-- Badge de estado del modo gaming -->
                 <TextView
                     android:id="@+id/txtGamingBadge"
                     android:layout_width="wrap_content"
@@ -413,7 +382,6 @@
                     android:textSize="11sp"
                     android:textStyle="bold" />
 
-                <!-- Controles extendidos (visibles solo si gaming ON) -->
                 <LinearLayout
                     android:id="@+id/layoutGamingControls"
                     android:layout_width="match_parent"
@@ -435,7 +403,6 @@
                         android:textStyle="bold"
                         android:hapticFeedbackEnabled="true" />
 
-                    <!-- Resumen de apps seleccionadas -->
                     <TextView
                         android:id="@+id/txtGamingSelectedCount"
                         android:layout_width="match_parent"
@@ -449,10 +416,7 @@
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- ═══════════════════════════════════════════════════
-                 PANEL HOTSPOT — Compartir conexión
-                 Marcado como "Beta" para transparencia con el usuario
-                 ═══════════════════════════════════════════════════ -->
+            <!-- PANEL HOTSPOT -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -469,7 +433,6 @@
                     android:gravity="center_vertical"
                     android:orientation="horizontal">
 
-                    <!-- Título + badge "Próximamente" -->
                     <LinearLayout
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
@@ -487,7 +450,6 @@
                             android:maxLines="1"
                             android:ellipsize="end" />
 
-                        <!-- Etiqueta "Beta" -->
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
@@ -512,7 +474,6 @@
                         android:trackTint="@color/switch_track_gaming" />
                 </LinearLayout>
 
-                <!-- Sub-texto descriptivo siempre visible -->
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -523,7 +484,6 @@
                     android:lineSpacingMultiplier="1.2"
                     android:maxLines="2" />
 
-                <!-- Info dinámica del hotspot (IP, puerto, etc.) -->
                 <TextView
                     android:id="@+id/txtHotspotInfo"
                     android:layout_width="match_parent"
@@ -536,10 +496,7 @@
                     android:visibility="gone" />
             </LinearLayout>
 
-            <!-- ═══════════════════════════════════════════════════
-                 PANEL DEVICE ID — Identificador interno
-                 Fondo diferenciado, fuente monospace, botón prominente
-                 ═══════════════════════════════════════════════════ -->
+            <!-- PANEL DEVICE ID -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -550,7 +507,6 @@
                 android:paddingHorizontal="4dp"
                 android:paddingVertical="4dp">
 
-                <!-- ID con fuente monospace y selección de texto habilitada -->
                 <TextView
                     android:id="@+id/txtDeviceId"
                     android:layout_width="0dp"
@@ -569,7 +525,6 @@
                     android:textSize="11sp"
                     android:lineSpacingMultiplier="1.2" />
 
-                <!-- Botón copiar con peso visual correcto -->
                 <Button
                     android:id="@+id/btnCopyLogs"
                     android:layout_width="0dp"
