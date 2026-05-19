@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout
-    xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/color_bg">
@@ -13,184 +12,129 @@
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:fillViewport="true"
-        android:overScrollMode="ifContentScrolls"
-        android:scrollbarStyle="outsideOverlay"
-        android:scrollbars="none">
+        android:fillViewport="true">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:paddingHorizontal="16dp"
-            android:paddingTop="12dp"
-            android:paddingBottom="24dp">
+            android:padding="16dp">
 
-            <!-- PANEL HERO -->
-            <LinearLayout
-                android:id="@+id/panelConnection"
+            <FrameLayout
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="@drawable/bg_connection_panel"
-                android:orientation="vertical"
-                android:paddingHorizontal="20dp"
-                android:paddingTop="20dp"
-                android:paddingBottom="20dp">
+                android:layout_height="wrap_content">
 
                 <LinearLayout
+                    android:id="@+id/panelConnection"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
-
-                    <ImageView
-                        android:id="@+id/imgLogo"
-                        android:layout_width="32dp"
-                        android:layout_height="32dp"
-                        android:contentDescription="@string/app_brand"
-                        android:src="@drawable/strike_logo"
-                        android:importantForAccessibility="no" />
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:layout_marginStart="10dp"
-                        android:text="@string/app_brand"
-                        android:textColor="@color/color_text_primary"
-                        android:letterSpacing="0.08"
-                        android:textSize="19sp"
-                        android:textStyle="bold"
-                        android:ellipsize="end"
-                        android:maxLines="1" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:background="@drawable/strike_chip_left"
-                        android:paddingHorizontal="8dp"
-                        android:paddingVertical="3dp"
-                        android:text="VPN"
-                        android:textColor="@color/color_text_secondary"
-                        android:letterSpacing="0.10"
-                        android:textSize="9sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
-
-                <View
-                    android:layout_width="match_parent"
-                    android:layout_height="1dp"
-                    android:layout_marginTop="16dp"
-                    android:layout_marginBottom="16dp"
-                    android:background="#12FFFFFF" />
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
-
-                    <FrameLayout
-                        android:layout_width="32dp"
-                        android:layout_height="32dp"
-                        android:layout_gravity="center_vertical">
-
-                        <View
-                            android:id="@+id/viewStatusHalo"
-                            android:layout_width="32dp"
-                            android:layout_height="32dp"
-                            android:alpha="0.15"
-                            android:background="@drawable/shape_status_dot" />
-
-                        <View
-                            android:id="@+id/viewStatusHaloMid"
-                            android:layout_width="22dp"
-                            android:layout_height="22dp"
-                            android:layout_gravity="center"
-                            android:alpha="0.25"
-                            android:background="@drawable/shape_status_dot" />
-
-                        <View
-                            android:id="@+id/viewStatusDot"
-                            android:layout_width="12dp"
-                            android:layout_height="12dp"
-                            android:layout_gravity="center"
-                            android:background="@drawable/shape_status_dot" />
-                    </FrameLayout>
+                    android:background="@drawable/bg_connection_panel"
+                    android:orientation="vertical"
+                    android:paddingHorizontal="20dp"
+                    android:paddingTop="22dp"
+                    android:paddingBottom="18dp">
 
                     <LinearLayout
-                        android:layout_width="0dp"
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:layout_marginStart="12dp"
-                        android:orientation="vertical">
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <ImageView
+                            android:id="@+id/imgLogo"
+                            android:layout_width="36dp"
+                            android:layout_height="36dp"
+                            android:contentDescription="@string/app_brand"
+                            android:src="@drawable/strike_logo" />
 
                         <TextView
-                            android:id="@+id/txtStatusBadge"
-                            android:layout_width="wrap_content"
+                            android:layout_width="0dp"
                             android:layout_height="wrap_content"
-                            android:letterSpacing="0.14"
-                            android:text="DESCONECTADO"
-                            android:textColor="@color/color_disconnected"
-                            android:textSize="13sp"
+                            android:layout_weight="1"
+                            android:layout_marginStart="10dp"
+                            android:text="@string/app_brand"
+                            android:textColor="@color/color_text_primary"
+                            android:letterSpacing="0.15"
+                            android:textSize="20sp"
                             android:textStyle="bold"
                             android:ellipsize="end"
                             android:maxLines="1" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <FrameLayout
+                            android:layout_width="22dp"
+                            android:layout_height="22dp"
+                            android:layout_gravity="center_vertical">
+
+                            <View
+                                android:id="@+id/viewStatusHalo"
+                                android:layout_width="22dp"
+                                android:layout_height="22dp"
+                                android:alpha="0.2"
+                                android:background="@drawable/shape_status_dot" />
+
+                            <View
+                                android:id="@+id/viewStatusDot"
+                                android:layout_width="12dp"
+                                android:layout_height="12dp"
+                                android:layout_gravity="center"
+                                android:background="@drawable/shape_status_dot" />
+                        </FrameLayout>
 
                         <TextView
-                            android:id="@+id/txtStatusDetails"
-                            android:layout_width="match_parent"
+                            android:id="@+id/txtStatusBadge"
+                            android:layout_width="0dp"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="3dp"
-                            android:textColor="@color/color_text_secondary"
-                            android:textSize="12sp"
-                            android:lineSpacingMultiplier="1.25"
-                            android:maxLines="3"
+                            android:layout_weight="1"
+                            android:layout_marginStart="8dp"
+                            android:letterSpacing="0.12"
+                            android:text="DESCONECTADO"
+                            android:textColor="@color/color_disconnected"
+                            android:textSize="15sp"
+                            android:textStyle="bold"
                             android:ellipsize="end"
-                            android:visibility="gone" />
+                            android:maxLines="1" />
                     </LinearLayout>
                 </LinearLayout>
-            </LinearLayout>
 
-            <!-- STRIP DE MÉTRICAS — Ping (gráfica + valor) · Usuario · Días -->
+            </FrameLayout>
+
             <LinearLayout
                 android:id="@+id/layoutDataStrip"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
+                android:layout_marginTop="16dp"
+                android:layout_marginBottom="16dp"
                 android:background="@drawable/bg_connection_panel"
                 android:orientation="horizontal"
-                android:paddingHorizontal="20dp"
-                android:paddingVertical="18dp">
+                android:paddingHorizontal="16dp"
+                android:paddingVertical="16dp">
 
-                <!-- Columna PING: gráfica de pulso + valor numérico -->
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1.4"
+                    android:layout_weight="1"
                     android:orientation="vertical"
                     android:gravity="start">
 
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:letterSpacing="0.14"
+                        android:letterSpacing="0.12"
                         android:text="PING"
-                        android:textColor="@color/color_text_disabled"
+                        android:textColor="#484848"
                         android:textSize="9sp"
                         android:textStyle="bold" />
 
-                    <!-- Gráfica de pulso: oculta hasta recibir datos -->
-                    <com.blacktunnel.SimpleModeActivity.PingGraphView
-                        android:id="@+id/pingGraphView"
-                        android:layout_width="match_parent"
-                        android:layout_height="36dp"
-                        android:layout_marginTop="6dp"
-                        android:visibility="gone" />
-
-                    <!-- Valor numérico debajo de la gráfica -->
                     <LinearLayout
-                        android:layout_width="wrap_content"
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="4dp"
                         android:gravity="bottom"
@@ -203,10 +147,10 @@
                             android:fontFamily="monospace"
                             android:text="--"
                             android:textColor="@color/color_text_disabled"
-                            android:textSize="18sp"
+                            android:textSize="20sp"
                             android:textStyle="bold"
-                            android:includeFontPadding="false"
-                            android:maxLines="1" />
+                            android:maxLines="1"
+                            android:ellipsize="end" />
 
                         <TextView
                             android:id="@+id/txtPingUnit"
@@ -215,32 +159,31 @@
                             android:layout_marginStart="3dp"
                             android:paddingBottom="2dp"
                             android:text="ms"
-                            android:textColor="@color/color_text_disabled"
-                            android:textSize="10sp"
-                            android:includeFontPadding="false" />
+                            android:textColor="@color/color_text_secondary"
+                            android:textSize="10sp" />
                     </LinearLayout>
                 </LinearLayout>
 
                 <View
                     android:layout_width="1dp"
                     android:layout_height="match_parent"
-                    android:layout_marginHorizontal="12dp"
-                    android:background="#14FFFFFF" />
+                    android:layout_marginHorizontal="8dp"
+                    android:background="#1AFFFFFF" />
 
-                <!-- Columna USUARIO -->
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1.4"
+                    android:layout_weight="1.2"
                     android:orientation="vertical"
-                    android:gravity="start">
+                    android:gravity="start"
+                    android:paddingStart="4dp">
 
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:letterSpacing="0.14"
+                        android:letterSpacing="0.12"
                         android:text="USUARIO"
-                        android:textColor="@color/color_text_disabled"
+                        android:textColor="#484848"
                         android:textSize="9sp"
                         android:textStyle="bold" />
 
@@ -248,36 +191,36 @@
                         android:id="@+id/txtUser"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="5dp"
+                        android:layout_marginTop="4dp"
                         android:text="--"
-                        android:textColor="@color/color_text_primary"
-                        android:textSize="15sp"
+                        android:textColor="#CCCCCC"
+                        android:textSize="16sp"
                         android:textStyle="bold"
-                        android:maxLines="1"
+                        android:maxLines="2"
                         android:ellipsize="end"
-                        android:includeFontPadding="false" />
+                        android:lineSpacingMultiplier="1.1" />
                 </LinearLayout>
 
                 <View
                     android:layout_width="1dp"
                     android:layout_height="match_parent"
-                    android:layout_marginHorizontal="12dp"
-                    android:background="#14FFFFFF" />
+                    android:layout_marginHorizontal="8dp"
+                    android:background="#1AFFFFFF" />
 
-                <!-- Columna DÍAS -->
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_weight="0.85"
+                    android:layout_weight="0.9"
                     android:orientation="vertical"
-                    android:gravity="start">
+                    android:gravity="start"
+                    android:paddingStart="4dp">
 
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:letterSpacing="0.14"
+                        android:letterSpacing="0.12"
                         android:text="DÍAS"
-                        android:textColor="@color/color_text_disabled"
+                        android:textColor="#484848"
                         android:textSize="9sp"
                         android:textStyle="bold" />
 
@@ -285,45 +228,38 @@
                         android:id="@+id/txtDays"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="5dp"
+                        android:layout_marginTop="4dp"
                         android:text="--"
                         android:textColor="@color/color_connected"
-                        android:textSize="22sp"
+                        android:textSize="20sp"
                         android:textStyle="bold"
                         android:maxLines="1"
-                        android:ellipsize="end"
-                        android:includeFontPadding="false" />
+                        android:ellipsize="end" />
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- BOTÓN PRINCIPAL -->
             <Button
                 android:id="@+id/btnConnect"
                 android:layout_width="match_parent"
-                android:layout_height="64dp"
-                android:layout_marginTop="12dp"
+                android:layout_height="60dp"
                 android:background="@drawable/btn_connect_selector"
-                android:letterSpacing="0.10"
+                android:letterSpacing="0.12"
                 android:stateListAnimator="@animator/btn_press"
                 android:text="@string/connect"
                 android:textAllCaps="true"
                 android:textColor="@color/color_bg"
                 android:textSize="15sp"
                 android:textStyle="bold"
-                android:elevation="6dp"
-                android:hapticFeedbackEnabled="true" />
+                android:elevation="4dp" />
 
-            <!-- PANEL MODO GAMING -->
             <LinearLayout
                 android:id="@+id/panelGamingMode"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
+                android:layout_marginTop="12dp"
                 android:background="@drawable/bg_gaming_mode_panel"
                 android:orientation="vertical"
-                android:paddingHorizontal="20dp"
-                android:paddingTop="18dp"
-                android:paddingBottom="18dp">
+                android:padding="20dp">
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -343,29 +279,24 @@
                             android:text="@string/gaming_mode_title"
                             android:textColor="@color/color_text_primary"
                             android:textSize="15sp"
-                            android:textStyle="bold"
-                            android:maxLines="1"
-                            android:ellipsize="end" />
+                            android:textStyle="bold" />
 
                         <TextView
                             android:id="@+id/txtGamingDescription"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="3dp"
+                            android:layout_marginTop="4dp"
                             android:text="@string/gaming_mode_desc"
                             android:textColor="@color/color_text_secondary"
                             android:textSize="12sp"
-                            android:lineSpacingMultiplier="1.25"
-                            android:maxLines="2"
-                            android:ellipsize="end"
-                            android:visibility="gone" />
+                            android:lineSpacingMultiplier="1.2" />
                     </LinearLayout>
 
                     <Switch
                         android:id="@+id/switchGamingMode"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_marginStart="14dp"
+                        android:layout_marginStart="12dp"
                         android:showText="false"
                         android:thumbTint="@color/switch_thumb_gaming"
                         android:trackTint="@color/switch_track_gaming" />
@@ -375,10 +306,10 @@
                     android:id="@+id/txtGamingBadge"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    android:letterSpacing="0.12"
+                    android:layout_marginTop="8dp"
+                    android:letterSpacing="0.14"
                     android:text="@string/gaming_mode_off_compact"
-                    android:textColor="@color/color_text_disabled"
+                    android:textColor="#2A2A2A"
                     android:textSize="11sp"
                     android:textStyle="bold" />
 
@@ -386,9 +317,8 @@
                     android:id="@+id/layoutGamingControls"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:orientation="vertical"
-                    android:visibility="gone">
+                    android:layout_marginTop="10dp"
+                    android:orientation="vertical">
 
                     <Button
                         android:id="@+id/btnSelectGamingApps"
@@ -400,32 +330,27 @@
                         android:textAllCaps="false"
                         android:textColor="@color/color_gaming"
                         android:textSize="14sp"
-                        android:textStyle="bold"
-                        android:hapticFeedbackEnabled="true" />
+                        android:textStyle="bold" />
 
                     <TextView
                         android:id="@+id/txtGamingSelectedCount"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="10dp"
+                        android:layout_marginTop="8dp"
                         android:textColor="@color/color_text_secondary"
                         android:textSize="12sp"
-                        android:lineSpacingMultiplier="1.2"
                         android:maxLines="2"
                         android:ellipsize="end" />
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- PANEL HOTSPOT -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
+                android:layout_marginTop="12dp"
                 android:background="@drawable/bg_gaming_mode_panel"
                 android:orientation="vertical"
-                android:paddingHorizontal="20dp"
-                android:paddingTop="18dp"
-                android:paddingBottom="18dp">
+                android:padding="20dp">
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -433,79 +358,70 @@
                     android:gravity="center_vertical"
                     android:orientation="horizontal">
 
-                    <LinearLayout
+                    <TextView
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:orientation="horizontal"
-                        android:gravity="center_vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="Compartir conexión"
-                            android:textColor="@color/color_text_primary"
-                            android:textSize="15sp"
-                            android:textStyle="bold"
-                            android:maxLines="1"
-                            android:ellipsize="end" />
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginStart="8dp"
-                            android:background="@drawable/strike_chip_left"
-                            android:paddingHorizontal="7dp"
-                            android:paddingVertical="2dp"
-                            android:text="BETA"
-                            android:textColor="@color/color_text_secondary"
-                            android:letterSpacing="0.10"
-                            android:textSize="9sp"
-                            android:textStyle="bold" />
-                    </LinearLayout>
+                        android:text="Compartir Internet por hotspot"
+                        android:textColor="@color/color_text_primary"
+                        android:textSize="15sp"
+                        android:textStyle="bold"
+                        android:maxLines="2"
+                        android:ellipsize="end" />
 
                     <Switch
                         android:id="@+id/switchHotspot"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_marginStart="14dp"
+                        android:layout_marginStart="12dp"
                         android:showText="false"
                         android:thumbTint="@color/switch_thumb_gaming"
                         android:trackTint="@color/switch_track_gaming" />
                 </LinearLayout>
 
                 <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:text="Permite que otros dispositivos usen esta conexión VPN"
-                    android:textColor="@color/color_text_secondary"
-                    android:textSize="12sp"
-                    android:lineSpacingMultiplier="1.2"
-                    android:maxLines="2" />
-
-                <TextView
                     android:id="@+id/txtHotspotInfo"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    android:fontFamily="monospace"
+                    android:layout_marginTop="8dp"
                     android:textColor="@color/color_text_secondary"
-                    android:textSize="12sp"
-                    android:lineSpacingMultiplier="1.3"
+                    android:textSize="13sp"
                     android:visibility="gone" />
+
             </LinearLayout>
 
-            <!-- PANEL DEVICE ID -->
+            <LinearLayout
+                android:id="@+id/layoutStatusMessage"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:orientation="vertical"
+                android:paddingHorizontal="4dp"
+                android:paddingVertical="4dp">
+
+                <TextView
+                    android:id="@+id/txtStatusDetails"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingHorizontal="16dp"
+                    android:paddingVertical="12dp"
+                    android:text="Esperando conexión..."
+                    android:textColor="#666666"
+                    android:textSize="13sp"
+                    android:lineSpacingMultiplier="1.3"
+                    android:maxLines="4"
+                    android:ellipsize="end" />
+            </LinearLayout>
+
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
+                android:layout_marginTop="4dp"
+                android:layout_marginBottom="12dp"
                 android:background="@drawable/strike_panel_surface"
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
-                android:paddingHorizontal="4dp"
-                android:paddingVertical="4dp">
+                android:padding="4dp">
 
                 <TextView
                     android:id="@+id/txtDeviceId"
@@ -516,29 +432,25 @@
                     android:ellipsize="end"
                     android:gravity="center_vertical"
                     android:maxLines="2"
-                    android:paddingHorizontal="12dp"
-                    android:paddingVertical="12dp"
+                    android:paddingHorizontal="10dp"
+                    android:paddingVertical="10dp"
                     android:text="@string/device_id_default"
                     android:textColor="@color/color_text_primary"
                     android:textIsSelectable="true"
-                    android:fontFamily="monospace"
-                    android:textSize="11sp"
-                    android:lineSpacingMultiplier="1.2" />
+                    android:textSize="11sp" />
 
                 <Button
                     android:id="@+id/btnCopyLogs"
                     android:layout_width="0dp"
                     android:layout_height="match_parent"
-                    android:layout_marginStart="6dp"
+                    android:layout_marginStart="8dp"
                     android:layout_weight="3"
                     android:background="@drawable/strike_btn_secondary"
-                    android:minHeight="0dp"
                     android:text="@string/copy"
                     android:textAllCaps="false"
                     android:textColor="@color/color_bg"
                     android:textSize="13sp"
-                    android:textStyle="bold"
-                    android:hapticFeedbackEnabled="true" />
+                    android:textStyle="bold" />
             </LinearLayout>
 
         </LinearLayout>
