@@ -54,35 +54,36 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class SimpleModeActivity extends ComponentActivity {
-    private static final String PREF_UI          = "ui_state";
-    private static final String KEY_HIDE_ID      = "hide_internal_id";
-    private static final int    HOTSPOT_PROXY_PORT = 7071;
+    private static final String PREF_UI              = "ui_state";
+    private static final String KEY_HIDE_ID          = "hide_internal_id";
+    private static final int    HOTSPOT_PROXY_PORT   = 7071;
     private static final long   CONNECTING_TIMEOUT_MS = 40000L;
 
     private enum UiState { DISCONNECTED, CONNECTING, CONNECTED }
 
-    private Button       connectBtn;
-    private Button       copyIdBtn;
-    private TextView     statusBadgeView;
-    private View         statusDotView;
-    private View         statusHaloView;
-    private TextView     statusDetailsView;
-    private TextView     deviceIdView;
-    private TextView     userValueView;
-    private TextView     daysValueView;
-    private TextView     pingValueView;
-    private Switch       gamingModeSwitch;
-    private TextView     gamingModeBadgeView;
-    private TextView     gamingDescriptionView;
-    private TextView     gamingSelectedCountView;
-    private Button       selectGamingAppsBtn;
-    private LinearLayout gamingModePanel;
-    private LinearLayout gamingControlsLayout;
-    private View         panelConnectionView;
-    private Switch       hotspotSwitch;
-    private TextView     hotspotInfoView;
-    private Animator     statusPulseAnimator;
-    private Animator     statusHaloAnimator;
+    private Button        connectBtn;
+    private Button        copyIdBtn;
+    private TextView      statusBadgeView;
+    private View          statusDotView;
+    private View          statusHaloView;
+    private TextView      statusDetailsView;
+    private TextView      deviceIdView;
+    private TextView      userValueView;
+    private TextView      daysValueView;
+    private TextView      pingValueView;
+    private PingPulseView pingPulseView;
+    private Switch        gamingModeSwitch;
+    private TextView      gamingModeBadgeView;
+    private TextView      gamingDescriptionView;
+    private TextView      gamingSelectedCountView;
+    private Button        selectGamingAppsBtn;
+    private LinearLayout  gamingModePanel;
+    private LinearLayout  gamingControlsLayout;
+    private View          panelConnectionView;
+    private Switch        hotspotSwitch;
+    private TextView      hotspotInfoView;
+    private Animator      statusPulseAnimator;
+    private Animator      statusHaloAnimator;
 
     private final ExecutorService appLoadExecutor    = Executors.newSingleThreadExecutor();
     private String  internalId                       = "";
@@ -98,7 +99,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private String  lastKnownConnState               = "";
     private String  lastDetailText                   = "";
 
-    private final Runnable autoDisconnectRunnable    = this::runAutoDisconnect;
+    private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
     private ConnectivityManager connectivityManager;
     private ConnectivityManager.NetworkCallback networkCallback;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -146,6 +147,7 @@ public class SimpleModeActivity extends ComponentActivity {
         userValueView           = findViewById(R.id.txtUser);
         daysValueView           = findViewById(R.id.txtDays);
         pingValueView           = findViewById(R.id.txtPingValue);
+        pingPulseView           = findViewById(R.id.pingPulseView);
         gamingModeSwitch        = findViewById(R.id.switchGamingMode);
         gamingModeBadgeView     = findViewById(R.id.txtGamingBadge);
         gamingDescriptionView   = findViewById(R.id.txtGamingDescription);
@@ -343,7 +345,7 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void refreshGamingModeUi() {
-        boolean enabled = BtProxy.isGamingMode(this);
+        boolean enabled  = BtProxy.isGamingMode(this);
         List<String> selected = BtProxy.getGamingSelectedPackages(this);
 
         if (gamingModeBadgeView != null) {
@@ -366,7 +368,7 @@ public class SimpleModeActivity extends ComponentActivity {
                 gamingSelectedCountView.setText("Ninguna app seleccionada");
                 gamingSelectedCountView.setTextColor(c(R.color.color_text_disabled));
             } else {
-                String first = selected.get(0);
+                String first   = selected.get(0);
                 String summary = selected.size() > 1 ? first + " +" + (selected.size() - 1) + " más" : first;
                 gamingSelectedCountView.setText(summary);
                 gamingSelectedCountView.setTextColor(c(R.color.color_gaming));
@@ -462,20 +464,20 @@ public class SimpleModeActivity extends ComponentActivity {
                 return;
             }
             if (checked) selectedPackages.add(app.packageName);
-            else selectedPackages.remove(app.packageName);
+            else         selectedPackages.remove(app.packageName);
             adapter.notifyDataSetChanged();
             refreshPinned[0].run();
         });
 
         listView.setOnItemClickListener((parent, view, position, id) -> {
-            AppOption app = adapter.getItem(position);
-            boolean checked = !selectedPackages.contains(app.packageName);
+            AppOption app    = adapter.getItem(position);
+            boolean   checked = !selectedPackages.contains(app.packageName);
             if (checked && selectedPackages.size() >= 3 && !selectedPackages.contains(app.packageName)) {
                 Toast.makeText(this, "Máximo 3 aplicaciones en modo seleccionado", Toast.LENGTH_SHORT).show();
                 return;
             }
             if (checked) selectedPackages.add(app.packageName);
-            else selectedPackages.remove(app.packageName);
+            else         selectedPackages.remove(app.packageName);
             adapter.notifyDataSetChanged();
             refreshPinned[0].run();
         });
@@ -492,7 +494,7 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private List<AppOption> loadInstalledUserApps() {
-        PackageManager pm = getPackageManager();
+        PackageManager pm  = getPackageManager();
         List<ApplicationInfo> all = pm.getInstalledApplications(PackageManager.GET_META_DATA);
         List<AppOption> out = new ArrayList<>();
         for (ApplicationInfo app : all) {
@@ -631,28 +633,22 @@ public class SimpleModeActivity extends ComponentActivity {
         boolean running   = BtVpnService.isRunningState();
         String  connState = findLatestConnectionState(logs);
 
-        if (!connState.isEmpty() && !connState.equals(lastKnownConnState)) {
+        if (!connState.isEmpty() && !connState.equals(lastKnownConnState))
             lastKnownConnState = connState;
-        }
 
-        if ("connected".equals(connState)) {
-            handshakeConfirmed = true;
-        }
+        if ("connected".equals(connState)) handshakeConfirmed = true;
 
         if (running && !lastRunning) {
             authState              = "";
             applyingRuntimeChanges = false;
             setUiState(handshakeConfirmed ? UiState.CONNECTED : UiState.CONNECTING);
-
         } else if (!running && lastRunning) {
             applyingRuntimeChanges = false;
             handshakeConfirmed     = false;
             setUiState(UiState.DISCONNECTED);
-
         } else if (running && handshakeConfirmed) {
             applyingRuntimeChanges = false;
             if (uiState != UiState.CONNECTED) setUiState(UiState.CONNECTED);
-
         } else if (running && !handshakeConfirmed) {
             if ("failed".equals(lastKnownConnState)) {
                 long elapsed = SystemClock.elapsedRealtime() - connectingSinceMs;
@@ -666,7 +662,6 @@ public class SimpleModeActivity extends ComponentActivity {
             } else {
                 refreshConnectingDetail();
             }
-
         } else if (!running && uiState == UiState.CONNECTING) {
             long elapsed = SystemClock.elapsedRealtime() - connectingSinceMs;
             if (elapsed > CONNECTING_TIMEOUT_MS) {
@@ -683,15 +678,10 @@ public class SimpleModeActivity extends ComponentActivity {
     private void refreshConnectingDetail() {
         if (statusDetailsView == null) return;
         String detail;
-        if ("retrying".equals(lastKnownConnState)) {
-            detail = "• Buscando servidor disponible...";
-        } else if ("dropped".equals(lastKnownConnState)) {
-            detail = "• Reconectando al servidor...";
-        } else if ("failed".equals(lastKnownConnState)) {
-            detail = "• Reintentando conexión...";
-        } else {
-            detail = "• Estableciendo conexión...";
-        }
+        if      ("retrying".equals(lastKnownConnState)) detail = "• Buscando servidor disponible...";
+        else if ("dropped".equals(lastKnownConnState))  detail = "• Reconectando al servidor...";
+        else if ("failed".equals(lastKnownConnState))   detail = "• Reintentando conexión...";
+        else                                             detail = "• Estableciendo conexión...";
         if (!detail.equals(lastDetailText)) {
             lastDetailText = detail;
             statusDetailsView.setVisibility(View.VISIBLE);
@@ -819,13 +809,21 @@ public class SimpleModeActivity extends ComponentActivity {
         for (int i = lines.length - 1; i >= 0; i--) {
             String line = lines[i].trim();
             int idx = line.indexOf("ping_ms=");
-            if (idx >= 0 && pingValueView != null) {
+            if (idx >= 0) {
                 String v = line.substring(idx + "ping_ms=".length()).trim();
                 if (!v.isEmpty()) {
-                    try { animatePingTo(Integer.parseInt(v.replaceAll("[^0-9]", ""))); }
-                    catch (Exception ignored) {
-                        pingValueView.setText("--");
-                        pingValueView.setTextColor(c(R.color.color_text_disabled));
+                    try {
+                        int ping = Integer.parseInt(v.replaceAll("[^0-9]", ""));
+                        animatePingTo(ping);
+                        if (pingPulseView != null) {
+                            pingPulseView.setLineColor(resolvePingColor(ping));
+                            pingPulseView.pushPing(ping);
+                        }
+                    } catch (Exception ignored) {
+                        if (pingValueView  != null) {
+                            pingValueView.setText("--");
+                            pingValueView.setTextColor(c(R.color.color_text_disabled));
+                        }
                     }
                 }
                 break;
@@ -881,8 +879,8 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void setUiState(UiState newState) {
-        UiState prev = uiState;
-        uiState = newState;
+        UiState prev         = uiState;
+        uiState              = newState;
         boolean stateChanged = (prev != newState);
 
         if (connectBtn != null) {
@@ -924,10 +922,9 @@ public class SimpleModeActivity extends ComponentActivity {
                      : newState == UiState.CONNECTING ? c(R.color.color_connecting)
                      : c(R.color.color_text_disabled);
 
-        if (stateChanged) {
-            animateDotColor(statusDotView, statusHaloView, dotColor, 400);
-        } else {
-            if (statusDotView != null) statusDotView.setBackgroundTintList(ColorStateList.valueOf(dotColor));
+        if (stateChanged) animateDotColor(statusDotView, statusHaloView, dotColor, 400);
+        else {
+            if (statusDotView  != null) statusDotView.setBackgroundTintList(ColorStateList.valueOf(dotColor));
             if (statusHaloView != null) statusHaloView.setBackgroundTintList(ColorStateList.valueOf(dotColor));
         }
 
@@ -951,6 +948,7 @@ public class SimpleModeActivity extends ComponentActivity {
                 stopStatusPulse();
                 stopStatusHaloWave();
                 if (statusHaloView != null) statusHaloView.setAlpha(0.20f);
+                if (pingPulseView  != null) pingPulseView.setIdle();
             }
             if (stateChanged) {
                 animateBadgeColor(statusBadgeView, badgeColor, 350);
@@ -975,15 +973,10 @@ public class SimpleModeActivity extends ComponentActivity {
         if (statusDetailsView != null) {
             if (newState == UiState.CONNECTING) {
                 String detail;
-                if ("retrying".equals(lastKnownConnState)) {
-                    detail = "• Buscando servidor disponible...";
-                } else if ("dropped".equals(lastKnownConnState)) {
-                    detail = "• Reconectando al servidor...";
-                } else if ("failed".equals(lastKnownConnState)) {
-                    detail = "• Reintentando conexión...";
-                } else {
-                    detail = "• Estableciendo conexión...";
-                }
+                if      ("retrying".equals(lastKnownConnState)) detail = "• Buscando servidor disponible...";
+                else if ("dropped".equals(lastKnownConnState))  detail = "• Reconectando al servidor...";
+                else if ("failed".equals(lastKnownConnState))   detail = "• Reintentando conexión...";
+                else                                             detail = "• Estableciendo conexión...";
                 lastDetailText = detail;
                 statusDetailsView.setVisibility(View.VISIBLE);
                 statusDetailsView.setTextColor(c(R.color.color_connecting));
@@ -995,14 +988,13 @@ public class SimpleModeActivity extends ComponentActivity {
                     statusDetailsView.setText(detail);
                 }
             } else if (newState == UiState.CONNECTED) {
-                String eta = autoDisconnectAtMs > 0 ? "Autodesconexión local activa" : "Conexión activa";
+                String eta  = autoDisconnectAtMs > 0 ? "Autodesconexión local activa" : "Conexión activa";
                 String full = "✓ " + eta;
                 lastDetailText = full;
                 statusDetailsView.setVisibility(View.VISIBLE);
                 statusDetailsView.setTextColor(0xFF555555);
-                if (stateChanged && canAnimate()) {
+                if (stateChanged && canAnimate())
                     statusDetailsView.startAnimation(AnimationUtils.loadAnimation(this, R.anim.fade_slide_in));
-                }
                 statusDetailsView.setText(full);
             } else {
                 lastDetailText = "";
