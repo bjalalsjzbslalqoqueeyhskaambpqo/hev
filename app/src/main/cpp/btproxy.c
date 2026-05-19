@@ -164,7 +164,6 @@ static void ht_close_all(int epfd) {
     }
 }
 
-/* ── Cola de chunks para bajada lenta por stream ── */
 typedef struct chunk_s {
     struct chunk_s *next;
     size_t          len;
@@ -189,7 +188,6 @@ static void cq_flush(chunkq_t *q) {
     q->head = q->tail = NULL; q->bytes = 0;
 }
 
-/* ── Info extendida por stream ── */
 typedef struct sinfo_s {
     uint32_t  sid;
     int       cfd;
@@ -268,7 +266,6 @@ static void si_close_all(int epfd) {
     }
 }
 
-/* ── Cola de frames hacia el servidor ── */
 typedef struct frame_s {
     struct frame_s *next;
     size_t          total;

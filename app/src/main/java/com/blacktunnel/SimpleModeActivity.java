@@ -988,7 +988,7 @@ public class SimpleModeActivity extends ComponentActivity {
                     statusDetailsView.setText(detail);
                 }
             } else if (newState == UiState.CONNECTED) {
-                String eta  = autoDisconnectAtMs > 0 ? "Auto desconexión activa" : "Conexión activa";
+                String eta  = "Conexión activa";
                 String full = "✓ " + eta;
                 lastDetailText = full;
                 statusDetailsView.setVisibility(View.VISIBLE);
