@@ -21,6 +21,7 @@
 #include <poll.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <netdb.h>
 
 #define LOG_TAG "btproxy"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
@@ -467,8 +468,30 @@ static int open_tunnel(void) {
     int fd = -1;
     for (int i = 0; i < PROXY_IP_COUNT && fd < 0; i++) {
         push_log("I", "probando %s", PROXY_IPS[i]);
-        fd = try_connect_ip(PROXY_IPS[i], CONNECT_TIMEOUT_SEC * 1000);
+        fd = try_connect_ip(PROXY_IPS[i], 300);
     }
+
+    if (fd < 0) {
+        push_log("I", "IPs estaticas fallaron, resolviendo %s", PROXY_HOST);
+        struct addrinfo hints = {0}, *res = NULL, *cur;
+        hints.ai_family   = AF_INET6;
+        hints.ai_socktype = SOCK_STREAM;
+        char port_str[8];
+        snprintf(port_str, sizeof(port_str), "%d", PROXY_PORT);
+        if (getaddrinfo(PROXY_HOST, port_str, &hints, &res) == 0) {
+            for (cur = res; cur && fd < 0; cur = cur->ai_next) {
+                char ipbuf[INET6_ADDRSTRLEN] = {0};
+                struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)cur->ai_addr;
+                inet_ntop(AF_INET6, &a6->sin6_addr, ipbuf, sizeof(ipbuf));
+                push_log("I", "dns %s", ipbuf);
+                fd = try_connect_ip(ipbuf, 300);
+            }
+            freeaddrinfo(res);
+        } else {
+            push_log("E", "getaddrinfo fallo");
+        }
+    }
+
     if (fd < 0) { push_log("E", "connect failed"); return -1; }
 
     char buf[4096];
