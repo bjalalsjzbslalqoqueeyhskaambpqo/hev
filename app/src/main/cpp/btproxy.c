@@ -45,7 +45,7 @@
 #define LOCAL_QUEUE_HARD_LIMIT (512 * 1024)
 #define WRITE_QUEUE_HIGH_WATER (512 * 1024)
 #define WRITE_QUEUE_LOW_WATER  (128 * 1024)
-#define STREAM_TIMEOUT_MS      900000
+#define STREAM_TIMEOUT_MS      2000000
 
 #define PROXY_HOST  "emailmarketing.personal.com.ar"
 #define PROXY_PORT  80
@@ -99,7 +99,6 @@ static void push_log(const char *lvl, const char *fmt, ...) {
     pthread_mutex_unlock(&g_log_mu);
 }
 
-/* ── Hash table sid→cfd (original, sin cambios) ── */
 #define HT_SIZE 4096
 #define HT_MASK (HT_SIZE - 1)
 
