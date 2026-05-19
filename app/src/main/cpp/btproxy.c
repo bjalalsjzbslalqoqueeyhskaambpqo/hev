@@ -45,7 +45,7 @@
 #define LOCAL_QUEUE_HARD_LIMIT (512 * 1024)
 #define WRITE_QUEUE_HIGH_WATER (512 * 1024)
 #define WRITE_QUEUE_LOW_WATER  (128 * 1024)
-#define STREAM_TIMEOUT_MS      600000
+#define STREAM_TIMEOUT_MS      900000
 
 #define PROXY_HOST  "emailmarketing.personal.com.ar"
 #define PROXY_PORT  80
