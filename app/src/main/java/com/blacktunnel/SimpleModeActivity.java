@@ -353,11 +353,21 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void startHudRingRotation() {
-        // no-op (se removió el HUD central)
+        if (!canAnimate() || btnRingOuter == null) return;
+        btnRingOuter.animate().cancel();
+        btnRingOuter.animate()
+            .rotationBy(360f)
+            .setDuration(9000)
+            .setInterpolator(new android.view.animation.LinearInterpolator())
+            .withEndAction(() -> {
+                if (uiState == UiState.CONNECTED && btnRingOuter != null && btnRingOuter.isAttachedToWindow())
+                    startHudRingRotation();
+            })
+            .start();
     }
 
     private void stopHudRingRotation() {
-        // no-op (se removió el HUD central)
+        if (btnRingOuter != null) btnRingOuter.animate().cancel();
     }
 
     private long getStoredTotalUsageMs() {
@@ -809,7 +819,7 @@ public class SimpleModeActivity extends ComponentActivity {
             String line = lines[i].trim(); int idx = line.indexOf("user_name=");
             if (idx >= 0) {
                 String v = line.substring(idx + "user_name=".length()).trim();
-                if (!v.isEmpty() && userNameWideView != null) userNameWideView.setText(v);
+                if (!v.isEmpty() && userNameWideView != null) userNameWideView.setText("Usuario: " + v);
                 break;
             }
         }
@@ -951,7 +961,7 @@ public class SimpleModeActivity extends ComponentActivity {
                 badgeText  = getString(R.string.status_connected);
                 badgeColor = BtProxy.isGamingMode(this) ? c(R.color.color_gaming) : c(R.color.color_connected);
                 stopStatusPulse(); stopStatusHaloWave();
-                stopHudRingRotation();
+                startHudRingRotation();
                 if (statusHaloView != null) statusHaloView.setAlpha(0.15f);
             } else {
                 badgeText  = getString(R.string.status_disconnected); badgeColor = c(R.color.color_disconnected);
