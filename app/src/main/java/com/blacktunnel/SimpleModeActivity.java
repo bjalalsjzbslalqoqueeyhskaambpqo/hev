@@ -67,6 +67,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private static final String PREF_UI              = "ui_state";
     private static final String KEY_HIDE_ID          = "hide_internal_id";
     private static final String KEY_TOTAL_USAGE_MS   = "total_usage_ms";
+    private static final String KEY_SESSION_START_MS = "session_start_elapsed_ms";
     private static final int    HOTSPOT_PROXY_PORT   = 7071;
     private static final long   CONNECTING_TIMEOUT_MS = 40000L;
 
@@ -302,11 +303,8 @@ public class SimpleModeActivity extends ComponentActivity {
     @Override
     protected void onStop() {
         super.onStop();
-        if (uiState == UiState.CONNECTED) {
-            long now = SystemClock.elapsedRealtime();
-            addTotalUsageMs(now - connectingSinceMs);
-            connectingSinceMs = now;
-        }
+        if (uiState == UiState.CONNECTED && connectingSinceMs > 0)
+            setStoredSessionStartMs(connectingSinceMs);
     }
 
     @Override
@@ -384,6 +382,14 @@ public class SimpleModeActivity extends ComponentActivity {
         return getSharedPreferences(PREF_UI, MODE_PRIVATE).getLong(KEY_TOTAL_USAGE_MS, 0L);
     }
 
+    private long getStoredSessionStartMs() {
+        return getSharedPreferences(PREF_UI, MODE_PRIVATE).getLong(KEY_SESSION_START_MS, -1L);
+    }
+
+    private void setStoredSessionStartMs(long value) {
+        getSharedPreferences(PREF_UI, MODE_PRIVATE).edit().putLong(KEY_SESSION_START_MS, value).apply();
+    }
+
     private void addTotalUsageMs(long deltaMs) {
         if (deltaMs <= 0) return;
         long next = getStoredTotalUsageMs() + deltaMs;
@@ -399,14 +405,16 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void updateUsageViews() {
+        long anchor = connectingSinceMs > 0 ? connectingSinceMs : getStoredSessionStartMs();
+        if (uiState == UiState.CONNECTED && anchor > 0 && connectingSinceMs <= 0) connectingSinceMs = anchor;
         if (userValueView != null) {
             long session = uiState == UiState.CONNECTED
-                ? (SystemClock.elapsedRealtime() - connectingSinceMs) : 0L;
+                ? Math.max(0L, (SystemClock.elapsedRealtime() - anchor)) : 0L;
             userValueView.setText(fmtHms(session));
         }
         if (totalUsageView != null) {
             long total = getStoredTotalUsageMs();
-            if (uiState == UiState.CONNECTED) total += (SystemClock.elapsedRealtime() - connectingSinceMs);
+            if (uiState == UiState.CONNECTED && anchor > 0) total += Math.max(0L, (SystemClock.elapsedRealtime() - anchor));
             totalUsageView.setText("Uso total " + fmtHms(total));
         }
     }
@@ -940,7 +948,10 @@ public class SimpleModeActivity extends ComponentActivity {
                     connectBtn.animate().alpha(1f).setDuration(300).start();
                 }
             } else if (newState == UiState.CONNECTED) {
-                connectingSinceMs = SystemClock.elapsedRealtime();
+                if (prev != UiState.CONNECTED || connectingSinceMs <= 0) {
+                    connectingSinceMs = SystemClock.elapsedRealtime();
+                    setStoredSessionStartMs(connectingSinceMs);
+                }
                 connectBtn.setEnabled(true); connectBtn.setActivated(true);
                 connectBtn.setText(R.string.disconnect);
                 connectBtn.setTextColor(c(R.color.color_connected));
@@ -949,7 +960,10 @@ public class SimpleModeActivity extends ComponentActivity {
                     connectBtn.animate().scaleX(1f).scaleY(1f).setDuration(250).start();
                 }
             } else {
-                if (prev == UiState.CONNECTED) addTotalUsageMs(SystemClock.elapsedRealtime() - connectingSinceMs);
+                if (prev == UiState.CONNECTED && connectingSinceMs > 0)
+                    addTotalUsageMs(SystemClock.elapsedRealtime() - connectingSinceMs);
+                connectingSinceMs = 0L;
+                setStoredSessionStartMs(-1L);
                 connectBtn.setEnabled(true); connectBtn.setActivated(false);
                 connectBtn.setText(BtProxy.isGamingMode(this) ? getString(R.string.connect_gaming) : getString(R.string.connect));
                 connectBtn.setTextColor(c(R.color.color_text_primary));
