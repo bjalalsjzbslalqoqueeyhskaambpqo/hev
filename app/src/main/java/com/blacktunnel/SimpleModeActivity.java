@@ -915,14 +915,19 @@ public class SimpleModeActivity extends ComponentActivity {
         }
 
         if (imgShieldIcon != null) {
+            int iconRes = (newState == UiState.CONNECTED)
+                ? R.drawable.ic_world_hidden
+                : R.drawable.ic_world_track;
             if (stateChanged && canAnimate()) {
                 imgShieldIcon.animate().cancel();
                 imgShieldIcon.animate().scaleX(0.8f).scaleY(0.8f).setDuration(150).withEndAction(() -> {
-                    imgShieldIcon.setImageTintList(ColorStateList.valueOf(accentColor));
+                    imgShieldIcon.setImageResource(iconRes);
+                    imgShieldIcon.setImageTintList(null);
                     imgShieldIcon.animate().scaleX(1f).scaleY(1f).setDuration(200).start();
                 }).start();
             } else {
-                imgShieldIcon.setImageTintList(ColorStateList.valueOf(accentColor));
+                imgShieldIcon.setImageResource(iconRes);
+                imgShieldIcon.setImageTintList(null);
             }
         }
 
