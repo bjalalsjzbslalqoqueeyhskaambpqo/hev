@@ -1,16 +1,41 @@
 <?xml version="1.0" encoding="utf-8"?>
-
 <FrameLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/color_bg">
-
     <View
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:background="@drawable/bg_atmosphere" />
-
+    <View
+        android:id="@+id/decorCornerTL"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="top|start"
+        android:layout_margin="12dp"
+        android:background="@drawable/hud_corner_tl" />
+    <View
+        android:id="@+id/decorCornerTR"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="top|end"
+        android:layout_margin="12dp"
+        android:background="@drawable/hud_corner_tr" />
+    <View
+        android:id="@+id/decorCornerBL"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="bottom|start"
+        android:layout_margin="12dp"
+        android:background="@drawable/hud_corner_bl" />
+    <View
+        android:id="@+id/decorCornerBR"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="bottom|end"
+        android:layout_margin="12dp"
+        android:background="@drawable/hud_corner_br" />
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="match_parent"
@@ -18,489 +43,475 @@
         android:overScrollMode="ifContentScrolls"
         android:scrollbarStyle="outsideOverlay"
         android:scrollbars="none">
-
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:paddingHorizontal="16dp"
-            android:paddingTop="12dp"
-            android:paddingBottom="24dp">
-
+            android:paddingHorizontal="20dp"
+            android:paddingTop="16dp"
+            android:paddingBottom="28dp"
+            android:gravity="center_horizontal">
             <LinearLayout
-                android:id="@+id/panelConnection"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:background="@drawable/bg_connection_panel"
                 android:orientation="vertical"
-                android:paddingHorizontal="20dp"
-                android:paddingTop="20dp"
-                android:paddingBottom="20dp">
-
+                android:gravity="center_horizontal"
+                android:layout_marginTop="16dp">
                 <LinearLayout
-                    android:layout_width="match_parent"
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
-
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
                     <ImageView
                         android:id="@+id/imgLogo"
-                        android:layout_width="32dp"
-                        android:layout_height="32dp"
-                        android:contentDescription="@string/app_brand"
+                        android:layout_width="36dp"
+                        android:layout_height="36dp"
                         android:src="@drawable/strike_logo"
                         android:importantForAccessibility="no" />
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:layout_marginStart="10dp"
-                        android:text="@string/app_brand"
-                        android:textColor="@color/color_text_primary"
-                        android:letterSpacing="0.08"
-                        android:textSize="19sp"
-                        android:textStyle="bold"
-                        android:ellipsize="end"
-                        android:maxLines="1" />
-
-                    <TextView
+                    <LinearLayout
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:background="@drawable/strike_chip_left"
-                        android:paddingHorizontal="8dp"
-                        android:paddingVertical="3dp"
-                        android:text="VPN"
-                        android:textColor="@color/color_text_secondary"
-                        android:letterSpacing="0.10"
-                        android:textSize="9sp"
-                        android:textStyle="bold" />
+                        android:orientation="vertical"
+                        android:layout_marginStart="10dp">
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/app_brand"
+                            android:textColor="@color/color_text_primary"
+                            android:letterSpacing="0.20"
+                            android:textSize="22sp"
+                            android:textStyle="bold" />
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="LOW LATENCY VPN"
+                            android:textColor="@color/color_text_disabled"
+                            android:letterSpacing="0.18"
+                            android:textSize="9sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
                 </LinearLayout>
-
-                <View
-                    android:layout_width="match_parent"
-                    android:layout_height="1dp"
-                    android:layout_marginTop="16dp"
-                    android:layout_marginBottom="16dp"
-                    android:background="#12FFFFFF" />
-
                 <LinearLayout
-                    android:layout_width="match_parent"
+                    android:id="@+id/panelConnection"
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:background="@drawable/hud_status_badge"
+                    android:orientation="horizontal"
                     android:gravity="center_vertical"
-                    android:orientation="horizontal">
-
+                    android:paddingHorizontal="18dp"
+                    android:paddingVertical="8dp">
                     <FrameLayout
-                        android:layout_width="32dp"
-                        android:layout_height="32dp"
-                        android:layout_gravity="center_vertical">
-
+                        android:layout_width="14dp"
+                        android:layout_height="14dp">
                         <View
                             android:id="@+id/viewStatusHalo"
-                            android:layout_width="32dp"
-                            android:layout_height="32dp"
-                            android:alpha="0.15"
+                            android:layout_width="14dp"
+                            android:layout_height="14dp"
+                            android:alpha="0.20"
                             android:background="@drawable/shape_status_dot" />
-
                         <View
                             android:id="@+id/viewStatusHaloMid"
-                            android:layout_width="22dp"
-                            android:layout_height="22dp"
+                            android:layout_width="10dp"
+                            android:layout_height="10dp"
                             android:layout_gravity="center"
-                            android:alpha="0.25"
+                            android:alpha="0.35"
                             android:background="@drawable/shape_status_dot" />
-
                         <View
                             android:id="@+id/viewStatusDot"
-                            android:layout_width="12dp"
-                            android:layout_height="12dp"
+                            android:layout_width="6dp"
+                            android:layout_height="6dp"
                             android:layout_gravity="center"
                             android:background="@drawable/shape_status_dot" />
                     </FrameLayout>
-
-                    <LinearLayout
-                        android:layout_width="0dp"
+                    <TextView
+                        android:id="@+id/txtStatusBadge"
+                        android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:layout_marginStart="12dp"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:id="@+id/txtStatusBadge"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:letterSpacing="0.14"
-                            android:text="DESCONECTADO"
-                            android:textColor="@color/color_disconnected"
-                            android:textSize="13sp"
-                            android:textStyle="bold"
-                            android:ellipsize="end"
-                            android:maxLines="1" />
-
-                        <TextView
-                            android:id="@+id/txtStatusDetails"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="3dp"
-                            android:textColor="@color/color_text_secondary"
-                            android:textSize="12sp"
-                            android:lineSpacingMultiplier="1.25"
-                            android:maxLines="3"
-                            android:ellipsize="end"
-                            android:visibility="gone" />
-                    </LinearLayout>
+                        android:layout_marginStart="8dp"
+                        android:letterSpacing="0.16"
+                        android:text="DESCONECTADO"
+                        android:textColor="@color/color_disconnected"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
                 </LinearLayout>
             </LinearLayout>
-
+            <FrameLayout
+                android:layout_width="260dp"
+                android:layout_height="260dp"
+                android:layout_marginTop="20dp"
+                android:layout_gravity="center_horizontal">
+                <View
+                    android:id="@+id/hudRingOuter"
+                    android:layout_width="260dp"
+                    android:layout_height="260dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/hud_ring_outer"
+                    android:alpha="0.3" />
+                <View
+                    android:id="@+id/hudGlowOuter"
+                    android:layout_width="240dp"
+                    android:layout_height="240dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/hud_glow_ring"
+                    android:alpha="0.5" />
+                <View
+                    android:id="@+id/hudRingMid"
+                    android:layout_width="210dp"
+                    android:layout_height="210dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/hud_ring_mid" />
+                <View
+                    android:id="@+id/hudRingInner"
+                    android:layout_width="180dp"
+                    android:layout_height="180dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/hud_ring_inner" />
+                <View
+                    android:id="@+id/hudCrossH"
+                    android:layout_width="260dp"
+                    android:layout_height="1dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/hud_cross_line"
+                    android:alpha="0.4" />
+                <View
+                    android:id="@+id/hudCrossV"
+                    android:layout_width="1dp"
+                    android:layout_height="260dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/hud_cross_line"
+                    android:alpha="0.4" />
+                <View
+                    android:layout_width="160dp"
+                    android:layout_height="160dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/hud_circle_bg" />
+                <ImageView
+                    android:id="@+id/imgShieldIcon"
+                    android:layout_width="72dp"
+                    android:layout_height="72dp"
+                    android:layout_gravity="center"
+                    android:src="@drawable/ic_shield_check"
+                    android:importantForAccessibility="no" />
             <LinearLayout
                 android:id="@+id/layoutDataStrip"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:background="@drawable/bg_connection_panel"
+                android:layout_marginTop="16dp"
+                android:background="@drawable/hud_panel_metrics"
                 android:orientation="horizontal"
-                android:paddingHorizontal="20dp"
-                android:paddingVertical="18dp">
-
+                android:paddingHorizontal="8dp"
+                android:paddingVertical="14dp">
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1.2"
+                    android:layout_weight="1"
                     android:orientation="vertical"
-                    android:gravity="start">
-
-                    <TextView
+                    android:gravity="center_horizontal">
+                    <com.blacktunnel.PingPulseView
+                        android:id="@+id/pingPulseView"
+                        android:layout_width="32dp"
+                        android:layout_height="22dp" />
+                    <LinearLayout
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:letterSpacing="0.14"
-                        android:text="PING"
-                        android:textColor="@color/color_text_disabled"
-                        android:textSize="9sp"
-                        android:textStyle="bold" />
-
-                    <FrameLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="48dp"
-                        android:layout_marginTop="5dp">
-
-                        <com.blacktunnel.PingPulseView
-                            android:id="@+id/pingPulseView"
-                            android:layout_width="match_parent"
-                            android:layout_height="match_parent" />
-
-                        <LinearLayout
+                        android:orientation="horizontal"
+                        android:gravity="bottom"
+                        android:layout_marginTop="4dp">
+                        <TextView
+                            android:id="@+id/txtPingValue"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:layout_gravity="bottom|start"
-                            android:gravity="bottom"
-                            android:orientation="horizontal">
-
-                            <TextView
-                                android:id="@+id/txtPingValue"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:fontFamily="monospace"
-                                android:text="--"
-                                android:textColor="@color/color_text_disabled"
-                                android:textSize="18sp"
-                                android:textStyle="bold"
-                                android:includeFontPadding="false"
-                                android:maxLines="1" />
-
-                            <TextView
-                                android:id="@+id/txtPingUnit"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_marginStart="2dp"
-                                android:paddingBottom="2dp"
-                                android:text="ms"
-                                android:textColor="@color/color_text_disabled"
-                                android:textSize="9sp"
-                                android:includeFontPadding="false" />
-                        </LinearLayout>
-                    </FrameLayout>
+                            android:fontFamily="monospace"
+                            android:text="--"
+                            android:textColor="@color/color_text_disabled"
+                            android:textSize="16sp"
+                            android:textStyle="bold"
+                            android:includeFontPadding="false" />
+                        <TextView
+                            android:id="@+id/txtPingUnit"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="2dp"
+                            android:paddingBottom="2dp"
+                            android:text="ms"
+                            android:textColor="@color/color_text_disabled"
+                            android:textSize="8sp"
+                            android:includeFontPadding="false" />
+                    </LinearLayout>
                 </LinearLayout>
-
                 <View
                     android:layout_width="1dp"
                     android:layout_height="match_parent"
-                    android:layout_marginHorizontal="12dp"
-                    android:background="#14FFFFFF" />
-
+                    android:background="#18FFFFFF" />
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1.4"
+                    android:layout_weight="1"
                     android:orientation="vertical"
-                    android:gravity="start">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:letterSpacing="0.14"
-                        android:text="USUARIO"
-                        android:textColor="@color/color_text_disabled"
-                        android:textSize="9sp"
-                        android:textStyle="bold" />
-
+                    android:gravity="center_horizontal">
+                    <ImageView
+                        android:layout_width="22dp"
+                        android:layout_height="22dp"
+                        android:src="@drawable/ic_clock"
+                        android:importantForAccessibility="no"
+                        android:alpha="0.7" />
                     <TextView
                         android:id="@+id/txtUser"
-                        android:layout_width="match_parent"
+                        android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="5dp"
+                        android:layout_marginTop="4dp"
                         android:text="--"
                         android:textColor="@color/color_text_primary"
-                        android:textSize="15sp"
+                        android:textSize="14sp"
                         android:textStyle="bold"
                         android:maxLines="1"
                         android:ellipsize="end"
                         android:includeFontPadding="false" />
                 </LinearLayout>
-
                 <View
                     android:layout_width="1dp"
                     android:layout_height="match_parent"
-                    android:layout_marginHorizontal="12dp"
-                    android:background="#14FFFFFF" />
-
+                    android:background="#18FFFFFF" />
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_weight="0.85"
+                    android:layout_weight="1"
                     android:orientation="vertical"
-                    android:gravity="start">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:letterSpacing="0.14"
-                        android:text="DÍAS"
-                        android:textColor="@color/color_text_disabled"
-                        android:textSize="9sp"
-                        android:textStyle="bold" />
-
+                    android:gravity="center_horizontal">
+                    <ImageView
+                        android:layout_width="22dp"
+                        android:layout_height="22dp"
+                        android:src="@drawable/ic_calendar"
+                        android:importantForAccessibility="no"
+                        android:alpha="0.7" />
                     <TextView
                         android:id="@+id/txtDays"
-                        android:layout_width="match_parent"
+                        android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="5dp"
+                        android:layout_marginTop="4dp"
                         android:text="--"
                         android:textColor="@color/color_connected"
-                        android:textSize="22sp"
+                        android:textSize="16sp"
                         android:textStyle="bold"
                         android:maxLines="1"
-                        android:ellipsize="end"
                         android:includeFontPadding="false" />
                 </LinearLayout>
             </LinearLayout>
-
-            <Button
-                android:id="@+id/btnConnect"
-                android:layout_width="match_parent"
-                android:layout_height="64dp"
-                android:layout_marginTop="12dp"
-                android:background="@drawable/btn_connect_selector"
-                android:letterSpacing="0.10"
-                android:stateListAnimator="@animator/btn_press"
-                android:text="@string/connect"
-                android:textAllCaps="true"
-                android:textColor="@color/color_bg"
-                android:textSize="15sp"
-                android:textStyle="bold"
-                android:elevation="6dp"
-                android:hapticFeedbackEnabled="true" />
-
             <LinearLayout
-                android:id="@+id/panelGamingMode"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:background="@drawable/bg_gaming_mode_panel"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/hud_panel_data"
                 android:orientation="vertical"
-                android:paddingHorizontal="20dp"
-                android:paddingTop="18dp"
-                android:paddingBottom="18dp">
-
+                android:paddingHorizontal="18dp"
+                android:paddingTop="16dp"
+                android:paddingBottom="16dp">
+                <LinearLayout
+                    android:id="@+id/panelGamingMode"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="@string/gaming_mode_title"
+                                android:textColor="@color/color_text_primary"
+                                android:textSize="13sp"
+                                android:textStyle="bold"
+                                android:letterSpacing="0.06"
+                                android:maxLines="1"
+                                android:ellipsize="end" />
+                            <TextView
+                                android:id="@+id/txtGamingBadge"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:letterSpacing="0.10"
+                                android:text="@string/gaming_mode_off_compact"
+                                android:textColor="@color/color_text_disabled"
+                                android:textSize="10sp" />
+                        </LinearLayout>
+                        <Switch
+                            android:id="@+id/switchGamingMode"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="12dp"
+                            android:showText="false"
+                            android:thumbTint="@color/switch_thumb_gaming"
+                            android:trackTint="@color/switch_track_gaming" />
+                    </LinearLayout>
+                    <TextView
+                        android:id="@+id/txtGamingDescription"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="@string/gaming_mode_desc"
+                        android:textColor="@color/color_text_secondary"
+                        android:textSize="11sp"
+                        android:lineSpacingMultiplier="1.2"
+                        android:maxLines="2"
+                        android:visibility="gone" />
+                    <LinearLayout
+                        android:id="@+id/layoutGamingControls"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:orientation="vertical"
+                        android:visibility="gone">
+                        <Button
+                            android:id="@+id/btnSelectGamingApps"
+                            android:layout_width="match_parent"
+                            android:layout_height="44dp"
+                            android:background="@drawable/strike_btn_secondary"
+                            android:stateListAnimator="@animator/btn_press"
+                            android:text="@string/gaming_select_apps"
+                            android:textAllCaps="false"
+                            android:textColor="@color/color_gaming"
+                            android:textSize="13sp"
+                            android:textStyle="bold"
+                            android:hapticFeedbackEnabled="true" />
+                        <TextView
+                            android:id="@+id/txtGamingSelectedCount"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:textColor="@color/color_text_secondary"
+                            android:textSize="11sp"
+                            android:maxLines="2"
+                            android:ellipsize="end" />
+                    </LinearLayout>
+                </LinearLayout>
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:layout_marginVertical="12dp"
+                    android:background="#12FFFFFF" />
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:gravity="center_vertical"
                     android:orientation="horizontal">
-
                     <LinearLayout
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
                         android:orientation="vertical">
-
-                        <TextView
+                        <LinearLayout
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="@string/gaming_mode_title"
-                            android:textColor="@color/color_text_primary"
-                            android:textSize="15sp"
-                            android:textStyle="bold"
-                            android:maxLines="1"
-                            android:ellipsize="end" />
-
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical">
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Compartir conexión"
+                                android:textColor="@color/color_text_primary"
+                                android:textSize="13sp"
+                                android:textStyle="bold"
+                                android:letterSpacing="0.06" />
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginStart="8dp"
+                                android:background="@drawable/strike_chip_left"
+                                android:paddingHorizontal="6dp"
+                                android:paddingVertical="2dp"
+                                android:text="BETA"
+                                android:textColor="@color/color_text_secondary"
+                                android:letterSpacing="0.10"
+                                android:textSize="8sp"
+                                android:textStyle="bold" />
+                        </LinearLayout>
                         <TextView
-                            android:id="@+id/txtGamingDescription"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="3dp"
-                            android:text="@string/gaming_mode_desc"
-                            android:textColor="@color/color_text_secondary"
-                            android:textSize="12sp"
-                            android:lineSpacingMultiplier="1.25"
-                            android:maxLines="2"
-                            android:ellipsize="end"
-                            android:visibility="gone" />
+                            android:layout_marginTop="2dp"
+                            android:text="Comparte esta VPN con otros dispositivos"
+                            android:textColor="@color/color_text_disabled"
+                            android:textSize="10sp"
+                            android:maxLines="1" />
                     </LinearLayout>
-
-                    <Switch
-                        android:id="@+id/switchGamingMode"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="14dp"
-                        android:showText="false"
-                        android:thumbTint="@color/switch_thumb_gaming"
-                        android:trackTint="@color/switch_track_gaming" />
-                </LinearLayout>
-
-                <TextView
-                    android:id="@+id/txtGamingBadge"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    android:letterSpacing="0.12"
-                    android:text="@string/gaming_mode_off_compact"
-                    android:textColor="@color/color_text_disabled"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
-
-                <LinearLayout
-                    android:id="@+id/layoutGamingControls"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:orientation="vertical"
-                    android:visibility="gone">
-
-                    <Button
-                        android:id="@+id/btnSelectGamingApps"
-                        android:layout_width="match_parent"
-                        android:layout_height="48dp"
-                        android:background="@drawable/strike_btn_secondary"
-                        android:stateListAnimator="@animator/btn_press"
-                        android:text="@string/gaming_select_apps"
-                        android:textAllCaps="false"
-                        android:textColor="@color/color_gaming"
-                        android:textSize="14sp"
-                        android:textStyle="bold"
-                        android:hapticFeedbackEnabled="true" />
-
-                    <TextView
-                        android:id="@+id/txtGamingSelectedCount"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="10dp"
-                        android:textColor="@color/color_text_secondary"
-                        android:textSize="12sp"
-                        android:lineSpacingMultiplier="1.2"
-                        android:maxLines="2"
-                        android:ellipsize="end" />
-                </LinearLayout>
-            </LinearLayout>
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:background="@drawable/bg_gaming_mode_panel"
-                android:orientation="vertical"
-                android:paddingHorizontal="20dp"
-                android:paddingTop="18dp"
-                android:paddingBottom="18dp">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="horizontal"
-                        android:gravity="center_vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="Compartir conexión"
-                            android:textColor="@color/color_text_primary"
-                            android:textSize="15sp"
-                            android:textStyle="bold"
-                            android:maxLines="1"
-                            android:ellipsize="end" />
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginStart="8dp"
-                            android:background="@drawable/strike_chip_left"
-                            android:paddingHorizontal="7dp"
-                            android:paddingVertical="2dp"
-                            android:text="BETA"
-                            android:textColor="@color/color_text_secondary"
-                            android:letterSpacing="0.10"
-                            android:textSize="9sp"
-                            android:textStyle="bold" />
-                    </LinearLayout>
-
                     <Switch
                         android:id="@+id/switchHotspot"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_marginStart="14dp"
+                        android:layout_marginStart="12dp"
                         android:showText="false"
                         android:thumbTint="@color/switch_thumb_gaming"
                         android:trackTint="@color/switch_track_gaming" />
                 </LinearLayout>
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:text="Permite que otros dispositivos usen esta conexión VPN"
-                    android:textColor="@color/color_text_secondary"
-                    android:textSize="12sp"
-                    android:lineSpacingMultiplier="1.2"
-                    android:maxLines="2" />
-
                 <TextView
                     android:id="@+id/txtHotspotInfo"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
+                    android:layout_marginTop="8dp"
                     android:fontFamily="monospace"
                     android:textColor="@color/color_text_secondary"
-                    android:textSize="12sp"
+                    android:textSize="11sp"
                     android:lineSpacingMultiplier="1.3"
                     android:visibility="gone" />
             </LinearLayout>
-
+            <FrameLayout
+                android:layout_width="160dp"
+                android:layout_height="160dp"
+                android:layout_marginTop="20dp"
+                android:layout_gravity="center_horizontal">
+                <View
+                    android:id="@+id/btnRingOuter"
+                    android:layout_width="160dp"
+                    android:layout_height="160dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/hud_btn_ring_outer"
+                    android:alpha="0.5" />
+                <View
+                    android:id="@+id/btnRingMid"
+                    android:layout_width="136dp"
+                    android:layout_height="136dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/hud_btn_ring_mid" />
+                <View
+                    android:id="@+id/btnTopDot"
+                    android:layout_width="6dp"
+                    android:layout_height="6dp"
+                    android:layout_gravity="top|center_horizontal"
+                    android:layout_marginTop="4dp"
+                    android:background="@drawable/shape_status_dot" />
+                <Button
+                    android:id="@+id/btnConnect"
+                    android:layout_width="110dp"
+                    android:layout_height="110dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/hud_btn_connect"
+                    android:stateListAnimator="@animator/btn_press"
+                    android:letterSpacing="0.08"
+                    android:text="@string/connect"
+                    android:textAllCaps="true"
+                    android:textColor="@color/color_text_primary"
+                    android:textSize="13sp"
+                    android:textStyle="bold"
+                    android:elevation="8dp"
+                    android:hapticFeedbackEnabled="true" />
+            </FrameLayout>
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:background="@drawable/strike_panel_surface"
+                android:layout_marginTop="16dp"
+                android:background="@drawable/hud_panel_id"
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
                 android:paddingHorizontal="4dp"
                 android:paddingVertical="4dp">
-
                 <TextView
                     android:id="@+id/txtDeviceId"
                     android:layout_width="0dp"
@@ -511,14 +522,13 @@
                     android:gravity="center_vertical"
                     android:maxLines="2"
                     android:paddingHorizontal="12dp"
-                    android:paddingVertical="12dp"
+                    android:paddingVertical="10dp"
                     android:text="@string/device_id_default"
                     android:textColor="@color/color_text_primary"
                     android:textIsSelectable="true"
                     android:fontFamily="monospace"
-                    android:textSize="11sp"
+                    android:textSize="10sp"
                     android:lineSpacingMultiplier="1.2" />
-
                 <Button
                     android:id="@+id/btnCopyLogs"
                     android:layout_width="0dp"
@@ -530,11 +540,10 @@
                     android:text="@string/copy"
                     android:textAllCaps="false"
                     android:textColor="@color/color_bg"
-                    android:textSize="13sp"
+                    android:textSize="12sp"
                     android:textStyle="bold"
                     android:hapticFeedbackEnabled="true" />
             </LinearLayout>
-
         </LinearLayout>
     </ScrollView>
 </FrameLayout>
