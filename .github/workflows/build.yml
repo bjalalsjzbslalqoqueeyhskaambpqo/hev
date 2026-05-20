@@ -4,7 +4,7 @@ on:
   pull_request:
   push:
     branches:
-      - codex/remove-comments-from-c-and-java-code
+      - codex/remove-comments-and-unwanted-text
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
