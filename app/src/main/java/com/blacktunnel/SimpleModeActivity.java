@@ -312,8 +312,13 @@ public class SimpleModeActivity extends ComponentActivity {
     protected void onDestroy() {
         handler.removeCallbacks(stateTicker);
         handler.removeCallbacks(autoDisconnectRunnable);
+        if (connectBtn != null) connectBtn.animate().cancel();
+        if (imgShieldIcon != null) imgShieldIcon.animate().cancel();
+        if (statusDetailsView != null) statusDetailsView.animate().cancel();
+        if (statusBadgeView != null) statusBadgeView.animate().cancel();
         stopStatusPulse();
         stopStatusHaloWave();
+        stopHudRingRotation();
         if (connectivityManager != null && networkCallback != null) {
             try { connectivityManager.unregisterNetworkCallback(networkCallback); } catch (Throwable ignored) {}
         }
@@ -361,7 +366,11 @@ public class SimpleModeActivity extends ComponentActivity {
             hudRingOuter.animate().cancel();
             hudRingOuter.animate().rotationBy(360f).setDuration(12000)
                 .setInterpolator(new android.view.animation.LinearInterpolator())
-                .withEndAction(this::startHudRingRotation).start();
+                .withEndAction(() -> {
+                    if (uiState == UiState.CONNECTING && hudRingOuter != null && hudRingOuter.isAttachedToWindow()) {
+                        startHudRingRotation();
+                    }
+                }).start();
         }
     }
 
@@ -1211,14 +1220,6 @@ class PingPulseView extends View {
         if (w == 0 || h == 0) return;
 
         drawGrid(canvas, w, h);
-
-        float[] points = pingHistory.stream()
-            .map(Float::floatValue).collect(java.util.stream.Collectors.toList())
-            .stream().mapToDouble(Float::doubleValue).collect(
-                () -> new float[MAX_POINTS],
-                (arr, val) -> {},
-                (a, b) -> {}
-            );
 
         Float[] arr = pingHistory.toArray(new Float[0]);
         float maxVal = 1f;
