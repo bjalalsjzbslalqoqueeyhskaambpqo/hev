@@ -118,57 +118,11 @@
                     android:lineSpacingMultiplier="1.2"
                     android:visibility="gone" />
             </LinearLayout>
-            <FrameLayout
-                android:layout_width="230dp"
-                android:layout_height="230dp"
-                android:layout_marginTop="20dp"
-                android:layout_gravity="center_horizontal">
-                <View
-                    android:id="@+id/hudRingOuter"
-                    android:layout_width="230dp"
-                    android:layout_height="230dp"
-                    android:layout_gravity="center"
-                    android:background="@drawable/hud_ring_outer"
-                    android:alpha="0.3" />
-                <View
-                    android:id="@+id/hudGlowOuter"
-                    android:layout_width="212dp"
-                    android:layout_height="212dp"
-                    android:layout_gravity="center"
-                    android:background="@drawable/hud_glow_ring"
-                    android:alpha="0.5" />
-                <View
-                    android:id="@+id/hudRingMid"
-                    android:layout_width="186dp"
-                    android:layout_height="186dp"
-                    android:layout_gravity="center"
-                    android:background="@drawable/hud_ring_mid" />
-                <View
-                    android:id="@+id/hudRingInner"
-                    android:layout_width="160dp"
-                    android:layout_height="160dp"
-                    android:layout_gravity="center"
-                    android:background="@drawable/hud_ring_inner" />
-                <View
-                    android:id="@+id/hudCrossH"
-                    android:layout_width="230dp"
-                    android:layout_height="1dp"
-                    android:layout_gravity="center"
-                    android:background="@drawable/hud_cross_line"
-                    android:alpha="0.4" />
-                <View
-                    android:id="@+id/hudCrossV"
-                    android:layout_width="1dp"
-                    android:layout_height="230dp"
-                    android:layout_gravity="center"
-                    android:background="@drawable/hud_cross_line"
-                    android:alpha="0.4" />
-            </FrameLayout>
             <LinearLayout
                 android:id="@+id/layoutDataStrip"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
+                android:layout_marginTop="12dp"
                 android:background="@drawable/hud_panel_metrics"
                 android:orientation="horizontal"
                 android:paddingHorizontal="8dp"
@@ -238,6 +192,16 @@
                         android:textStyle="bold"
                         android:maxLines="1"
                         android:ellipsize="end"
+                        android:includeFontPadding="false" />
+                    <TextView
+                        android:id="@+id/txtTotalUsage"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Uso total --:--:--"
+                        android:textColor="@color/color_text_secondary"
+                        android:textSize="10sp"
+                        android:maxLines="1"
                         android:includeFontPadding="false" />
                 </LinearLayout>
                 <View
