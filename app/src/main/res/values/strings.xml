@@ -21,4 +21,12 @@
     <string name="gaming_search_hint">Buscar app o juego…</string>
     <string name="gaming_picker_title">Aplicaciones seleccionadas (máx. 3)</string>
     <string name="gaming_loading_apps">Cargando aplicaciones instaladas…</string>
+    <string name="status_connecting">CONECTANDO…</string>
+    <string name="status_connected">CONECTADO</string>
+    <string name="status_disconnected">DESCONECTADO</string>
+    <string name="status_detail_connecting_search">• Buscando servidor disponible…</string>
+    <string name="status_detail_connecting_reconnect">• Reconectando al servidor…</string>
+    <string name="status_detail_connecting_retry">• Reintentando conexión…</string>
+    <string name="status_detail_connecting_default">• Estableciendo conexión segura…</string>
+    <string name="status_detail_connected">✓ Conexión establecida</string>
 </resources>

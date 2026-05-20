@@ -147,39 +147,39 @@
                     android:visibility="gone" />
             </LinearLayout>
             <FrameLayout
-                android:layout_width="260dp"
-                android:layout_height="260dp"
+                android:layout_width="230dp"
+                android:layout_height="230dp"
                 android:layout_marginTop="20dp"
                 android:layout_gravity="center_horizontal">
                 <View
                     android:id="@+id/hudRingOuter"
-                    android:layout_width="260dp"
-                    android:layout_height="260dp"
+                    android:layout_width="230dp"
+                    android:layout_height="230dp"
                     android:layout_gravity="center"
                     android:background="@drawable/hud_ring_outer"
                     android:alpha="0.3" />
                 <View
                     android:id="@+id/hudGlowOuter"
-                    android:layout_width="240dp"
-                    android:layout_height="240dp"
+                    android:layout_width="212dp"
+                    android:layout_height="212dp"
                     android:layout_gravity="center"
                     android:background="@drawable/hud_glow_ring"
                     android:alpha="0.5" />
                 <View
                     android:id="@+id/hudRingMid"
-                    android:layout_width="210dp"
-                    android:layout_height="210dp"
+                    android:layout_width="186dp"
+                    android:layout_height="186dp"
                     android:layout_gravity="center"
                     android:background="@drawable/hud_ring_mid" />
                 <View
                     android:id="@+id/hudRingInner"
-                    android:layout_width="180dp"
-                    android:layout_height="180dp"
+                    android:layout_width="160dp"
+                    android:layout_height="160dp"
                     android:layout_gravity="center"
                     android:background="@drawable/hud_ring_inner" />
                 <View
                     android:id="@+id/hudCrossH"
-                    android:layout_width="260dp"
+                    android:layout_width="230dp"
                     android:layout_height="1dp"
                     android:layout_gravity="center"
                     android:background="@drawable/hud_cross_line"
@@ -187,19 +187,19 @@
                 <View
                     android:id="@+id/hudCrossV"
                     android:layout_width="1dp"
-                    android:layout_height="260dp"
+                    android:layout_height="230dp"
                     android:layout_gravity="center"
                     android:background="@drawable/hud_cross_line"
                     android:alpha="0.4" />
                 <View
-                    android:layout_width="160dp"
-                    android:layout_height="160dp"
+                    android:layout_width="142dp"
+                    android:layout_height="142dp"
                     android:layout_gravity="center"
                     android:background="@drawable/hud_circle_bg" />
                 <ImageView
                     android:id="@+id/imgShieldIcon"
-                    android:layout_width="72dp"
-                    android:layout_height="72dp"
+                    android:layout_width="64dp"
+                    android:layout_height="64dp"
                     android:layout_gravity="center"
                     android:src="@drawable/ic_shield_check"
                     android:importantForAccessibility="no" />

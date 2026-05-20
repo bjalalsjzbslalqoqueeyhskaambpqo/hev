@@ -714,10 +714,10 @@ public class SimpleModeActivity extends ComponentActivity {
     private void refreshConnectingDetail() {
         if (statusDetailsView == null) return;
         String detail;
-        if      ("retrying".equals(lastKnownConnState)) detail = "• Buscando servidor disponible...";
-        else if ("dropped".equals(lastKnownConnState))  detail = "• Reconectando al servidor...";
-        else if ("failed".equals(lastKnownConnState))   detail = "• Reintentando conexión...";
-        else                                             detail = "• Estableciendo conexión...";
+        if      ("retrying".equals(lastKnownConnState)) detail = getString(R.string.status_detail_connecting_search);
+        else if ("dropped".equals(lastKnownConnState))  detail = getString(R.string.status_detail_connecting_reconnect);
+        else if ("failed".equals(lastKnownConnState))   detail = getString(R.string.status_detail_connecting_retry);
+        else                                             detail = getString(R.string.status_detail_connecting_default);
         if (!detail.equals(lastDetailText)) {
             lastDetailText = detail;
             statusDetailsView.setVisibility(View.VISIBLE);
@@ -902,7 +902,7 @@ public class SimpleModeActivity extends ComponentActivity {
         if (connectBtn != null) {
             if (newState == UiState.CONNECTING) {
                 connectBtn.setEnabled(false); connectBtn.setActivated(false);
-                connectBtn.setText("CONECTANDO...");
+                connectBtn.setText(R.string.status_connecting);
                 connectBtn.setTextColor(c(R.color.color_connecting));
                 if (stateChanged && canAnimate()) {
                     connectBtn.setAlpha(0.7f);
@@ -943,17 +943,17 @@ public class SimpleModeActivity extends ComponentActivity {
             String badgeText;
             int    badgeColor;
             if (newState == UiState.CONNECTING) {
-                badgeText = "CONECTANDO..."; badgeColor = c(R.color.color_connecting);
+                badgeText = getString(R.string.status_connecting); badgeColor = c(R.color.color_connecting);
                 startStatusPulse(); startStatusHaloWave();
                 startHudRingRotation();
             } else if (newState == UiState.CONNECTED) {
-                badgeText  = "CONECTADO";
+                badgeText  = getString(R.string.status_connected);
                 badgeColor = BtProxy.isGamingMode(this) ? c(R.color.color_gaming) : c(R.color.color_connected);
                 stopStatusPulse(); stopStatusHaloWave();
                 stopHudRingRotation();
                 if (statusHaloView != null) statusHaloView.setAlpha(0.15f);
             } else {
-                badgeText  = "DESCONECTADO"; badgeColor = c(R.color.color_disconnected);
+                badgeText  = getString(R.string.status_disconnected); badgeColor = c(R.color.color_disconnected);
                 stopStatusPulse(); stopStatusHaloWave();
                 stopHudRingRotation();
                 if (statusHaloView != null) statusHaloView.setAlpha(0.20f);
@@ -976,10 +976,10 @@ public class SimpleModeActivity extends ComponentActivity {
         if (statusDetailsView != null) {
             if (newState == UiState.CONNECTING) {
                 String detail;
-                if      ("retrying".equals(lastKnownConnState)) detail = "• Buscando servidor disponible...";
-                else if ("dropped".equals(lastKnownConnState))  detail = "• Reconectando al servidor...";
-                else if ("failed".equals(lastKnownConnState))   detail = "• Reintentando conexión...";
-                else                                             detail = "• Estableciendo conexión...";
+                if      ("retrying".equals(lastKnownConnState)) detail = getString(R.string.status_detail_connecting_search);
+                else if ("dropped".equals(lastKnownConnState))  detail = getString(R.string.status_detail_connecting_reconnect);
+                else if ("failed".equals(lastKnownConnState))   detail = getString(R.string.status_detail_connecting_retry);
+                else                                             detail = getString(R.string.status_detail_connecting_default);
                 lastDetailText = detail;
                 statusDetailsView.setVisibility(View.VISIBLE);
                 statusDetailsView.setTextColor(c(R.color.color_connecting));
@@ -989,7 +989,7 @@ public class SimpleModeActivity extends ComponentActivity {
                     statusDetailsView.animate().alpha(1f).setDuration(300).start();
                 } else statusDetailsView.setText(detail);
             } else if (newState == UiState.CONNECTED) {
-                String full = "✓ " + (autoDisconnectAtMs > 0 ? "Autodesconexión local activa" : "Conexión activa");
+                String full = getString(R.string.status_detail_connected);
                 lastDetailText = full;
                 statusDetailsView.setVisibility(View.VISIBLE);
                 statusDetailsView.setTextColor(c(R.color.color_connected));
