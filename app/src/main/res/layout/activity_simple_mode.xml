@@ -163,18 +163,6 @@
                     android:layout_gravity="center"
                     android:background="@drawable/hud_cross_line"
                     android:alpha="0.4" />
-                <View
-                    android:layout_width="142dp"
-                    android:layout_height="142dp"
-                    android:layout_gravity="center"
-                    android:background="@drawable/hud_circle_bg" />
-                <ImageView
-                    android:id="@+id/imgShieldIcon"
-                    android:layout_width="64dp"
-                    android:layout_height="64dp"
-                    android:layout_gravity="center"
-                    android:src="@drawable/ic_world_track"
-                    android:importantForAccessibility="no" />
             </FrameLayout>
             <LinearLayout
                 android:id="@+id/layoutDataStrip"
@@ -472,18 +460,20 @@
                     android:background="@drawable/shape_status_dot" />
                 <Button
                     android:id="@+id/btnConnect"
-                    android:layout_width="110dp"
-                    android:layout_height="110dp"
+                    android:layout_width="124dp"
+                    android:layout_height="124dp"
                     android:layout_gravity="center"
                     android:background="@drawable/hud_btn_connect"
                     android:stateListAnimator="@animator/btn_press"
-                    android:letterSpacing="0.04"
+                    android:letterSpacing="0.02"
                     android:text="@string/connect"
                     android:textAllCaps="true"
                     android:textColor="@color/color_text_primary"
-                    android:textSize="15sp"
+                    android:textSize="13sp"
                     android:textStyle="bold"
                     android:fontFamily="sans-serif-medium"
+                    android:maxLines="1"
+                    android:singleLine="true"
                     android:elevation="8dp"
                     android:hapticFeedbackEnabled="true" />
             </FrameLayout>
