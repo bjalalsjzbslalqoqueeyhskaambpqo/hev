@@ -8,34 +8,6 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:background="@drawable/bg_atmosphere" />
-    <View
-        android:id="@+id/decorCornerTL"
-        android:layout_width="48dp"
-        android:layout_height="48dp"
-        android:layout_gravity="top|start"
-        android:layout_margin="12dp"
-        android:background="@drawable/hud_corner_tl" />
-    <View
-        android:id="@+id/decorCornerTR"
-        android:layout_width="48dp"
-        android:layout_height="48dp"
-        android:layout_gravity="top|end"
-        android:layout_margin="12dp"
-        android:background="@drawable/hud_corner_tr" />
-    <View
-        android:id="@+id/decorCornerBL"
-        android:layout_width="48dp"
-        android:layout_height="48dp"
-        android:layout_gravity="bottom|start"
-        android:layout_margin="12dp"
-        android:background="@drawable/hud_corner_bl" />
-    <View
-        android:id="@+id/decorCornerBR"
-        android:layout_width="48dp"
-        android:layout_height="48dp"
-        android:layout_gravity="bottom|end"
-        android:layout_margin="12dp"
-        android:background="@drawable/hud_corner_br" />
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="match_parent"

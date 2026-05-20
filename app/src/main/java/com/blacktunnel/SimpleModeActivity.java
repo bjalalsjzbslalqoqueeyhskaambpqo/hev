@@ -101,10 +101,6 @@ public class SimpleModeActivity extends ComponentActivity {
     private View          btnRingOuter;
     private View          btnRingMid;
     private View          btnTopDot;
-    private View          decorCornerTL;
-    private View          decorCornerTR;
-    private View          decorCornerBL;
-    private View          decorCornerBR;
     private Animator      statusPulseAnimator;
     private Animator      statusHaloAnimator;
 
@@ -189,10 +185,6 @@ public class SimpleModeActivity extends ComponentActivity {
         btnRingOuter            = findViewById(R.id.btnRingOuter);
         btnRingMid              = findViewById(R.id.btnRingMid);
         btnTopDot               = findViewById(R.id.btnTopDot);
-        decorCornerTL           = findViewById(R.id.decorCornerTL);
-        decorCornerTR           = findViewById(R.id.decorCornerTR);
-        decorCornerBL           = findViewById(R.id.decorCornerBL);
-        decorCornerBR           = findViewById(R.id.decorCornerBR);
 
         internalId = BtProxy.getOrCreateInternalId(this);
         BtProxy.applyStoredGamingMode(this);
@@ -255,11 +247,6 @@ public class SimpleModeActivity extends ComponentActivity {
 
     private void applyHudTheme(int accentColor) {
         float dp = getResources().getDisplayMetrics().density;
-
-        if (decorCornerTL != null) decorCornerTL.setBackground(VisualDrawables.cornerTL(accentColor));
-        if (decorCornerTR != null) decorCornerTR.setBackground(VisualDrawables.cornerTR(accentColor));
-        if (decorCornerBL != null) decorCornerBL.setBackground(VisualDrawables.cornerBL(accentColor));
-        if (decorCornerBR != null) decorCornerBR.setBackground(VisualDrawables.cornerBR(accentColor));
 
         if (hudRingOuter  != null) hudRingOuter.setBackground(VisualDrawables.ringOuter(accentColor));
         if (hudRingMid    != null) hudRingMid.setBackground(VisualDrawables.ringMid(accentColor));
@@ -919,7 +906,7 @@ public class SimpleModeActivity extends ComponentActivity {
             } else {
                 connectBtn.setEnabled(true); connectBtn.setActivated(false);
                 connectBtn.setText(BtProxy.isGamingMode(this) ? getString(R.string.connect_gaming) : getString(R.string.connect));
-                connectBtn.setTextColor(c(R.color.color_disconnected));
+                connectBtn.setTextColor(c(R.color.color_text_primary));
                 if (stateChanged && prev == UiState.CONNECTED && canAnimate()) {
                     connectBtn.setAlpha(0.6f);
                     connectBtn.animate().alpha(1f).setDuration(400).start();
