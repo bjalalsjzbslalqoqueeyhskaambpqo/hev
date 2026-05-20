@@ -477,12 +477,13 @@
                     android:layout_gravity="center"
                     android:background="@drawable/hud_btn_connect"
                     android:stateListAnimator="@animator/btn_press"
-                    android:letterSpacing="0.08"
+                    android:letterSpacing="0.04"
                     android:text="@string/connect"
                     android:textAllCaps="true"
                     android:textColor="@color/color_text_primary"
-                    android:textSize="13sp"
+                    android:textSize="15sp"
                     android:textStyle="bold"
+                    android:fontFamily="sans-serif-medium"
                     android:elevation="8dp"
                     android:hapticFeedbackEnabled="true" />
             </FrameLayout>

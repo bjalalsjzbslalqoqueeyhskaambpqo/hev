@@ -206,7 +206,6 @@ public class SimpleModeActivity extends ComponentActivity {
             if (uiState == UiState.CONNECTED) stopVpn();
             else {
                 if (BtVpnService.isRunningState()) {
-                    // Evita reconexión manual mientras el servicio sigue cerrando sesión previa.
                     if (!pendingManualReconnect) {
                         pendingManualReconnect = true;
                         setUiState(UiState.CONNECTING);
