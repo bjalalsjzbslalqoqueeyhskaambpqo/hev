@@ -233,6 +233,20 @@
                         android:includeFontPadding="false" />
                 </LinearLayout>
             </LinearLayout>
+            <TextView
+                android:id="@+id/txtUserNameWide"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/strike_chip_left"
+                android:ellipsize="end"
+                android:maxLines="2"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="8dp"
+                android:text="Usuario: --"
+                android:textColor="@color/color_text_primary"
+                android:textSize="12sp"
+                android:textStyle="bold" />
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -327,75 +341,6 @@
                             android:ellipsize="end" />
                     </LinearLayout>
                 </LinearLayout>
-                <View
-                    android:layout_width="match_parent"
-                    android:layout_height="1dp"
-                    android:layout_marginVertical="12dp"
-                    android:background="#12FFFFFF" />
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-                        <LinearLayout
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:orientation="horizontal"
-                            android:gravity="center_vertical">
-                            <TextView
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="Compartir conexión"
-                                android:textColor="@color/color_text_primary"
-                                android:textSize="13sp"
-                                android:textStyle="bold"
-                                android:letterSpacing="0.06" />
-                            <TextView
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_marginStart="8dp"
-                                android:background="@drawable/strike_chip_left"
-                                android:paddingHorizontal="6dp"
-                                android:paddingVertical="2dp"
-                                android:text="BETA"
-                                android:textColor="@color/color_text_secondary"
-                                android:letterSpacing="0.10"
-                                android:textSize="8sp"
-                                android:textStyle="bold" />
-                        </LinearLayout>
-                        <TextView
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="2dp"
-                            android:text="Comparte esta VPN con otros dispositivos"
-                            android:textColor="@color/color_text_disabled"
-                            android:textSize="10sp"
-                            android:maxLines="1" />
-                    </LinearLayout>
-                    <Switch
-                        android:id="@+id/switchHotspot"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="12dp"
-                        android:showText="false"
-                        android:thumbTint="@color/switch_thumb_gaming"
-                        android:trackTint="@color/switch_track_gaming" />
-                </LinearLayout>
-                <TextView
-                    android:id="@+id/txtHotspotInfo"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:fontFamily="monospace"
-                    android:textColor="@color/color_text_secondary"
-                    android:textSize="11sp"
-                    android:lineSpacingMultiplier="1.3"
-                    android:visibility="gone" />
             </LinearLayout>
             <FrameLayout
                 android:layout_width="160dp"

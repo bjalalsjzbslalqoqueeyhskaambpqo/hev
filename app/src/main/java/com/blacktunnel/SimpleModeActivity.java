@@ -81,6 +81,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private TextView      statusDetailsView;
     private TextView      deviceIdView;
     private TextView      userValueView;
+    private TextView      userNameWideView;
     private TextView      totalUsageView;
     private TextView      daysValueView;
     private TextView      pingValueView;
@@ -93,8 +94,6 @@ public class SimpleModeActivity extends ComponentActivity {
     private LinearLayout  gamingModePanel;
     private LinearLayout  gamingControlsLayout;
     private View          panelConnectionView;
-    private Switch        hotspotSwitch;
-    private TextView      hotspotInfoView;
     private View          btnRingOuter;
     private View          btnRingMid;
     private View          btnTopDot;
@@ -184,8 +183,7 @@ public class SimpleModeActivity extends ComponentActivity {
         gamingModePanel         = findViewById(R.id.panelGamingMode);
         gamingControlsLayout    = findViewById(R.id.layoutGamingControls);
         panelConnectionView     = findViewById(R.id.panelConnection);
-        hotspotSwitch           = findViewById(R.id.switchHotspot);
-        hotspotInfoView         = findViewById(R.id.txtHotspotInfo);
+        userNameWideView        = findViewById(R.id.txtUserNameWide);
         btnRingOuter            = findViewById(R.id.btnRingOuter);
         btnRingMid              = findViewById(R.id.btnRingMid);
         btnTopDot               = findViewById(R.id.btnTopDot);
@@ -235,25 +233,6 @@ public class SimpleModeActivity extends ComponentActivity {
         }
         if (selectGamingAppsBtn != null)
             selectGamingAppsBtn.setOnClickListener(v -> openGamingAppsDialog());
-
-        if (hotspotSwitch != null) {
-            hotspotSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
-                if (isChecked) {
-                    String ip = BtVpnService.getHotspotIp();
-                    if (ip == null) {
-                        hotspotSwitch.setChecked(false);
-                        Toast.makeText(this, "Activá el hotspot WiFi primero", Toast.LENGTH_LONG).show();
-                        return;
-                    }
-                    if (hotspotInfoView != null) {
-                        hotspotInfoView.setText("Próximamente disponible");
-                        hotspotInfoView.setVisibility(View.VISIBLE);
-                    }
-                } else {
-                    if (hotspotInfoView != null) hotspotInfoView.setVisibility(View.GONE);
-                }
-            });
-        }
 
         refreshGamingModeUi();
         updateUsageViews();
@@ -826,6 +805,14 @@ public class SimpleModeActivity extends ComponentActivity {
     private void updateUserMetadata(String logs) {
         if (logs == null) return;
         String[] lines = logs.split("\n");
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i].trim(); int idx = line.indexOf("user_name=");
+            if (idx >= 0) {
+                String v = line.substring(idx + "user_name=".length()).trim();
+                if (!v.isEmpty() && userNameWideView != null) userNameWideView.setText(v);
+                break;
+            }
+        }
         for (int i = lines.length - 1; i >= 0; i--) {
             String line = lines[i].trim(); int idx = line.indexOf("user_days=");
             if (idx >= 0 && daysValueView != null) {
