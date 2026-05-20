@@ -53,6 +53,7 @@ public class BtVpnService extends VpnService {
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
     private volatile boolean              running     = false;
+    private volatile boolean              stopping    = false;
     private volatile ParcelFileDescriptor tunPfd      = null;
     private volatile int                  hevTunFd    = -1;
     private volatile Thread               hevThread   = null;
@@ -103,11 +104,23 @@ public class BtVpnService extends VpnService {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : null;
-        if (ACTION_STOP.equals(action)) {
-            executor.execute(this::stopAll);
-            return START_NOT_STICKY;
-        }
-        executor.execute(this::startAll);
+        executor.execute(() -> {
+            try {
+                if (ACTION_STOP.equals(action)) stopAll();
+                else startAll();
+            } catch (Throwable t) {
+                log("E onStartCommand task crash: " + t.getClass().getSimpleName() + ": " + t.getMessage());
+                running = false;
+                stopping = false;
+                sRunning = false;
+                try { stopHevStack(); } catch (Throwable ignored) {}
+                try { BtProxy.stop(); } catch (Throwable ignored) {}
+                try { unregisterNet(); } catch (Throwable ignored) {}
+                try { stopForeground(STOP_FOREGROUND_REMOVE); } catch (Throwable ignored) {}
+                try { stopSelf(); } catch (Throwable ignored) {}
+            }
+        });
+        if (ACTION_STOP.equals(action)) return START_NOT_STICKY;
         return START_STICKY;
     }
 
@@ -120,6 +133,14 @@ public class BtVpnService extends VpnService {
     }
 
     private void startAll() {
+        if (stopping) {
+            log("W startAll: stop en progreso, reintentando breve");
+            try { Thread.sleep(450); } catch (InterruptedException ignored) { return; }
+            if (stopping) {
+                log("W startAll: cancelado porque stop sigue en progreso");
+                return;
+            }
+        }
         if (running) {
             log("I startAll: ya corriendo, ignorado");
             return;
@@ -195,6 +216,7 @@ public class BtVpnService extends VpnService {
             log("I stopAll: ya detenido, ignorado");
             return;
         }
+        stopping = true;
 
         running  = false;
         sRunning = false;
@@ -206,6 +228,7 @@ public class BtVpnService extends VpnService {
 
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
+        stopping = false;
         log("I stopAll ok");
     }
 
