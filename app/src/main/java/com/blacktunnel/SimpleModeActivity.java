@@ -110,6 +110,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private long    connectingSinceMs                = 0L;
     private boolean lastRunning                      = false;
     private long    autoDisconnectAtMs               = -1L;
+    private boolean pendingManualReconnect           = false;
     private String  authState                        = "";
     private boolean hideInternalId                   = false;
     private boolean applyingRuntimeChanges           = false;
@@ -119,6 +120,10 @@ public class SimpleModeActivity extends ComponentActivity {
     private String  lastDetailText                   = "";
 
     private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
+    private final Runnable delayedReconnectRunnable = () -> {
+        pendingManualReconnect = false;
+        startVpnWithPermission();
+    };
     private ConnectivityManager connectivityManager;
     private ConnectivityManager.NetworkCallback networkCallback;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -199,7 +204,19 @@ public class SimpleModeActivity extends ComponentActivity {
         connectBtn.setOnClickListener(v -> {
             if (uiState == UiState.CONNECTING) return;
             if (uiState == UiState.CONNECTED) stopVpn();
-            else startVpnWithPermission();
+            else {
+                if (BtVpnService.isRunningState()) {
+                    // Evita reconexión manual mientras el servicio sigue cerrando sesión previa.
+                    if (!pendingManualReconnect) {
+                        pendingManualReconnect = true;
+                        setUiState(UiState.CONNECTING);
+                        handler.removeCallbacks(delayedReconnectRunnable);
+                        handler.postDelayed(delayedReconnectRunnable, 850);
+                    }
+                } else {
+                    startVpnWithPermission();
+                }
+            }
         });
         copyIdBtn.setOnClickListener(v -> copyInternalIdToClipboard());
 
@@ -312,6 +329,7 @@ public class SimpleModeActivity extends ComponentActivity {
     protected void onDestroy() {
         handler.removeCallbacks(stateTicker);
         handler.removeCallbacks(autoDisconnectRunnable);
+        handler.removeCallbacks(delayedReconnectRunnable);
         if (connectBtn != null) connectBtn.animate().cancel();
         if (imgShieldIcon != null) imgShieldIcon.animate().cancel();
         if (statusDetailsView != null) statusDetailsView.animate().cancel();
@@ -632,6 +650,8 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void stopVpn() {
+        pendingManualReconnect = false;
+        handler.removeCallbacks(delayedReconnectRunnable);
         Intent i = new Intent(this, BtVpnService.class);
         i.setAction(BtVpnService.ACTION_STOP);
         startService(i);
