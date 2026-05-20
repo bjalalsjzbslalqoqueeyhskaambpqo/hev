@@ -135,6 +135,16 @@
                         android:textSize="11sp"
                         android:textStyle="bold" />
                 </LinearLayout>
+                <TextView
+                    android:id="@+id/txtStatusDetails"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:gravity="center"
+                    android:textColor="@color/color_text_secondary"
+                    android:textSize="11sp"
+                    android:lineSpacingMultiplier="1.2"
+                    android:visibility="gone" />
             </LinearLayout>
             <FrameLayout
                 android:layout_width="260dp"
