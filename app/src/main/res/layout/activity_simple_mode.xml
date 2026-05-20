@@ -193,6 +193,7 @@
                     android:layout_gravity="center"
                     android:src="@drawable/ic_shield_check"
                     android:importantForAccessibility="no" />
+            </FrameLayout>
             <LinearLayout
                 android:id="@+id/layoutDataStrip"
                 android:layout_width="match_parent"
