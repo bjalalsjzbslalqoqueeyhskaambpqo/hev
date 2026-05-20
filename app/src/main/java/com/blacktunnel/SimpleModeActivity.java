@@ -93,7 +93,6 @@ public class SimpleModeActivity extends ComponentActivity {
     private View          panelConnectionView;
     private Switch        hotspotSwitch;
     private TextView      hotspotInfoView;
-    private ImageView     imgShieldIcon;
     private View          hudRingOuter;
     private View          hudRingMid;
     private View          hudRingInner;
@@ -182,7 +181,6 @@ public class SimpleModeActivity extends ComponentActivity {
         panelConnectionView     = findViewById(R.id.panelConnection);
         hotspotSwitch           = findViewById(R.id.switchHotspot);
         hotspotInfoView         = findViewById(R.id.txtHotspotInfo);
-        imgShieldIcon           = findViewById(R.id.imgShieldIcon);
         hudRingOuter            = findViewById(R.id.hudRingOuter);
         hudRingMid              = findViewById(R.id.hudRingMid);
         hudRingInner            = findViewById(R.id.hudRingInner);
@@ -330,7 +328,6 @@ public class SimpleModeActivity extends ComponentActivity {
         handler.removeCallbacks(autoDisconnectRunnable);
         handler.removeCallbacks(delayedReconnectRunnable);
         if (connectBtn != null) connectBtn.animate().cancel();
-        if (imgShieldIcon != null) imgShieldIcon.animate().cancel();
         if (statusDetailsView != null) statusDetailsView.animate().cancel();
         if (statusBadgeView != null) statusBadgeView.animate().cancel();
         stopStatusPulse();
@@ -939,23 +936,6 @@ public class SimpleModeActivity extends ComponentActivity {
                     connectBtn.setAlpha(0.6f);
                     connectBtn.animate().alpha(1f).setDuration(400).start();
                 }
-            }
-        }
-
-        if (imgShieldIcon != null) {
-            int iconRes = (newState == UiState.CONNECTED)
-                ? R.drawable.ic_world_hidden
-                : R.drawable.ic_world_track;
-            if (stateChanged && canAnimate()) {
-                imgShieldIcon.animate().cancel();
-                imgShieldIcon.animate().scaleX(0.8f).scaleY(0.8f).setDuration(150).withEndAction(() -> {
-                    imgShieldIcon.setImageResource(iconRes);
-                    imgShieldIcon.setImageTintList(null);
-                    imgShieldIcon.animate().scaleX(1f).scaleY(1f).setDuration(200).start();
-                }).start();
-            } else {
-                imgShieldIcon.setImageResource(iconRes);
-                imgShieldIcon.setImageTintList(null);
             }
         }
 
