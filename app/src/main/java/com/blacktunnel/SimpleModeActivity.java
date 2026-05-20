@@ -66,8 +66,6 @@ import java.util.Deque;
 public class SimpleModeActivity extends ComponentActivity {
     private static final String PREF_UI              = "ui_state";
     private static final String KEY_HIDE_ID          = "hide_internal_id";
-    private static final String KEY_TOTAL_USAGE_MS   = "total_usage_ms";
-    private static final String KEY_SESSION_START_MS = "session_start_elapsed_ms";
     private static final int    HOTSPOT_PROXY_PORT   = 7071;
     private static final long   CONNECTING_TIMEOUT_MS = 40000L;
 
@@ -83,7 +81,6 @@ public class SimpleModeActivity extends ComponentActivity {
     private TextView      deviceIdView;
     private TextView      userValueView;
     private TextView      userNameWideView;
-    private TextView      totalUsageView;
     private TextView      daysValueView;
     private TextView      pingValueView;
     private PingPulseView pingPulseView;
@@ -117,12 +114,6 @@ public class SimpleModeActivity extends ComponentActivity {
     private String  lastDetailText                   = "";
 
     private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
-    private final Runnable usageTicker = new Runnable() {
-        @Override public void run() {
-            updateUsageViews();
-            handler.postDelayed(this, 1000);
-        }
-    };
     private final Runnable delayedReconnectRunnable = () -> {
         pendingManualReconnect = false;
         startVpnWithPermission();
@@ -172,7 +163,6 @@ public class SimpleModeActivity extends ComponentActivity {
         statusDetailsView       = findViewById(R.id.txtStatusDetails);
         deviceIdView            = findViewById(R.id.txtDeviceId);
         userValueView           = findViewById(R.id.txtUser);
-        totalUsageView          = findViewById(R.id.txtTotalUsage);
         daysValueView           = findViewById(R.id.txtDays);
         pingValueView           = findViewById(R.id.txtPingValue);
         pingPulseView           = findViewById(R.id.pingPulseView);
@@ -236,8 +226,6 @@ public class SimpleModeActivity extends ComponentActivity {
             selectGamingAppsBtn.setOnClickListener(v -> openGamingAppsDialog());
 
         refreshGamingModeUi();
-        updateUsageViews();
-        handler.post(usageTicker);
         setupConnectivityMonitor();
         handler.post(stateTicker);
     }
@@ -301,17 +289,9 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     @Override
-    protected void onStop() {
-        super.onStop();
-        if (uiState == UiState.CONNECTED && connectingSinceMs > 0)
-            setStoredSessionStartMs(connectingSinceMs);
-    }
-
-    @Override
     protected void onDestroy() {
         handler.removeCallbacks(stateTicker);
         handler.removeCallbacks(autoDisconnectRunnable);
-        handler.removeCallbacks(usageTicker);
         handler.removeCallbacks(delayedReconnectRunnable);
         if (connectBtn != null) connectBtn.animate().cancel();
         if (statusDetailsView != null) statusDetailsView.animate().cancel();
@@ -378,46 +358,6 @@ public class SimpleModeActivity extends ComponentActivity {
         if (btnRingOuter != null) btnRingOuter.animate().cancel();
     }
 
-    private long getStoredTotalUsageMs() {
-        return getSharedPreferences(PREF_UI, MODE_PRIVATE).getLong(KEY_TOTAL_USAGE_MS, 0L);
-    }
-
-    private long getStoredSessionStartMs() {
-        return getSharedPreferences(PREF_UI, MODE_PRIVATE).getLong(KEY_SESSION_START_MS, -1L);
-    }
-
-    private void setStoredSessionStartMs(long value) {
-        getSharedPreferences(PREF_UI, MODE_PRIVATE).edit().putLong(KEY_SESSION_START_MS, value).apply();
-    }
-
-    private void addTotalUsageMs(long deltaMs) {
-        if (deltaMs <= 0) return;
-        long next = getStoredTotalUsageMs() + deltaMs;
-        getSharedPreferences(PREF_UI, MODE_PRIVATE).edit().putLong(KEY_TOTAL_USAGE_MS, next).apply();
-    }
-
-    private String fmtHms(long ms) {
-        long sec = Math.max(0L, ms / 1000L);
-        long h = sec / 3600L;
-        long m = (sec % 3600L) / 60L;
-        long s = sec % 60L;
-        return String.format(Locale.US, "%02d:%02d:%02d", h, m, s);
-    }
-
-    private void updateUsageViews() {
-        long anchor = connectingSinceMs > 0 ? connectingSinceMs : getStoredSessionStartMs();
-        if (uiState == UiState.CONNECTED && anchor > 0 && connectingSinceMs <= 0) connectingSinceMs = anchor;
-        if (userValueView != null) {
-            long session = uiState == UiState.CONNECTED
-                ? Math.max(0L, (SystemClock.elapsedRealtime() - anchor)) : 0L;
-            userValueView.setText(fmtHms(session));
-        }
-        if (totalUsageView != null) {
-            long total = getStoredTotalUsageMs();
-            if (uiState == UiState.CONNECTED && anchor > 0) total += Math.max(0L, (SystemClock.elapsedRealtime() - anchor));
-            totalUsageView.setText("Uso total " + fmtHms(total));
-        }
-    }
 
     private void animateBadgeColor(TextView tv, int toColor, long durationMs) {
         if (tv == null || !canAnimate()) { if (tv != null) tv.setTextColor(toColor); return; }
@@ -837,7 +777,10 @@ public class SimpleModeActivity extends ComponentActivity {
             String line = lines[i].trim(); int idx = line.indexOf("user_name=");
             if (idx >= 0) {
                 String v = line.substring(idx + "user_name=".length()).trim();
-                if (!v.isEmpty() && userNameWideView != null) userNameWideView.setText("Usuario: " + v);
+                if (!v.isEmpty()) {
+                    if (userNameWideView != null) userNameWideView.setText("Usuario: " + v);
+                    if (userValueView != null) userValueView.setText(v);
+                }
                 break;
             }
         }
@@ -948,10 +891,6 @@ public class SimpleModeActivity extends ComponentActivity {
                     connectBtn.animate().alpha(1f).setDuration(300).start();
                 }
             } else if (newState == UiState.CONNECTED) {
-                if (prev != UiState.CONNECTED || connectingSinceMs <= 0) {
-                    connectingSinceMs = SystemClock.elapsedRealtime();
-                    setStoredSessionStartMs(connectingSinceMs);
-                }
                 connectBtn.setEnabled(true); connectBtn.setActivated(true);
                 connectBtn.setText(R.string.disconnect);
                 connectBtn.setTextColor(c(R.color.color_connected));
@@ -960,10 +899,6 @@ public class SimpleModeActivity extends ComponentActivity {
                     connectBtn.animate().scaleX(1f).scaleY(1f).setDuration(250).start();
                 }
             } else {
-                if (prev == UiState.CONNECTED && connectingSinceMs > 0)
-                    addTotalUsageMs(SystemClock.elapsedRealtime() - connectingSinceMs);
-                connectingSinceMs = 0L;
-                setStoredSessionStartMs(-1L);
                 connectBtn.setEnabled(true); connectBtn.setActivated(false);
                 connectBtn.setText(BtProxy.isGamingMode(this) ? getString(R.string.connect_gaming) : getString(R.string.connect));
                 connectBtn.setTextColor(c(R.color.color_text_primary));
@@ -1049,7 +984,6 @@ public class SimpleModeActivity extends ComponentActivity {
         }
 
         refreshGamingModeUi();
-        updateUsageViews();
     }
 
     private static final class VisualDrawables {

@@ -186,22 +186,12 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="4dp"
-                        android:text="--"
+                        android:text="Usuario"
                         android:textColor="@color/color_text_primary"
                         android:textSize="14sp"
                         android:textStyle="bold"
                         android:maxLines="1"
                         android:ellipsize="end"
-                        android:includeFontPadding="false" />
-                    <TextView
-                        android:id="@+id/txtTotalUsage"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
-                        android:text="Uso total --:--:--"
-                        android:textColor="@color/color_text_secondary"
-                        android:textSize="10sp"
-                        android:maxLines="1"
                         android:includeFontPadding="false" />
                 </LinearLayout>
                 <View
