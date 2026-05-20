@@ -246,30 +246,30 @@ public class SimpleModeActivity extends ComponentActivity {
     private void applyHudTheme(int accentColor) {
         float dp = getResources().getDisplayMetrics().density;
 
-        if (decorCornerTL != null) decorCornerTL.setBackground(HudDrawables.cornerTL(accentColor));
-        if (decorCornerTR != null) decorCornerTR.setBackground(HudDrawables.cornerTR(accentColor));
-        if (decorCornerBL != null) decorCornerBL.setBackground(HudDrawables.cornerBL(accentColor));
-        if (decorCornerBR != null) decorCornerBR.setBackground(HudDrawables.cornerBR(accentColor));
+        if (decorCornerTL != null) decorCornerTL.setBackground(VisualDrawables.cornerTL(accentColor));
+        if (decorCornerTR != null) decorCornerTR.setBackground(VisualDrawables.cornerTR(accentColor));
+        if (decorCornerBL != null) decorCornerBL.setBackground(VisualDrawables.cornerBL(accentColor));
+        if (decorCornerBR != null) decorCornerBR.setBackground(VisualDrawables.cornerBR(accentColor));
 
-        if (hudRingOuter  != null) hudRingOuter.setBackground(HudDrawables.ringOuter(accentColor));
-        if (hudRingMid    != null) hudRingMid.setBackground(HudDrawables.ringMid(accentColor));
-        if (hudRingInner  != null) hudRingInner.setBackground(HudDrawables.ringInner(accentColor));
-        if (hudGlowOuter  != null) hudGlowOuter.setBackground(HudDrawables.glowRing(accentColor));
+        if (hudRingOuter  != null) hudRingOuter.setBackground(VisualDrawables.ringOuter(accentColor));
+        if (hudRingMid    != null) hudRingMid.setBackground(VisualDrawables.ringMid(accentColor));
+        if (hudRingInner  != null) hudRingInner.setBackground(VisualDrawables.ringInner(accentColor));
+        if (hudGlowOuter  != null) hudGlowOuter.setBackground(VisualDrawables.glowRing(accentColor));
 
-        if (btnRingOuter  != null) btnRingOuter.setBackground(HudDrawables.btnRingOuter(accentColor));
-        if (btnRingMid    != null) btnRingMid.setBackground(HudDrawables.btnRingMid(accentColor));
+        if (btnRingOuter  != null) btnRingOuter.setBackground(VisualDrawables.btnRingOuter(accentColor));
+        if (btnRingMid    != null) btnRingMid.setBackground(VisualDrawables.btnRingMid(accentColor));
         if (btnTopDot     != null) btnTopDot.setBackgroundTintList(ColorStateList.valueOf(accentColor));
 
         if (panelConnectionView != null)
-            panelConnectionView.setBackground(HudDrawables.statusBadge(accentColor));
+            panelConnectionView.setBackground(VisualDrawables.statusBadge(accentColor));
 
         View metricsStrip = findViewById(R.id.layoutDataStrip);
-        if (metricsStrip != null) metricsStrip.setBackground(HudDrawables.panelMetrics(accentColor));
+        if (metricsStrip != null) metricsStrip.setBackground(VisualDrawables.panelMetrics(accentColor));
 
         if (pingPulseView != null) pingPulseView.setLineColor(accentColor);
 
         if (connectBtn != null)
-            connectBtn.setBackground(HudDrawables.btnConnect(accentColor, uiState == UiState.CONNECTED));
+            connectBtn.setBackground(VisualDrawables.btnConnect(accentColor, uiState == UiState.CONNECTED));
     }
 
     private int resolveAccentColor() {
@@ -1005,4 +1005,92 @@ public class SimpleModeActivity extends ComponentActivity {
 
         refreshGamingModeUi();
     }
+
+    private static final class VisualDrawables {
+
+        private VisualDrawables() {}
+
+        public static android.graphics.drawable.Drawable cornerTL(int color) { return new CornerDrawable(color, 0); }
+        public static android.graphics.drawable.Drawable cornerTR(int color) { return new CornerDrawable(color, 1); }
+        public static android.graphics.drawable.Drawable cornerBL(int color) { return new CornerDrawable(color, 2); }
+        public static android.graphics.drawable.Drawable cornerBR(int color) { return new CornerDrawable(color, 3); }
+
+        public static android.graphics.drawable.Drawable ringOuter(int color) { return new RingDrawable(color, 6f, true,  20f); }
+        public static android.graphics.drawable.Drawable ringMid  (int color) { return new RingDrawable(color, 2f, true,  12f); }
+        public static android.graphics.drawable.Drawable ringInner(int color) { return new RingDrawable(color, 3f, false,  0f); }
+        public static android.graphics.drawable.Drawable glowRing (int color) { return new GlowRingDrawable(color); }
+
+        public static android.graphics.drawable.Drawable btnRingOuter(int color) { return new RingDrawable(color, 4f, true, 18f); }
+        public static android.graphics.drawable.Drawable btnRingMid  (int color) { return new RingDrawable(color, 2f, true, 10f); }
+        public static android.graphics.drawable.Drawable btnConnect  (int color, boolean connected) { return new BtnCircleDrawable(color, connected); }
+
+        public static android.graphics.drawable.Drawable statusBadge (int color) { return new StatusBadgeDrawable(color); }
+        public static android.graphics.drawable.Drawable panelMetrics(int color) { return new PanelDrawable(color, true);  }
+        public static android.graphics.drawable.Drawable panelData   (int color) { return new PanelDrawable(color, false); }
+        public static android.graphics.drawable.Drawable panelId     (int color) { return new PanelDrawable(color, false); }
+        public static android.graphics.drawable.Drawable crossLine   (int color) { return new CrossLineDrawable(color); }
+
+        static final class CornerDrawable extends android.graphics.drawable.Drawable {
+            private final android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            private final int variant;
+            CornerDrawable(int color, int variant) { this.variant = variant; p.setColor(color); p.setStyle(android.graphics.Paint.Style.STROKE); p.setStrokeWidth(2.5f); p.setStrokeCap(android.graphics.Paint.Cap.SQUARE); }
+            @Override public void draw(android.graphics.Canvas c) { float w=getBounds().width(), h=getBounds().height(), arm=w*0.55f; android.graphics.Path path=new android.graphics.Path(); switch (variant) { case 0: path.moveTo(0,arm); path.lineTo(0,0); path.lineTo(arm,0); break; case 1: path.moveTo(w-arm,0); path.lineTo(w,0); path.lineTo(w,arm); break; case 2: path.moveTo(0,h-arm); path.lineTo(0,h); path.lineTo(arm,h); break; case 3: path.moveTo(w-arm,h); path.lineTo(w,h); path.lineTo(w,h-arm); break; } c.drawPath(path,p); }
+            @Override public void setAlpha(int a) { p.setAlpha(a); }
+            @Override public void setColorFilter(android.graphics.ColorFilter cf) { p.setColorFilter(cf); }
+            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+        }
+        static final class RingDrawable extends android.graphics.drawable.Drawable {
+            private final android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            RingDrawable(int color, float strokeW, boolean dash, float dashLen) { p.setColor(color); p.setStyle(android.graphics.Paint.Style.STROKE); p.setStrokeWidth(strokeW); if (dash && dashLen > 0) p.setPathEffect(new android.graphics.DashPathEffect(new float[]{dashLen, dashLen * 0.5f}, 0)); }
+            @Override public void draw(android.graphics.Canvas c) { float sw=p.getStrokeWidth(); android.graphics.RectF r=new android.graphics.RectF(sw,sw,getBounds().width()-sw,getBounds().height()-sw); c.drawOval(r,p); }
+            @Override public void setAlpha(int a) { p.setAlpha(a); }
+            @Override public void setColorFilter(android.graphics.ColorFilter cf) { p.setColorFilter(cf); }
+            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+        }
+        static final class GlowRingDrawable extends android.graphics.drawable.Drawable {
+            private final android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            private final int baseColor;
+            GlowRingDrawable(int color) { baseColor=color; p.setStyle(android.graphics.Paint.Style.STROKE); p.setStrokeWidth(14f); }
+            @Override public void draw(android.graphics.Canvas c) { float cx=getBounds().width()/2f, cy=getBounds().height()/2f, r=Math.min(cx,cy)-8f; p.setShader(new android.graphics.RadialGradient(cx, cy, r, new int[]{ android.graphics.Color.argb(0, android.graphics.Color.red(baseColor), android.graphics.Color.green(baseColor), android.graphics.Color.blue(baseColor)), android.graphics.Color.argb(120, android.graphics.Color.red(baseColor), android.graphics.Color.green(baseColor), android.graphics.Color.blue(baseColor)), android.graphics.Color.argb(0, android.graphics.Color.red(baseColor), android.graphics.Color.green(baseColor), android.graphics.Color.blue(baseColor)) }, new float[]{0.7f,0.9f,1f}, android.graphics.Shader.TileMode.CLAMP)); c.drawCircle(cx,cy,r,p); }
+            @Override public void setAlpha(int a) {}
+            @Override public void setColorFilter(android.graphics.ColorFilter cf) {}
+            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+        }
+        static final class BtnCircleDrawable extends android.graphics.drawable.Drawable {
+            private final android.graphics.Paint fillP=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG), strokeP=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            private final int color; private final boolean connected;
+            BtnCircleDrawable(int color, boolean connected) { this.color=color; this.connected=connected; fillP.setStyle(android.graphics.Paint.Style.FILL); strokeP.setStyle(android.graphics.Paint.Style.STROKE); strokeP.setStrokeWidth(2f); }
+            @Override public void draw(android.graphics.Canvas c) { float cx=getBounds().width()/2f, cy=getBounds().height()/2f, r=Math.min(cx,cy)-3f; fillP.setColor(android.graphics.Color.argb(200,8,12,18)); c.drawCircle(cx,cy,r,fillP); strokeP.setColor(color); c.drawCircle(cx,cy,r,strokeP); if (connected) { android.graphics.Paint glow=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG); glow.setStyle(android.graphics.Paint.Style.STROKE); glow.setStrokeWidth(8f); glow.setColor(android.graphics.Color.argb(60, android.graphics.Color.red(color), android.graphics.Color.green(color), android.graphics.Color.blue(color))); c.drawCircle(cx,cy,r-2f,glow);} }
+            @Override public void setAlpha(int a) {}
+            @Override public void setColorFilter(android.graphics.ColorFilter cf) {}
+            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+        }
+        static final class StatusBadgeDrawable extends android.graphics.drawable.Drawable {
+            private final android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            private final int color;
+            StatusBadgeDrawable(int color) { this.color=color; p.setStyle(android.graphics.Paint.Style.STROKE); p.setStrokeWidth(1.5f); }
+            @Override public void draw(android.graphics.Canvas c) { float w=getBounds().width(), h=getBounds().height(); p.setColor(color); android.graphics.RectF r=new android.graphics.RectF(1,1,w-1,h-1); c.drawRoundRect(r,h/2f,h/2f,p); p.setStyle(android.graphics.Paint.Style.FILL); p.setColor(android.graphics.Color.argb(40, android.graphics.Color.red(color), android.graphics.Color.green(color), android.graphics.Color.blue(color))); c.drawRoundRect(r,h/2f,h/2f,p); p.setStyle(android.graphics.Paint.Style.STROKE);}
+            @Override public void setAlpha(int a) {}
+            @Override public void setColorFilter(android.graphics.ColorFilter cf) {}
+            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+        }
+        static final class PanelDrawable extends android.graphics.drawable.Drawable {
+            private final android.graphics.Paint strokeP=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG), fillP=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG), cornerP=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            private final int color; private final boolean metric;
+            PanelDrawable(int color, boolean metric) { this.color=color; this.metric=metric; strokeP.setStyle(android.graphics.Paint.Style.STROKE); strokeP.setStrokeWidth(1.2f); fillP.setStyle(android.graphics.Paint.Style.FILL); cornerP.setStyle(android.graphics.Paint.Style.STROKE); cornerP.setStrokeWidth(2f); cornerP.setStrokeCap(android.graphics.Paint.Cap.SQUARE); }
+            @Override public void draw(android.graphics.Canvas c) { float w=getBounds().width(), h=getBounds().height(), radius=10f; android.graphics.RectF r=new android.graphics.RectF(1,1,w-1,h-1); fillP.setColor(android.graphics.Color.argb(metric?25:18, android.graphics.Color.red(color), android.graphics.Color.green(color), android.graphics.Color.blue(color))); c.drawRoundRect(r,radius,radius,fillP); strokeP.setColor(android.graphics.Color.argb(70, android.graphics.Color.red(color), android.graphics.Color.green(color), android.graphics.Color.blue(color))); c.drawRoundRect(r,radius,radius,strokeP); float arm=18f; cornerP.setColor(color); c.drawLine(2,arm,2,2,cornerP); c.drawLine(2,2,arm,2,cornerP); c.drawLine(w-arm,2,w-2,2,cornerP); c.drawLine(w-2,2,w-2,arm,cornerP); c.drawLine(2,h-arm,2,h-2,cornerP); c.drawLine(2,h-2,arm,h-2,cornerP); c.drawLine(w-arm,h-2,w-2,h-2,cornerP); c.drawLine(w-2,h-2,w-2,h-arm,cornerP);}
+            @Override public void setAlpha(int a) {}
+            @Override public void setColorFilter(android.graphics.ColorFilter cf) {}
+            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+        }
+        static final class CrossLineDrawable extends android.graphics.drawable.Drawable {
+            private final android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            CrossLineDrawable(int color) { p.setColor(color); p.setStyle(android.graphics.Paint.Style.FILL); }
+            @Override public void draw(android.graphics.Canvas c) { c.drawRect(getBounds(), p); }
+            @Override public void setAlpha(int a) { p.setAlpha(a); }
+            @Override public void setColorFilter(android.graphics.ColorFilter cf) { p.setColorFilter(cf); }
+            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+        }
+    }
+
 }
