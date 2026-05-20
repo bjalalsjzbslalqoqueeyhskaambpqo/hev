@@ -300,6 +300,16 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     @Override
+    protected void onStop() {
+        super.onStop();
+        if (uiState == UiState.CONNECTED) {
+            long now = SystemClock.elapsedRealtime();
+            addTotalUsageMs(now - connectingSinceMs);
+            connectingSinceMs = now;
+        }
+    }
+
+    @Override
     protected void onDestroy() {
         handler.removeCallbacks(stateTicker);
         handler.removeCallbacks(autoDisconnectRunnable);
