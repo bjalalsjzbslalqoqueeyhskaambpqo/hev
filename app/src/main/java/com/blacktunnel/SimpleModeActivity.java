@@ -79,7 +79,6 @@ public class SimpleModeActivity extends ComponentActivity {
     private View          statusHaloMidView;
     private TextView      statusDetailsView;
     private TextView      deviceIdView;
-    private TextView      userValueView;
     private TextView      userNameWideView;
     private TextView      daysValueView;
     private TextView      pingValueView;
@@ -162,7 +161,6 @@ public class SimpleModeActivity extends ComponentActivity {
         statusHaloMidView       = findViewById(R.id.viewStatusHaloMid);
         statusDetailsView       = findViewById(R.id.txtStatusDetails);
         deviceIdView            = findViewById(R.id.txtDeviceId);
-        userValueView           = findViewById(R.id.txtUser);
         daysValueView           = findViewById(R.id.txtDays);
         pingValueView           = findViewById(R.id.txtPingValue);
         pingPulseView           = findViewById(R.id.pingPulseView);
@@ -779,7 +777,6 @@ public class SimpleModeActivity extends ComponentActivity {
                 String v = line.substring(idx + "user_name=".length()).trim();
                 if (!v.isEmpty()) {
                     if (userNameWideView != null) userNameWideView.setText("Usuario: " + v);
-                    if (userValueView != null) userValueView.setText(v);
                 }
                 break;
             }
