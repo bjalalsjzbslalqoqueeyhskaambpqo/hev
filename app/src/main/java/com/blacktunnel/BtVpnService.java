@@ -60,7 +60,7 @@ public class BtVpnService extends VpnService {
     private volatile File                 hCfg  = null;
     private volatile ConnectivityManager.NetworkCallback nCb = null;
 
-    public static boolean isRunningState() { return sRunning; }
+    public static boolean iRun() { return sRunning; }
 
     public static String getHotspotIp() {
         try {
@@ -89,7 +89,7 @@ public class BtVpnService extends VpnService {
         }
     }
 
-    public static String dumpLogs() {
+    public static String dLogs() {
         synchronized (L_MU) {
             String native_ = BtProxy.drainLogs();
             if (native_ != null && !native_.isBlank()) {
@@ -152,7 +152,7 @@ public class BtVpnService extends VpnService {
         BtProxy.stop();
         cleanupSessionResources();
 
-        String iid  = BtProxy.getOrCreateInternalId(this);
+        String iid  = BtProxy.gIid(this);
         int    startResult = BtProxy.start(this, iid);
         if (startResult < 0) {
             log("E startAll: btproxy start failed");
@@ -514,7 +514,7 @@ final class BtProxy {
         return nativeDrainLogs();
     }
 
-    static String getOrCreateInternalId(Context ctx) {
+    static String gIid(Context ctx) {
         SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String existing = sp.getString(KEY_INTERNAL_ID, null);
         if (existing != null && !existing.isBlank()) return existing;
@@ -528,28 +528,28 @@ final class BtProxy {
         return id;
     }
 
-    static void applyStoredGamingMode(Context ctx) {
-        isGamingMode(ctx);
+    static void aGm(Context ctx) {
+        iGm(ctx);
     }
 
-    static boolean isGamingMode(Context ctx) {
+    static boolean iGm(Context ctx) {
         SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         return sp.getBoolean(KEY_GAMING_MODE, false);
     }
 
-    static void setGamingMode(Context ctx, boolean enabled) {
+    static void sGm(Context ctx, boolean enabled) {
         SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         sp.edit().putBoolean(KEY_GAMING_MODE, enabled).apply();
     }
 
-    static List<String> getGamingSelectedPackages(Context ctx) {
+    static List<String> gGmPk(Context ctx) {
         SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         Set<String> raw = sp.getStringSet(KEY_GAMING_APPS, Collections.emptySet());
         if (raw == null || raw.isEmpty()) return new ArrayList<>();
         return new ArrayList<>(raw);
     }
 
-    static void setGamingSelectedPackages(Context ctx, List<String> packages) {
+    static void sGmPk(Context ctx, List<String> packages) {
         SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         Set<String> value = packages == null ? new HashSet<>() : new HashSet<>(packages);
         sp.edit().putStringSet(KEY_GAMING_APPS, value).apply();

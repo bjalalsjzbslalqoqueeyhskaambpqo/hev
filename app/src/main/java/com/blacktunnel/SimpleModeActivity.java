@@ -124,7 +124,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
     private final Runnable delayedReconnectRunnable = () -> {
         pendRec = false;
-        startVpnWithPermission();
+        stVp();
     };
     private ConnectivityManager connMgr;
     private ConnectivityManager.NetworkCallback netCb;
@@ -134,7 +134,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private final Runnable stTick = new Runnable() {
         @Override public void run() {
             try {
-                String logs = BtVpnService.dumpLogs();
+                String logs = BtVpnService.dLogs();
                 syncStateFromLogs(logs);
                 refreshFromLogs(logs);
                 updateConnLogUi(logs);
@@ -194,13 +194,13 @@ public class SimpleModeActivity extends ComponentActivity {
         bRM              = findViewById(R.id.btnRingMid);
         bTD               = findViewById(R.id.btnTopDot);
 
-        iid = BtProxy.getOrCreateInternalId(this);
-        BtProxy.applyStoredGamingMode(this);
+        iid = BtProxy.gIid(this);
+        BtProxy.aGm(this);
         hidIid = getSharedPreferences(PREF_UI, MODE_PRIVATE).getBoolean(KEY_HIDE_ID, false);
         if (devIdV != null) devIdV.setText("ID: " + iid);
         refreshDeviceIdVisibility();
 
-        boolean run = BtVpnService.isRunningState();
+        boolean run = BtVpnService.iRun();
         setUiState(run ? UiState.CONNECTED : UiState.DISCONNECTED);
         lstRun = run;
 
@@ -208,7 +208,7 @@ public class SimpleModeActivity extends ComponentActivity {
             if (uS == UiState.CONNECTING) return;
             if (uS == UiState.CONNECTED) stopVpn();
             else {
-                if (BtVpnService.isRunningState()) {
+                if (BtVpnService.iRun()) {
                     if (!pendRec) {
                         pendRec = true;
                         setUiState(UiState.CONNECTING);
@@ -216,7 +216,7 @@ public class SimpleModeActivity extends ComponentActivity {
                         h.postDelayed(delayedReconnectRunnable, 850);
                     }
                 } else {
-                    startVpnWithPermission();
+                    stVp();
                 }
             }
         });
@@ -226,24 +226,24 @@ public class SimpleModeActivity extends ComponentActivity {
         if (lgClB != null) lgClB.setOnClickListener(v -> clearConnLogView());
 
         if (gmSw != null) {
-            gmSw.setChecked(BtProxy.isGamingMode(this));
+            gmSw.setChecked(BtProxy.iGm(this));
             gmSw.setOnCheckedChangeListener((buttonView, isChecked) -> {
-                BtProxy.setGamingMode(this, isChecked);
-                refreshGamingModeUi();
-                if (BtVpnService.isRunningState()) {
+                BtProxy.sGm(this, isChecked);
+                rfGmUi();
+                if (BtVpnService.iRun()) {
                     showGamingApplyFeedback(
                         isChecked ? "Modo aplicaciones: activando..." : "Modo normal: aplicando...",
                         isChecked ? "Modo aplicaciones activo" : "Modo normal activo",
                         isChecked ? R.color.color_gaming : R.color.color_text_secondary
                     );
-                    applyGamingChangesIfRunning();
+                    apGmIfRun();
                 }
             });
         }
         if (selGmBtn != null)
             selGmBtn.setOnClickListener(v -> openGamingAppsDialog());
 
-        refreshGamingModeUi();
+        rfGmUi();
         setupConnectivityMonitor();
         h.post(stTick);
     }
@@ -278,7 +278,7 @@ public class SimpleModeActivity extends ComponentActivity {
         if (connMgr == null) return;
         netCb = new ConnectivityManager.NetworkCallback() {
             @Override public void onLost(Network network) {
-                if (BtVpnService.isRunningState()) stopVpn();
+                if (BtVpnService.iRun()) stopVpn();
                 setUiState(UiState.DISCONNECTED);
             }
             @Override public void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
@@ -410,9 +410,9 @@ public class SimpleModeActivity extends ComponentActivity {
         AppOption(String p, String n, Drawable i) { packageName = p; appName = n; icon = i; }
     }
 
-    private void refreshGamingModeUi() {
-        boolean enabled = BtProxy.isGamingMode(this);
-        List<String> selected = BtProxy.getGamingSelectedPackages(this);
+    private void rfGmUi() {
+        boolean enabled = BtProxy.iGm(this);
+        List<String> selected = BtProxy.gGmPk(this);
 
         if (gmBdV != null) {
             if (enabled) {
@@ -465,17 +465,17 @@ public class SimpleModeActivity extends ComponentActivity {
         ListView     listView       = dialogView.findViewById(R.id.listGamingApps);
 
         counterView.setText(getString(R.string.gaming_loading_apps));
-        Set<String> selectedPackages = new HashSet<>(BtProxy.getGamingSelectedPackages(this));
+        Set<String> selectedPackages = new HashSet<>(BtProxy.gGmPk(this));
         listView.setEnabled(false);
 
         AlertDialog dialog = new AlertDialog.Builder(this)
             .setView(dialogView)
             .setNegativeButton("Cancelar", null)
             .setPositiveButton("Guardar", (d, which) -> {
-                BtProxy.setGamingSelectedPackages(this, new ArrayList<>(selectedPackages));
-                refreshGamingModeUi();
+                BtProxy.sGmPk(this, new ArrayList<>(selectedPackages));
+                rfGmUi();
                 showGamingApplyFeedback("Aplicando selección de apps...", "Selección aplicada", R.color.color_accent);
-                applyGamingChangesIfRunning();
+                apGmIfRun();
             })
             .create();
 
@@ -612,7 +612,7 @@ public class SimpleModeActivity extends ComponentActivity {
         }
     }
 
-    private void startVpnWithPermission() {
+    private void stVp() {
         setUiState(UiState.CONNECTING);
         aSt = ""; lstConn = "";
         Intent prepare = VpnService.prepare(this);
@@ -643,8 +643,8 @@ public class SimpleModeActivity extends ComponentActivity {
         autoDcMs = -1L;
     }
 
-    private void applyGamingChangesIfRunning() {
-        if (!BtVpnService.isRunningState()) return;
+    private void apGmIfRun() {
+        if (!BtVpnService.iRun()) return;
         apRt = true;
         connMs      = SystemClock.elapsedRealtime();
         lstConn     = "";
@@ -675,7 +675,7 @@ public class SimpleModeActivity extends ComponentActivity {
         gmBdV.animate().alpha(1f).setDuration(220).start();
         h.postDelayed(() -> {
             if (gmBdV != null) gmBdV.setText(done);
-            h.postDelayed(this::refreshGamingModeUi, 500);
+            h.postDelayed(this::rfGmUi, 500);
         }, 500);
     }
 
@@ -686,7 +686,7 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void copyConnLog() {
-        String logs = BtVpnService.dumpLogs();
+        String logs = BtVpnService.dLogs();
         ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
         if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("conn_logs", logs == null ? "" : logs));
         Toast.makeText(this, "Logs copiados", Toast.LENGTH_SHORT).show();
@@ -766,14 +766,14 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void syncStateFromLogs(String logs) {
-        boolean run   = BtVpnService.isRunningState();
+        boolean run   = BtVpnService.iRun();
         String  connState = findLatestConnectionState(logs);
         if (!connState.isEmpty() && !connState.equals(lstConn)) lstConn = connState;
         if ("connected".equals(connState)) hsOk = true;
 
         if ("manual_reconnect_required".equals(lstConn) || "auth_rejected".equals(lstConn)) {
             apRt = false;
-            if (BtVpnService.isRunningState()) stopVpn();
+            if (BtVpnService.iRun()) stopVpn();
             setUiState(UiState.DISCONNECTED);
         } else if (run && !lstRun) {
             aSt = ""; apRt = false;
@@ -835,7 +835,7 @@ public class SimpleModeActivity extends ComponentActivity {
         if ("not_registered".equals(latestAuth)) {
             if ("not_registered".equals(aSt)) return;
             aSt = "not_registered"; setHideInternalId(false);
-            if (BtVpnService.isRunningState()) stopVpn();
+            if (BtVpnService.iRun()) stopVpn();
             setUiState(UiState.DISCONNECTED);
             stDtlsV.setVisibility(View.VISIBLE);
             stDtlsV.setText("✖ Usuario no registrado\nComparte tu ID interno para habilitación\nID: " + iid);
@@ -844,7 +844,7 @@ public class SimpleModeActivity extends ComponentActivity {
         } else if ("expired".equals(latestAuth)) {
             if ("expired".equals(aSt)) return;
             aSt = "expired"; setHideInternalId(false);
-            if (BtVpnService.isRunningState()) stopVpn();
+            if (BtVpnService.iRun()) stopVpn();
             setUiState(UiState.DISCONNECTED);
             stDtlsV.setVisibility(View.VISIBLE);
             stDtlsV.setText("✖ Usuario expirado\nRenueva tu acceso con soporte\nID: " + iid);
@@ -984,7 +984,7 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void runAutoDisconnect() {
-        if (!BtVpnService.isRunningState()) return;
+        if (!BtVpnService.iRun()) return;
         stopVpn(); setHideInternalId(false);
         if (stDtlsV != null) {
             stDtlsV.setVisibility(View.VISIBLE);
@@ -1026,7 +1026,7 @@ public class SimpleModeActivity extends ComponentActivity {
                 }
             } else {
                 cBtn.setEnabled(true); cBtn.setActivated(false);
-                cBtn.setText(BtProxy.isGamingMode(this) ? getString(R.string.connect_gaming) : getString(R.string.connect));
+                cBtn.setText(BtProxy.iGm(this) ? getString(R.string.connect_gaming) : getString(R.string.connect));
                 cBtn.setTextColor(c(R.color.color_text_primary));
                 if (stateChanged && prev == UiState.CONNECTED && canAnimate()) {
                     cBtn.setAlpha(0.6f);
@@ -1044,7 +1044,7 @@ public class SimpleModeActivity extends ComponentActivity {
                 startHudRingRotation();
             } else if (newState == UiState.CONNECTED) {
                 badgeText  = getString(R.string.status_connected);
-                badgeColor = BtProxy.isGamingMode(this) ? c(R.color.color_gaming) : c(R.color.color_connected);
+                badgeColor = BtProxy.iGm(this) ? c(R.color.color_gaming) : c(R.color.color_connected);
                 stopStatusPulse(); stopStatusHaloWave();
                 startHudRingRotation();
                 if (stHlV != null) stHlV.setAlpha(0.15f);
@@ -1109,7 +1109,7 @@ public class SimpleModeActivity extends ComponentActivity {
             }
         }
 
-        refreshGamingModeUi();
+        rfGmUi();
     }
 
     private static final class VisualDrawables {
