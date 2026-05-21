@@ -523,7 +523,7 @@ final class BtProxy {
         if (rawId == null || rawId.isBlank()) rawId = "unknown";
         String seed = rawId + "|" + Build.BRAND + "|" + Build.MODEL + "|" +
                       ctx.getPackageName() + "|" + System.currentTimeMillis();
-        String id = "STRK-" + sha256(seed).substring(0, 48);
+        String id = "S-" + sha256(seed).substring(0, 8).toUpperCase(Locale.ROOT);
         sp.edit().putString(KEY_INTERNAL_ID, id).apply();
         return id;
     }
