@@ -25,6 +25,9 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.text.Editable;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.style.ForegroundColorSpan;
 import android.text.TextWatcher;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -177,7 +180,7 @@ public class SimpleModeActivity extends ComponentActivity {
                 long dn = Math.max(0, (curRx - rxB) * 1000L / dt);
                 if (hevRtV != null) {
                     hevRtV.setVisibility(View.VISIBLE);
-                    hevRtV.setText("↑ " + fmtRate(up) + "  ↓ " + fmtRate(dn));
+                    hevRtV.setText(buildHevRateText(up, dn));
                 }
                 if (thrV != null) {
                     thrV.setVisibility(View.VISIBLE);
@@ -186,6 +189,16 @@ public class SimpleModeActivity extends ComponentActivity {
             }
             txB = curTx; rxB = curRx; stMs = now;
         } catch (Throwable ignored) {}
+    }
+
+    private CharSequence buildHevRateText(long up, long dn) {
+        String upText = "↑ " + fmtRate(up);
+        String dnText = "↓ " + fmtRate(dn);
+        String merged = upText + "  " + dnText;
+        SpannableString span = new SpannableString(merged);
+        span.setSpan(new ForegroundColorSpan(Color.parseColor("#3BEF8F")), 0, upText.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        span.setSpan(new ForegroundColorSpan(Color.parseColor("#44B7FF")), upText.length() + 2, merged.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        return span;
     }
 
     private String fmtRate(long bps) {
