@@ -4,32 +4,32 @@
 typedef int (*hev_main_t)(const char *, int);
 typedef void (*hev_quit_t)(void);
 
-static hev_main_t fn_main = nullptr;
-static hev_quit_t fn_quit = nullptr;
+static hev_main_t f_m = nullptr;
+static hev_quit_t f_q = nullptr;
 
-static bool load_hev() {
-    if (fn_main) return true;
+static bool ld_h() {
+    if (f_m) return true;
 
     void *lib = dlopen("libhev-socks5-tunnel.so", RTLD_NOW | RTLD_GLOBAL);
     if (!lib) return false;
 
-    fn_main = (hev_main_t)dlsym(lib, "hev_socks5_tunnel_main_from_file");
-    fn_quit = (hev_quit_t)dlsym(lib, "hev_socks5_tunnel_quit");
-    return fn_main && fn_quit;
+    f_m = (hev_main_t)dlsym(lib, "hev_socks5_tunnel_main_from_file");
+    f_q = (hev_quit_t)dlsym(lib, "hev_socks5_tunnel_quit");
+    return f_m && f_q;
 }
 
 extern "C" JNIEXPORT jint JNICALL
 Java_com_blacktunnel_BtVpnService_00024HevBridge_start(JNIEnv *env, jclass, jstring path,
                                                         jint fd) {
-    if (!load_hev()) return -1;
+    if (!ld_h()) return -1;
 
     const char *p = env->GetStringUTFChars(path, nullptr);
-    int r = fn_main(p, fd);
+    int r = f_m(p, fd);
     env->ReleaseStringUTFChars(path, p);
     return r;
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_blacktunnel_BtVpnService_00024HevBridge_stop(JNIEnv *, jclass) {
-    if (fn_quit) fn_quit();
+    if (f_q) f_q();
 }

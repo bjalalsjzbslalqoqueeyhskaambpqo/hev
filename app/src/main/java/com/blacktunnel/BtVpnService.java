@@ -44,21 +44,21 @@ public class BtVpnService extends VpnService {
 
     private static volatile boolean sRunning = false;
 
-    private static final Object        LOG_LOCK      = new Object();
-    private static final StringBuilder LOGS          = new StringBuilder(8192);
-    private static final int           MAX_LOG_CHARS = 24000;
-    private static final long          HANDSHAKE_WAIT_TIMEOUT_MS = 12000L;
-    private static final long          HANDSHAKE_POLL_MS = 250L;
+    private static final Object        L_MU      = new Object();
+    private static final StringBuilder L_BUF          = new StringBuilder(8192);
+    private static final int           L_MAX = 24000;
+    private static final long          HS_TO = 12000L;
+    private static final long          HS_POLL = 250L;
 
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final ExecutorService ex = Executors.newSingleThreadExecutor();
 
-    private volatile boolean              running     = false;
-    private volatile boolean              stopping    = false;
-    private volatile ParcelFileDescriptor tunPfd      = null;
-    private volatile int                  hevTunFd    = -1;
-    private volatile Thread               hevThread   = null;
-    private volatile File                 hevCfgFile  = null;
-    private volatile ConnectivityManager.NetworkCallback netCallback = null;
+    private volatile boolean              run     = false;
+    private volatile boolean              stop    = false;
+    private volatile ParcelFileDescriptor tun      = null;
+    private volatile int                  hFd    = -1;
+    private volatile Thread               hTh   = null;
+    private volatile File                 hCfg  = null;
+    private volatile ConnectivityManager.NetworkCallback nCb = null;
 
     public static boolean isRunningState() { return sRunning; }
 
@@ -82,36 +82,36 @@ public class BtVpnService extends VpnService {
     public static void log(String message) {
         String line = "[" + new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date())
                     + "] " + message + "\n";
-        synchronized (LOG_LOCK) {
-            LOGS.append(line);
-            if (LOGS.length() > MAX_LOG_CHARS)
-                LOGS.delete(0, LOGS.length() - MAX_LOG_CHARS);
+        synchronized (L_MU) {
+            L_BUF.append(line);
+            if (L_BUF.length() > L_MAX)
+                L_BUF.delete(0, L_BUF.length() - L_MAX);
         }
     }
 
     public static String dumpLogs() {
-        synchronized (LOG_LOCK) {
+        synchronized (L_MU) {
             String native_ = BtProxy.drainLogs();
             if (native_ != null && !native_.isBlank()) {
-                LOGS.append(native_);
-                if (LOGS.length() > MAX_LOG_CHARS)
-                    LOGS.delete(0, LOGS.length() - MAX_LOG_CHARS);
+                L_BUF.append(native_);
+                if (L_BUF.length() > L_MAX)
+                    L_BUF.delete(0, L_BUF.length() - L_MAX);
             }
-            return LOGS.toString();
+            return L_BUF.toString();
         }
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : null;
-        executor.execute(() -> {
+        ex.execute(() -> {
             try {
                 if (ACTION_STOP.equals(action)) stopAll();
                 else startAll();
             } catch (Throwable t) {
                 log("E onStartCommand task crash: " + t.getClass().getSimpleName() + ": " + t.getMessage());
-                running = false;
-                stopping = false;
+                run = false;
+                stop = false;
                 sRunning = false;
                 try { stopHevStack(); } catch (Throwable ignored) {}
                 try { BtProxy.stop(); } catch (Throwable ignored) {}
@@ -126,22 +126,22 @@ public class BtVpnService extends VpnService {
 
     @Override
     public void onDestroy() {
-        executor.execute(this::stopAll);
-        executor.shutdown();
-        try { executor.awaitTermination(5, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+        ex.execute(this::stopAll);
+        ex.shutdown();
+        try { ex.awaitTermination(5, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
         super.onDestroy();
     }
 
     private void startAll() {
-        if (stopping) {
+        if (stop) {
             log("W startAll: stop en progreso, reintentando breve");
             try { Thread.sleep(450); } catch (InterruptedException ignored) { return; }
-            if (stopping) {
+            if (stop) {
                 log("W startAll: cancelado porque stop sigue en progreso");
                 return;
             }
         }
-        if (running) {
+        if (run) {
             log("I startAll: ya corriendo, ignorado");
             return;
         }
@@ -152,8 +152,8 @@ public class BtVpnService extends VpnService {
         BtProxy.stop();
         cleanupSessionResources();
 
-        String internalId  = BtProxy.getOrCreateInternalId(this);
-        int    startResult = BtProxy.start(this, internalId);
+        String iid  = BtProxy.getOrCreateInternalId(this);
+        int    startResult = BtProxy.start(this, iid);
         if (startResult < 0) {
             log("E startAll: btproxy start failed");
             stopForeground(STOP_FOREGROUND_REMOVE);
@@ -177,20 +177,20 @@ public class BtVpnService extends VpnService {
             return;
         }
 
-        running  = true;
+        run  = true;
         sRunning = true;
         log("I startAll ok");
     }
 
     private boolean waitForTunnelHandshake() {
-        long deadline = System.currentTimeMillis() + HANDSHAKE_WAIT_TIMEOUT_MS;
+        long deadline = System.currentTimeMillis() + HS_TO;
         while (System.currentTimeMillis() < deadline) {
             String nativeLogs = BtProxy.drainLogs();
             if (nativeLogs != null && !nativeLogs.isBlank()) {
-                synchronized (LOG_LOCK) {
-                    LOGS.append(nativeLogs);
-                    if (LOGS.length() > MAX_LOG_CHARS)
-                        LOGS.delete(0, LOGS.length() - MAX_LOG_CHARS);
+                synchronized (L_MU) {
+                    L_BUF.append(nativeLogs);
+                    if (L_BUF.length() > L_MAX)
+                        L_BUF.delete(0, L_BUF.length() - L_MAX);
                 }
                 for (String line : nativeLogs.split("\n")) {
                     if (line == null) continue;
@@ -206,19 +206,19 @@ public class BtVpnService extends VpnService {
                         lower.contains("expired")) return false;
                 }
             }
-            try { Thread.sleep(HANDSHAKE_POLL_MS); } catch (InterruptedException ignored) { return false; }
+            try { Thread.sleep(HS_POLL); } catch (InterruptedException ignored) { return false; }
         }
         return false;
     }
 
     private void stopAll() {
-        if (!running && !sRunning) {
+        if (!run && !sRunning) {
             log("I stopAll: ya detenido, ignorado");
             return;
         }
-        stopping = true;
+        stop = true;
 
-        running  = false;
+        run  = false;
         sRunning = false;
 
         stopHevStack();
@@ -228,15 +228,15 @@ public class BtVpnService extends VpnService {
 
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
-        stopping = false;
+        stop = false;
         log("I stopAll ok");
     }
 
     private void cleanupSessionResources() {
-        tunPfd     = null;
-        hevTunFd   = -1;
-        hevThread  = null;
-        hevCfgFile = null;
+        tun     = null;
+        hFd   = -1;
+        hTh  = null;
+        hCfg = null;
     }
 
     private boolean startHevStack() {
@@ -245,19 +245,19 @@ public class BtVpnService extends VpnService {
             log("E startHevStack: buildTunInterface failed");
             return false;
         }
-        tunPfd = pfd;
+        tun = pfd;
 
         int dupFd;
         try {
-            dupFd = ParcelFileDescriptor.dup(tunPfd.getFileDescriptor()).detachFd();
+            dupFd = ParcelFileDescriptor.dup(tun.getFileDescriptor()).detachFd();
         } catch (Exception e) {
             log("E startHevStack: dup failed: " + e.getMessage());
-            try { tunPfd.close(); } catch (Exception ignored) {}
-            tunPfd   = null;
-            hevTunFd = -1;
+            try { tun.close(); } catch (Exception ignored) {}
+            tun   = null;
+            hFd = -1;
             return false;
         }
-        hevTunFd = dupFd;
+        hFd = dupFd;
 
         startHevThread();
         return true;
@@ -266,8 +266,8 @@ public class BtVpnService extends VpnService {
     private void stopHevStack() {
         try { HevBridge.stop(); } catch (Throwable ignored) {}
 
-        Thread old = hevThread;
-        hevThread = null;
+        Thread old = hTh;
+        hTh = null;
         if (old != null) {
             try { old.join(3000); } catch (InterruptedException ignored) {}
             if (old.isAlive()) {
@@ -277,26 +277,26 @@ public class BtVpnService extends VpnService {
             }
         }
 
-        int fd = hevTunFd;
-        hevTunFd = -1;
+        int fd = hFd;
+        hFd = -1;
         if (fd >= 0) {
             try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
         }
 
-        ParcelFileDescriptor pfd = tunPfd;
-        tunPfd = null;
+        ParcelFileDescriptor pfd = tun;
+        tun = null;
         if (pfd != null) {
             try { pfd.close(); } catch (Exception ignored) {}
         }
     }
 
     private void startHevThread() {
-        hevCfgFile = writeHevCfg();
-        final int  fd  = hevTunFd;
-        final File cfg = hevCfgFile;
-        hevThread = new Thread(() -> HevBridge.start(cfg.getAbsolutePath(), fd), "hev");
-        hevThread.setDaemon(true);
-        hevThread.start();
+        hCfg = writeHevCfg();
+        final int  fd  = hFd;
+        final File cfg = hCfg;
+        hTh = new Thread(() -> HevBridge.start(cfg.getAbsolutePath(), fd), "hev");
+        hTh.setDaemon(true);
+        hTh.start();
     }
 
     private ParcelFileDescriptor buildTunInterface() {
@@ -324,7 +324,7 @@ public class BtVpnService extends VpnService {
                 BtProxy.nativeSetNetwork(active.getNetworkHandle());
                 setUnderlyingNetworks(new Network[]{active});
             }
-            netCallback = new ConnectivityManager.NetworkCallback() {
+            nCb = new ConnectivityManager.NetworkCallback() {
                 @Override public void onAvailable(Network net) {
                     BtProxy.nativeSetNetwork(net.getNetworkHandle());
                     setUnderlyingNetworks(new Network[]{net});
@@ -337,15 +337,15 @@ public class BtVpnService extends VpnService {
             cm.registerNetworkCallback(
                 new NetworkRequest.Builder()
                     .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(),
-                netCallback);
+                nCb);
         } catch (Exception ignored) {}
     }
 
     private void unregisterNet() {
         try {
             ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-            ConnectivityManager.NetworkCallback cb = netCallback;
-            netCallback = null;
+            ConnectivityManager.NetworkCallback cb = nCb;
+            nCb = null;
             if (cm != null && cb != null) cm.unregisterNetworkCallback(cb);
         } catch (Exception ignored) {}
         BtProxy.nativeSetNetwork(0L);

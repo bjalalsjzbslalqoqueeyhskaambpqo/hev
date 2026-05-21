@@ -57,71 +57,71 @@ static const char *PROXY_IPS[] = {
 };
 #define PROXY_IP_COUNT 2
 
-static volatile int    g_running      = 0;
-static int             g_relay_fd     = -1;
-static int             g_tun_fd       = -1;
-static int             g_epoll_fd     = -1;
-static int             g_wake_r       = -1;
-static int             g_wake_w       = -1;
-static atomic_int      g_next_sid     = 1;
-static atomic_int      g_tunnel_epoch = 0;
-static atomic_long     g_last_pong    = 0;
-static atomic_long     g_last_ping_ts_ms = 0;
-static char            g_internal_id[160] = {0};
-static JavaVM         *g_jvm          = NULL;
-static jobject         g_svc          = NULL;
-static net_handle_t    g_net          = NETWORK_UNSPECIFIED;
-static pthread_t       g_main_thread  = 0;
-static pthread_mutex_t g_mu           = PTHREAD_MUTEX_INITIALIZER;
+static volatile int    g_r      = 0;
+static int             g_rf     = -1;
+static int             g_tf       = -1;
+static int             g_ef     = -1;
+static int             g_wr       = -1;
+static int             g_ww       = -1;
+static atomic_int      g_ns     = 1;
+static atomic_int      g_te = 0;
+static atomic_long     g_lp    = 0;
+static atomic_long     g_lpt = 0;
+static char            g_i[160] = {0};
+static JavaVM         *g_j          = NULL;
+static jobject         g_s          = NULL;
+static net_handle_t    g_n          = NETWORK_UNSPECIFIED;
+static pthread_t       g_mt  = 0;
+static pthread_mutex_t g_m           = PTHREAD_MUTEX_INITIALIZER;
 
-static pthread_mutex_t g_log_mu  = PTHREAD_MUTEX_INITIALIZER;
-static char            g_logbuf[32768];
-static size_t          g_loglen  = 0;
-static long            now_mono_ms(void);
+static pthread_mutex_t g_lm  = PTHREAD_MUTEX_INITIALIZER;
+static char            g_lb[32768];
+static size_t          g_ll  = 0;
+static long            nms(void);
 
-static void push_log(const char *lvl, const char *fmt, ...) {
+static void pl(const char *lvl, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     char msg[512]; vsnprintf(msg, sizeof(msg), fmt, ap); va_end(ap);
     if (lvl[0] == 'E') LOGE("%s", msg); else LOGI("%s", msg);
-    pthread_mutex_lock(&g_log_mu);
+    pthread_mutex_lock(&g_lm);
     char line[560];
     int n = snprintf(line, sizeof(line), "%s %s\n", lvl, msg);
     if (n > 0) {
-        if (g_loglen + (size_t)n >= sizeof(g_logbuf)) {
-            size_t drop = g_loglen + n - sizeof(g_logbuf) + 1;
-            memmove(g_logbuf, g_logbuf + drop, g_loglen - drop);
-            g_loglen -= drop;
+        if (g_ll + (size_t)n >= sizeof(g_lb)) {
+            size_t drop = g_ll + n - sizeof(g_lb) + 1;
+            memmove(g_lb, g_lb + drop, g_ll - drop);
+            g_ll -= drop;
         }
-        memcpy(g_logbuf + g_loglen, line, n);
-        g_loglen += n;
-        g_logbuf[g_loglen] = 0;
+        memcpy(g_lb + g_ll, line, n);
+        g_ll += n;
+        g_lb[g_ll] = 0;
     }
-    pthread_mutex_unlock(&g_log_mu);
+    pthread_mutex_unlock(&g_lm);
 }
 
 #define HT_SIZE 4096
 #define HT_MASK (HT_SIZE - 1)
 
 typedef struct hn_s { struct hn_s *next; uint32_t sid; int cfd; } hn_t;
-static hn_t           *g_ht[HT_SIZE];
-static pthread_mutex_t g_ht_mu[HT_SIZE];
-static int             g_ht_inited = 0;
+static hn_t           *g_h[HT_SIZE];
+static pthread_mutex_t g_hm[HT_SIZE];
+static int             g_hi = 0;
 
 static void ht_init(void) {
     for (int i = 0; i < HT_SIZE; i++) {
-        g_ht[i] = NULL;
-        if (!g_ht_inited) pthread_mutex_init(&g_ht_mu[i], NULL);
+        g_h[i] = NULL;
+        if (!g_hi) pthread_mutex_init(&g_hm[i], NULL);
     }
-    g_ht_inited = 1;
+    g_hi = 1;
 }
 
 static int ht_get(uint32_t sid) {
     int slot = sid & HT_MASK;
-    pthread_mutex_lock(&g_ht_mu[slot]);
-    hn_t *n = g_ht[slot];
+    pthread_mutex_lock(&g_hm[slot]);
+    hn_t *n = g_h[slot];
     while (n && n->sid != sid) n = n->next;
     int cfd = n ? n->cfd : -1;
-    pthread_mutex_unlock(&g_ht_mu[slot]);
+    pthread_mutex_unlock(&g_hm[slot]);
     return cfd;
 }
 
@@ -130,28 +130,28 @@ static void ht_put(uint32_t sid, int cfd) {
     if (!n) return;
     n->sid = sid; n->cfd = cfd;
     int slot = sid & HT_MASK;
-    pthread_mutex_lock(&g_ht_mu[slot]);
-    n->next = g_ht[slot]; g_ht[slot] = n;
-    pthread_mutex_unlock(&g_ht_mu[slot]);
+    pthread_mutex_lock(&g_hm[slot]);
+    n->next = g_h[slot]; g_h[slot] = n;
+    pthread_mutex_unlock(&g_hm[slot]);
 }
 
 static void ht_del(uint32_t sid) {
     int slot = sid & HT_MASK;
-    pthread_mutex_lock(&g_ht_mu[slot]);
-    hn_t **pp = &g_ht[slot];
+    pthread_mutex_lock(&g_hm[slot]);
+    hn_t **pp = &g_h[slot];
     while (*pp) {
         if ((*pp)->sid == sid) {
             hn_t *n = *pp; *pp = n->next; free(n); break;
         }
         pp = &(*pp)->next;
     }
-    pthread_mutex_unlock(&g_ht_mu[slot]);
+    pthread_mutex_unlock(&g_hm[slot]);
 }
 
 static void ht_close_all(int epfd) {
     for (int i = 0; i < HT_SIZE; i++) {
-        pthread_mutex_lock(&g_ht_mu[i]);
-        hn_t *n = g_ht[i];
+        pthread_mutex_lock(&g_hm[i]);
+        hn_t *n = g_h[i];
         while (n) {
             hn_t *nx = n->next;
             if (epfd >= 0) epoll_ctl(epfd, EPOLL_CTL_DEL, n->cfd, NULL);
@@ -159,8 +159,8 @@ static void ht_close_all(int epfd) {
             free(n);
             n = nx;
         }
-        g_ht[i] = NULL;
-        pthread_mutex_unlock(&g_ht_mu[i]);
+        g_h[i] = NULL;
+        pthread_mutex_unlock(&g_hm[i]);
     }
 }
 
@@ -192,35 +192,35 @@ typedef struct sinfo_s {
     uint32_t  sid;
     int       cfd;
     chunkq_t  lq;
-    int       paused_server;
-    int       close_pending;
-    int       paused_read;
-    long      last_active_ms;
+    int       ps;
+    int       cp;
+    int       pr;
+    long      la;
 } sinfo_t;
 
 #define SI_SIZE 4096
 #define SI_MASK (SI_SIZE - 1)
 
 typedef struct si_hn_s { struct si_hn_s *next; uint32_t sid; sinfo_t *si; } si_hn_t;
-static si_hn_t        *g_si[SI_SIZE];
-static pthread_mutex_t g_si_mu[SI_SIZE];
-static int             g_si_inited = 0;
+static si_hn_t        *g_x[SI_SIZE];
+static pthread_mutex_t g_xm[SI_SIZE];
+static int             g_xi = 0;
 
 static void si_init(void) {
     for (int i = 0; i < SI_SIZE; i++) {
-        g_si[i] = NULL;
-        if (!g_si_inited) pthread_mutex_init(&g_si_mu[i], NULL);
+        g_x[i] = NULL;
+        if (!g_xi) pthread_mutex_init(&g_xm[i], NULL);
     }
-    g_si_inited = 1;
+    g_xi = 1;
 }
 
 static sinfo_t *si_get(uint32_t sid) {
     int slot = sid & SI_MASK;
-    pthread_mutex_lock(&g_si_mu[slot]);
-    si_hn_t *n = g_si[slot];
+    pthread_mutex_lock(&g_xm[slot]);
+    si_hn_t *n = g_x[slot];
     while (n && n->sid != sid) n = n->next;
     sinfo_t *si = n ? n->si : NULL;
-    pthread_mutex_unlock(&g_si_mu[slot]);
+    pthread_mutex_unlock(&g_xm[slot]);
     return si;
 }
 
@@ -229,28 +229,28 @@ static void si_put(uint32_t sid, sinfo_t *si) {
     if (!n) return;
     n->sid = sid; n->si = si;
     int slot = sid & SI_MASK;
-    pthread_mutex_lock(&g_si_mu[slot]);
-    n->next = g_si[slot]; g_si[slot] = n;
-    pthread_mutex_unlock(&g_si_mu[slot]);
+    pthread_mutex_lock(&g_xm[slot]);
+    n->next = g_x[slot]; g_x[slot] = n;
+    pthread_mutex_unlock(&g_xm[slot]);
 }
 
 static void si_del(uint32_t sid) {
     int slot = sid & SI_MASK;
-    pthread_mutex_lock(&g_si_mu[slot]);
-    si_hn_t **pp = &g_si[slot];
+    pthread_mutex_lock(&g_xm[slot]);
+    si_hn_t **pp = &g_x[slot];
     while (*pp) {
         if ((*pp)->sid == sid) {
             si_hn_t *n = *pp; *pp = n->next; free(n); break;
         }
         pp = &(*pp)->next;
     }
-    pthread_mutex_unlock(&g_si_mu[slot]);
+    pthread_mutex_unlock(&g_xm[slot]);
 }
 
 static void si_close_all(int epfd) {
     for (int i = 0; i < SI_SIZE; i++) {
-        pthread_mutex_lock(&g_si_mu[i]);
-        si_hn_t *n = g_si[i];
+        pthread_mutex_lock(&g_xm[i]);
+        si_hn_t *n = g_x[i];
         while (n) {
             si_hn_t *nx = n->next;
             sinfo_t *si = n->si;
@@ -261,8 +261,8 @@ static void si_close_all(int epfd) {
             free(si); free(n);
             n = nx;
         }
-        g_si[i] = NULL;
-        pthread_mutex_unlock(&g_si_mu[i]);
+        g_x[i] = NULL;
+        pthread_mutex_unlock(&g_xm[i]);
     }
 }
 
@@ -359,10 +359,10 @@ static int tun_enqueue(int tfd, int epfd, uint8_t type, uint32_t sid,
 }
 
 static void protect_fd(int fd) {
-    pthread_mutex_lock(&g_mu);
-    net_handle_t net = g_net;
-    JavaVM *jvm = g_jvm; jobject svc = g_svc;
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_lock(&g_m);
+    net_handle_t net = g_n;
+    JavaVM *jvm = g_j; jobject svc = g_s;
+    pthread_mutex_unlock(&g_m);
     if (net != NETWORK_UNSPECIFIED) android_setsocknetwork(net, fd);
     if (!jvm || !svc) return;
     JNIEnv *env = NULL; int att = 0;
@@ -459,16 +459,16 @@ static int try_connect_ip(const char *ip, int timeout_ms) {
 }
 
 static int open_tunnel(void) {
-    push_log("I", "conectando...");
+    pl("I", "conectando...");
 
     int fd = -1;
     for (int i = 0; i < PROXY_IP_COUNT && fd < 0; i++) {
-        push_log("I", "probando %s", PROXY_IPS[i]);
+        pl("I", "probando %s", PROXY_IPS[i]);
         fd = try_connect_ip(PROXY_IPS[i], 300);
     }
 
     if (fd < 0) {
-        push_log("I", "IPs estaticas fallaron, resolviendo %s", PROXY_HOST);
+        pl("I", "IPs estaticas fallaron, resolviendo %s", PROXY_HOST);
         struct addrinfo hints = {0}, *res = NULL, *cur;
         hints.ai_family   = AF_INET6;
         hints.ai_socktype = SOCK_STREAM;
@@ -479,29 +479,29 @@ static int open_tunnel(void) {
                 char ipbuf[INET6_ADDRSTRLEN] = {0};
                 struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)cur->ai_addr;
                 inet_ntop(AF_INET6, &a6->sin6_addr, ipbuf, sizeof(ipbuf));
-                push_log("I", "dns %s", ipbuf);
+                pl("I", "dns %s", ipbuf);
                 fd = try_connect_ip(ipbuf, 300);
             }
             freeaddrinfo(res);
         } else {
-            push_log("E", "getaddrinfo fallo");
+            pl("E", "getaddrinfo fallo");
         }
     }
 
-    if (fd < 0) { push_log("E", "connect failed"); return -1; }
+    if (fd < 0) { pl("E", "connect failed"); return -1; }
 
     char buf[4096];
     snprintf(buf, sizeof(buf), "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", PROXY_HOST);
     send(fd, buf, strlen(buf), MSG_NOSIGNAL);
     if (recv_eoh(fd, buf, sizeof(buf), HANDSHAKE_TIMEOUT_SEC) < 0) {
-        push_log("E", "proxy no responde"); close(fd); return -1;
+        pl("E", "proxy no responde"); close(fd); return -1;
     }
 
     char req[1024];
     snprintf(req, sizeof(req),
         "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
         "Connection: Upgrade\r\nAction: tunnel\r\nX-Internal-ID: %s\r\n\r\n",
-        TUNNEL_HOST, g_internal_id[0] ? g_internal_id : "unknown");
+        TUNNEL_HOST, g_i[0] ? g_i : "unknown");
     send(fd, req, strlen(req), MSG_NOSIGNAL);
 
     char h2[4096];
@@ -510,17 +510,17 @@ static int open_tunnel(void) {
     sscanf(h2, "HTTP/%*d.%*d %d", &code);
 
     if (hlen < 0 || code != 101) {
-        push_log("E", "handshake failed code=%d", code);
+        pl("E", "handshake failed code=%d", code);
         close(fd); return -1;
     }
 
     char uname[128] = {0}, udays[32] = {0};
     parse_hdr(h2, "X-User-Name:", uname, sizeof(uname));
     parse_hdr(h2, "X-User-Days:", udays, sizeof(udays));
-    if (uname[0]) push_log("I", "user_name=%s", uname);
-    if (udays[0]) push_log("I", "user_days=%s", udays);
-    push_log("I", "tunnel ok");
-    atomic_store(&g_last_pong, (long)time(NULL));
+    if (uname[0]) pl("I", "user_name=%s", uname);
+    if (udays[0]) pl("I", "user_days=%s", udays);
+    pl("I", "tunnel ok");
+    atomic_store(&g_lp, (long)time(NULL));
 
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
     return fd;
@@ -535,21 +535,21 @@ static void *tunnel_reader(void *arg) {
 
     uint8_t hdr[FRAME_HDR], payload[MAX_PAYLOAD];
 
-    while (g_running && atomic_load(&g_tunnel_epoch) == epoch) {
+    while (g_r && atomic_load(&g_te) == epoch) {
         int rc = tun_recv_full(tfd, hdr, FRAME_HDR, 60000);
-        if (!g_running || atomic_load(&g_tunnel_epoch) != epoch) break;
+        if (!g_r || atomic_load(&g_te) != epoch) break;
         if (rc == -2) {
-            if ((long)time(NULL) - atomic_load(&g_last_pong) > PONG_TIMEOUT_SEC) {
-                push_log("E", "pong timeout");
-                if (atomic_load(&g_tunnel_epoch) == epoch) {
+            if ((long)time(NULL) - atomic_load(&g_lp) > PONG_TIMEOUT_SEC) {
+                pl("E", "pong timeout");
+                if (atomic_load(&g_te) == epoch) {
                     uint8_t b = 1; write(wake_w, &b, 1);
                 }
             }
             continue;
         }
         if (rc < 0) {
-            push_log("E", "tunnel read failed");
-            if (atomic_load(&g_tunnel_epoch) == epoch) {
+            pl("E", "tunnel read failed");
+            if (atomic_load(&g_te) == epoch) {
                 uint8_t b = 1; write(wake_w, &b, 1);
             }
             break;
@@ -561,15 +561,15 @@ static void *tunnel_reader(void *arg) {
         uint16_t len = ((uint16_t)hdr[5] << 8) | hdr[6];
 
         if (len > MAX_PAYLOAD) {
-            push_log("E", "payload too large");
-            if (atomic_load(&g_tunnel_epoch) == epoch) {
+            pl("E", "payload too large");
+            if (atomic_load(&g_te) == epoch) {
                 uint8_t b = 1; write(wake_w, &b, 1);
             }
             break;
         }
         if (len > 0 && tun_recv_full(tfd, payload, len, 30000) < 0) {
-            push_log("E", "payload read failed");
-            if (atomic_load(&g_tunnel_epoch) == epoch) {
+            pl("E", "payload read failed");
+            if (atomic_load(&g_te) == epoch) {
                 uint8_t b = 1; write(wake_w, &b, 1);
             }
             break;
@@ -581,7 +581,7 @@ static void *tunnel_reader(void *arg) {
             sinfo_t *si = si_get(sid);
             if (!si) break;
 
-            si->last_active_ms = now_mono_ms();
+            si->la = nms();
 
             if (si->lq.bytes + len > LOCAL_QUEUE_HARD_LIMIT) {
                 tun_enqueue(tfd, epfd, T_CLOSE, sid, NULL, 0);
@@ -591,7 +591,7 @@ static void *tunnel_reader(void *arg) {
                 break;
             }
 
-            if (si->paused_server) {
+            if (si->ps) {
                 cq_push(&si->lq, payload, len);
                 break;
             }
@@ -604,7 +604,7 @@ static void *tunnel_reader(void *arg) {
                 if (errno == EINTR) continue;
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     cq_push(&si->lq, payload + off, len - off);
-                    si->paused_server = 1;
+                    si->ps = 1;
                     struct epoll_event cev;
                     cev.events   = EPOLLIN | EPOLLOUT;
                     cev.data.u64 = ((uint64_t)sid << 32) | (uint32_t)si->cfd;
@@ -623,7 +623,7 @@ static void *tunnel_reader(void *arg) {
             sinfo_t *si = si_get(sid);
             if (si) {
                 if (si->lq.head) {
-                    si->close_pending = 1;
+                    si->cp = 1;
                 } else {
                     shutdown(si->cfd, SHUT_RDWR);
                 }
@@ -637,11 +637,11 @@ static void *tunnel_reader(void *arg) {
             tun_enqueue(tfd, epfd, T_PONG, 0, NULL, 0);
             break;
         case T_PONG: {
-            atomic_store(&g_last_pong, (long)time(NULL));
-            long sent = atomic_load(&g_last_ping_ts_ms);
+            atomic_store(&g_lp, (long)time(NULL));
+            long sent = atomic_load(&g_lpt);
             if (sent > 0) {
-                long rtt = now_mono_ms() - sent;
-                if (rtt >= 0 && rtt < 10000) push_log("I", "ping_ms=%ld", rtt);
+                long rtt = nms() - sent;
+                if (rtt >= 0 && rtt < 10000) pl("I", "ping_ms=%ld", rtt);
             }
             break;
         }
@@ -656,22 +656,22 @@ static void *keepalive(void *arg) {
     free(ta);
 
     long last = time(NULL);
-    while (g_running && atomic_load(&g_tunnel_epoch) == epoch) {
+    while (g_r && atomic_load(&g_te) == epoch) {
         sleep(1);
-        if (!g_running || atomic_load(&g_tunnel_epoch) != epoch) break;
+        if (!g_r || atomic_load(&g_te) != epoch) break;
         long now = time(NULL);
-        if (now - atomic_load(&g_last_pong) > PONG_TIMEOUT_SEC) {
-            push_log("E", "pong timeout keepalive");
-            if (atomic_load(&g_tunnel_epoch) == epoch) {
+        if (now - atomic_load(&g_lp) > PONG_TIMEOUT_SEC) {
+            pl("E", "pong timeout keepalive");
+            if (atomic_load(&g_te) == epoch) {
                 uint8_t b = 1; write(wake_w, &b, 1);
             }
             break;
         }
         if (now - last < KEEPALIVE_INTERVAL_SEC) continue;
         last = now;
-        atomic_store(&g_last_ping_ts_ms, now_mono_ms());
+        atomic_store(&g_lpt, nms());
         if (tun_enqueue(tfd, epfd, T_PING, 0, NULL, 0) < 0) {
-            if (atomic_load(&g_tunnel_epoch) == epoch) {
+            if (atomic_load(&g_te) == epoch) {
                 uint8_t b = 1; write(wake_w, &b, 1);
             }
             break;
@@ -699,14 +699,14 @@ static int make_relay_socket(int port) {
     return rfd;
 }
 
-static void resume_paused_reads(int epfd) {
+static void resume_prs(int epfd) {
     for (int i = 0; i < SI_SIZE; i++) {
-        pthread_mutex_lock(&g_si_mu[i]);
-        si_hn_t *n = g_si[i];
+        pthread_mutex_lock(&g_xm[i]);
+        si_hn_t *n = g_x[i];
         while (n) {
             sinfo_t *si = n->si;
-            if (si->paused_read) {
-                si->paused_read = 0;
+            if (si->pr) {
+                si->pr = 0;
                 struct epoll_event cev;
                 cev.events   = EPOLLIN;
                 cev.data.u64 = ((uint64_t)si->sid << 32) | (uint32_t)si->cfd;
@@ -714,7 +714,7 @@ static void resume_paused_reads(int epfd) {
             }
             n = n->next;
         }
-        pthread_mutex_unlock(&g_si_mu[i]);
+        pthread_mutex_unlock(&g_xm[i]);
     }
 }
 
@@ -722,17 +722,17 @@ static void *main_thread(void *arg) {
     int port = (int)(intptr_t)arg;
     signal(SIGPIPE, SIG_IGN);
 
-    while (g_running) {
+    while (g_r) {
         int tfd = open_tunnel();
         if (tfd < 0) {
-            if (!g_running) break;
+            if (!g_r) break;
             sleep(3);
             continue;
         }
 
         int rfd = make_relay_socket(port);
         if (rfd < 0) {
-            push_log("E", "relay bind failed");
+            pl("E", "relay bind failed");
             close(tfd); sleep(2); continue;
         }
 
@@ -755,12 +755,12 @@ static void *main_thread(void *arg) {
         ev.events = EPOLLIN; ev.data.fd = tfd;
         epoll_ctl(epfd, EPOLL_CTL_ADD, tfd, &ev);
 
-        int epoch = atomic_fetch_add(&g_tunnel_epoch, 1) + 1;
+        int epoch = atomic_fetch_add(&g_te, 1) + 1;
 
-        pthread_mutex_lock(&g_mu);
-        g_tun_fd = tfd; g_relay_fd = rfd;
-        g_epoll_fd = epfd; g_wake_r = wfds[0]; g_wake_w = wfds[1];
-        pthread_mutex_unlock(&g_mu);
+        pthread_mutex_lock(&g_m);
+        g_tf = tfd; g_rf = rfd;
+        g_ef = epfd; g_wr = wfds[0]; g_ww = wfds[1];
+        pthread_mutex_unlock(&g_m);
 
         wq_init();
 
@@ -778,24 +778,24 @@ static void *main_thread(void *arg) {
         pthread_create(&tr, NULL, tunnel_reader, ta); pthread_detach(tr);
         pthread_create(&tk, NULL, keepalive,      tb); pthread_detach(tk);
 
-        push_log("I", "relay listo port=%d epoch=%d", port, epoch);
+        pl("I", "relay listo port=%d epoch=%d", port, epoch);
         struct epoll_event events[MAX_EPOLL_EVENTS];
         int dead = 0;
-        long last_to_check = now_mono_ms();
+        long last_to_check = nms();
 
-        while (g_running && !dead) {
+        while (g_r && !dead) {
             int n = epoll_wait(epfd, events, MAX_EPOLL_EVENTS, 5000);
             if (n < 0) { if (errno == EINTR) continue; break; }
 
-            long now = now_mono_ms();
+            long now = nms();
             if (now - last_to_check > 15000) {
                 last_to_check = now;
                 for (int i = 0; i < SI_SIZE; i++) {
-                    pthread_mutex_lock(&g_si_mu[i]);
-                    si_hn_t **pp = &g_si[i];
+                    pthread_mutex_lock(&g_xm[i]);
+                    si_hn_t **pp = &g_x[i];
                     while (*pp) {
                         sinfo_t *si = (*pp)->si;
-                        if (now - si->last_active_ms > STREAM_TIMEOUT_MS) {
+                        if (now - si->la > STREAM_TIMEOUT_MS) {
                             si_hn_t *dead_n = *pp;
                             *pp = dead_n->next;
                             epoll_ctl(epfd, EPOLL_CTL_DEL, si->cfd, NULL);
@@ -806,7 +806,7 @@ static void *main_thread(void *arg) {
                             pp = &(*pp)->next;
                         }
                     }
-                    pthread_mutex_unlock(&g_si_mu[i]);
+                    pthread_mutex_unlock(&g_xm[i]);
                 }
             }
 
@@ -824,7 +824,7 @@ static void *main_thread(void *arg) {
                         pthread_mutex_unlock(&g_wq_mu);
                         if (r < 0) { dead = 1; break; }
                         if (wq_bytes < WRITE_QUEUE_LOW_WATER)
-                            resume_paused_reads(epfd);
+                            resume_prs(epfd);
                     }
                     if (evs & (EPOLLHUP | EPOLLERR)) { dead = 1; break; }
                     continue;
@@ -838,14 +838,14 @@ static void *main_thread(void *arg) {
                         if (cfd < 0) break;
 
                         uint32_t sid;
-                        do { sid = (uint32_t)atomic_fetch_add(&g_next_sid, 1) & 0x7FFFFFFF; }
+                        do { sid = (uint32_t)atomic_fetch_add(&g_ns, 1) & 0x7FFFFFFF; }
                         while (!sid || ht_get(sid) != -1);
 
                         sinfo_t *si = calloc(1, sizeof(sinfo_t));
                         if (!si) { close(cfd); continue; }
                         si->sid            = sid;
                         si->cfd            = cfd;
-                        si->last_active_ms = now_mono_ms();
+                        si->la = nms();
 
                         ht_put(sid, cfd);
                         si_put(sid, si);
@@ -878,7 +878,7 @@ static void *main_thread(void *arg) {
                     continue;
                 }
 
-                if ((evs & EPOLLOUT) && si && si->paused_server) {
+                if ((evs & EPOLLOUT) && si && si->ps) {
                     int drain_done = 0;
                     while (si->lq.head) {
                         chunk_t *c = si->lq.head;
@@ -907,9 +907,9 @@ static void *main_thread(void *arg) {
 
                     if (!si->lq.head) {
                         si->lq.bytes = 0; si->lq.tail = NULL;
-                        si->paused_server = 0;
-                        si->last_active_ms = now_mono_ms();
-                        if (si->close_pending) {
+                        si->ps = 0;
+                        si->la = nms();
+                        if (si->cp) {
                             shutdown(cfd, SHUT_RDWR);
                         } else {
                             struct epoll_event cev;
@@ -924,14 +924,14 @@ static void *main_thread(void *arg) {
                     uint8_t buf[MAX_PAYLOAD];
                     ssize_t nr = recv(cfd, buf, sizeof(buf), 0);
                     if (nr > 0) {
-                        if (si) si->last_active_ms = now_mono_ms();
+                        if (si) si->la = nms();
 
                         pthread_mutex_lock(&g_wq_mu);
                         size_t wq_total = g_wq.bytes + (g_wp ? g_wp->total - g_wp->offset : 0);
                         pthread_mutex_unlock(&g_wq_mu);
 
                         if (wq_total > WRITE_QUEUE_HIGH_WATER && si) {
-                            si->paused_read = 1;
+                            si->pr = 1;
                             struct epoll_event cev;
                             cev.events   = 0;
                             cev.data.u64 = ((uint64_t)sid << 32) | (uint32_t)cfd;
@@ -951,9 +951,9 @@ static void *main_thread(void *arg) {
             }
         }
 
-        push_log("E", "tunnel caido epoch=%d", epoch);
+        pl("E", "tunnel caido epoch=%d", epoch);
 
-        atomic_fetch_add(&g_tunnel_epoch, 1);
+        atomic_fetch_add(&g_te, 1);
         si_close_all(epfd);
         ht_close_all(-1);
 
@@ -961,17 +961,17 @@ static void *main_thread(void *arg) {
         wq_flush_locked();
         pthread_mutex_unlock(&g_wq_mu);
 
-        pthread_mutex_lock(&g_mu);
-        g_tun_fd = -1; g_relay_fd = -1; g_epoll_fd = -1;
-        g_wake_r = -1; g_wake_w   = -1;
-        pthread_mutex_unlock(&g_mu);
+        pthread_mutex_lock(&g_m);
+        g_tf = -1; g_rf = -1; g_ef = -1;
+        g_wr = -1; g_ww   = -1;
+        pthread_mutex_unlock(&g_m);
 
         close(epfd);
         close(rfd);
         shutdown(tfd, SHUT_RDWR); close(tfd);
         close(wfds[0]); close(wfds[1]);
 
-        if (g_running) sleep(3);
+        if (g_r) sleep(3);
     }
 
     return NULL;
@@ -983,60 +983,60 @@ JNIEXPORT jint JNICALL
 Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
                                           jint port, jobject svc, jstring iid) {
     (void)clazz;
-    pthread_mutex_lock(&g_mu);
-    if (g_running) { pthread_mutex_unlock(&g_mu); return 0; }
-    pthread_t old = g_main_thread;
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_lock(&g_m);
+    if (g_r) { pthread_mutex_unlock(&g_m); return 0; }
+    pthread_t old = g_mt;
+    pthread_mutex_unlock(&g_m);
 
     if (old != 0) {
         pthread_join(old, NULL);
-        pthread_mutex_lock(&g_mu); g_main_thread = 0; pthread_mutex_unlock(&g_mu);
+        pthread_mutex_lock(&g_m); g_mt = 0; pthread_mutex_unlock(&g_m);
     }
 
-    pthread_mutex_lock(&g_mu);
-    (*env)->GetJavaVM(env, &g_jvm);
-    g_svc = (*env)->NewGlobalRef(env, svc);
-    g_internal_id[0] = 0;
+    pthread_mutex_lock(&g_m);
+    (*env)->GetJavaVM(env, &g_j);
+    g_s = (*env)->NewGlobalRef(env, svc);
+    g_i[0] = 0;
     if (iid) {
         const char *s = (*env)->GetStringUTFChars(env, iid, NULL);
-        if (s) { snprintf(g_internal_id, sizeof(g_internal_id), "%s", s);
+        if (s) { snprintf(g_i, sizeof(g_i), "%s", s);
                  (*env)->ReleaseStringUTFChars(env, iid, s); }
     }
     ht_init();
     si_init();
-    g_running = 1;
-    atomic_store(&g_next_sid, 1);
-    pthread_mutex_unlock(&g_mu);
+    g_r = 1;
+    atomic_store(&g_ns, 1);
+    pthread_mutex_unlock(&g_m);
 
     pthread_t thr;
     if (pthread_create(&thr, NULL, main_thread, (void *)(intptr_t)port) != 0) {
-        pthread_mutex_lock(&g_mu); g_running = 0;
-        (*env)->DeleteGlobalRef(env, g_svc); g_svc = NULL; g_jvm = NULL;
-        pthread_mutex_unlock(&g_mu); return -1;
+        pthread_mutex_lock(&g_m); g_r = 0;
+        (*env)->DeleteGlobalRef(env, g_s); g_s = NULL; g_j = NULL;
+        pthread_mutex_unlock(&g_m); return -1;
     }
-    pthread_mutex_lock(&g_mu); g_main_thread = thr; pthread_mutex_unlock(&g_mu);
+    pthread_mutex_lock(&g_m); g_mt = thr; pthread_mutex_unlock(&g_m);
     pthread_detach(thr);
 
-    push_log("I", "nativeStart lanzado");
+    pl("I", "nativeStart lanzado");
     return 0;
 }
 
 JNIEXPORT void JNICALL
 Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     (void)clazz;
-    pthread_mutex_lock(&g_mu);
-    if (!g_running) { pthread_mutex_unlock(&g_mu); return; }
-    g_running = 0;
-    g_internal_id[0] = 0;
-    jobject svc = g_svc; g_svc = NULL; g_jvm = NULL;
-    int rfd  = g_relay_fd;  g_relay_fd  = -1;
-    int tfd  = g_tun_fd;    g_tun_fd    = -1;
-    int epfd = g_epoll_fd;  g_epoll_fd  = -1;
-    int wr   = g_wake_r;    g_wake_r    = -1;
-    int ww   = g_wake_w;    g_wake_w    = -1;
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_lock(&g_m);
+    if (!g_r) { pthread_mutex_unlock(&g_m); return; }
+    g_r = 0;
+    g_i[0] = 0;
+    jobject svc = g_s; g_s = NULL; g_j = NULL;
+    int rfd  = g_rf;  g_rf  = -1;
+    int tfd  = g_tf;    g_tf    = -1;
+    int epfd = g_ef;  g_ef  = -1;
+    int wr   = g_wr;    g_wr    = -1;
+    int ww   = g_ww;    g_ww    = -1;
+    pthread_mutex_unlock(&g_m);
 
-    atomic_fetch_add(&g_tunnel_epoch, 1);
+    atomic_fetch_add(&g_te, 1);
 
     if (ww   >= 0) { uint8_t b = 1; write(ww, &b, 1); }
     if (epfd >= 0) close(epfd);
@@ -1058,19 +1058,19 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
 JNIEXPORT jstring JNICALL
 Java_com_blacktunnel_BtProxy_nativeDrainLogs(JNIEnv *env, jclass c) {
     (void)c;
-    pthread_mutex_lock(&g_log_mu);
-    if (!g_loglen) { pthread_mutex_unlock(&g_log_mu); return (*env)->NewStringUTF(env, ""); }
+    pthread_mutex_lock(&g_lm);
+    if (!g_ll) { pthread_mutex_unlock(&g_lm); return (*env)->NewStringUTF(env, ""); }
     char out[32768];
-    memcpy(out, g_logbuf, g_loglen); out[g_loglen] = 0;
-    g_loglen = 0; g_logbuf[0] = 0;
-    pthread_mutex_unlock(&g_log_mu);
+    memcpy(out, g_lb, g_ll); out[g_ll] = 0;
+    g_ll = 0; g_lb[0] = 0;
+    pthread_mutex_unlock(&g_lm);
     return (*env)->NewStringUTF(env, out);
 }
 
 JNIEXPORT void JNICALL
 Java_com_blacktunnel_BtProxy_nativeSetNetwork(JNIEnv *e, jclass c, jlong net) {
     (void)e; (void)c;
-    pthread_mutex_lock(&g_mu); g_net = (net_handle_t)net; pthread_mutex_unlock(&g_mu);
+    pthread_mutex_lock(&g_m); g_n = (net_handle_t)net; pthread_mutex_unlock(&g_m);
 }
 
 static JNINativeMethod g_methods[] = {
@@ -1096,7 +1096,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *r) {
     return JNI_VERSION_1_6;
 }
 
-static long now_mono_ms(void) {
+static long nms(void) {
     struct timespec ts = {0};
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (long)(ts.tv_sec * 1000L + ts.tv_nsec / 1000000L);

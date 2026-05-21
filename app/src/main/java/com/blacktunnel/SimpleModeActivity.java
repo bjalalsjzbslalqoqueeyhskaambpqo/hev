@@ -71,65 +71,65 @@ public class SimpleModeActivity extends ComponentActivity {
 
     private enum UiState { DISCONNECTED, CONNECTING, CONNECTED }
 
-    private Button        connectBtn;
-    private Button        copyIdBtn;
-    private TextView      statusBadgeView;
-    private View          statusDotView;
-    private View          statusHaloView;
-    private View          statusHaloMidView;
-    private TextView      statusDetailsView;
-    private TextView      deviceIdView;
-    private TextView      userNameWideView;
-    private TextView      daysValueView;
-    private TextView      pingValueView;
-    private PingPulseView pingPulseView;
-    private Switch        gamingModeSwitch;
-    private TextView      gamingModeBadgeView;
-    private TextView      gamingDescriptionView;
-    private TextView      gamingSelectedCountView;
-    private Button        selectGamingAppsBtn;
-    private LinearLayout  gamingModePanel;
-    private LinearLayout  gamingControlsLayout;
-    private View          panelConnectionView;
-    private View          btnRingOuter;
-    private View          btnRingMid;
-    private View          btnTopDot;
-    private Animator      statusPulseAnimator;
-    private Animator      statusHaloAnimator;
+    private Button        cBtn;
+    private Button        cpBtn;
+    private TextView      stBdV;
+    private View          stDtV;
+    private View          stHlV;
+    private View          stHmV;
+    private TextView      stDtlsV;
+    private TextView      devIdV;
+    private TextView      usrNmWV;
+    private TextView      daysV;
+    private TextView      pngV;
+    private PingPulseView pngPlsV;
+    private Switch        gmSw;
+    private TextView      gmBdV;
+    private TextView      gmDescV;
+    private TextView      gmCntV;
+    private Button        selGmBtn;
+    private LinearLayout  gmPn;
+    private LinearLayout  gmCtlL;
+    private View          pnConnV;
+    private View          bRO;
+    private View          bRM;
+    private View          bTD;
+    private Animator      stPlsA;
+    private Animator      stHlA;
 
-    private final ExecutorService appLoadExecutor    = Executors.newSingleThreadExecutor();
-    private String  internalId                       = "";
-    private UiState uiState                          = UiState.DISCONNECTED;
-    private long    connectingSinceMs                = 0L;
-    private boolean lastRunning                      = false;
-    private long    autoDisconnectAtMs               = -1L;
-    private boolean pendingManualReconnect           = false;
-    private String  authState                        = "";
-    private boolean hideInternalId                   = false;
-    private boolean applyingRuntimeChanges           = false;
-    private int     lastPingMs                       = -1;
-    private boolean handshakeConfirmed               = false;
-    private String  lastKnownConnState               = "";
-    private String  lastDetailText                   = "";
+    private final ExecutorService appEx    = Executors.newSingleThreadExecutor();
+    private String  iid                       = "";
+    private UiState uS                          = UiState.DISCONNECTED;
+    private long    connMs                = 0L;
+    private boolean lstRun                      = false;
+    private long    autoDcMs               = -1L;
+    private boolean pendRec           = false;
+    private String  aSt                        = "";
+    private boolean hidIid                   = false;
+    private boolean apRt           = false;
+    private int     lstPing                       = -1;
+    private boolean hsOk               = false;
+    private String  lstConn               = "";
+    private String  lstDtl                   = "";
 
     private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
     private final Runnable delayedReconnectRunnable = () -> {
-        pendingManualReconnect = false;
+        pendRec = false;
         startVpnWithPermission();
     };
-    private ConnectivityManager connectivityManager;
-    private ConnectivityManager.NetworkCallback networkCallback;
-    private final Handler handler = new Handler(Looper.getMainLooper());
-    private ActivityResultLauncher<Intent> vpnPermissionLauncher;
+    private ConnectivityManager connMgr;
+    private ConnectivityManager.NetworkCallback netCb;
+    private final Handler h = new Handler(Looper.getMainLooper());
+    private ActivityResultLauncher<Intent> vpnPermL;
 
-    private final Runnable stateTicker = new Runnable() {
+    private final Runnable stTick = new Runnable() {
         @Override public void run() {
             try {
                 String logs = BtVpnService.dumpLogs();
                 syncStateFromLogs(logs);
                 refreshFromLogs(logs);
             } catch (Throwable ignored) {}
-            handler.postDelayed(this, 3000);
+            h.postDelayed(this, 3000);
         }
     };
 
@@ -145,7 +145,7 @@ public class SimpleModeActivity extends ComponentActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_simple_mode);
 
-        vpnPermissionLauncher = registerForActivityResult(
+        vpnPermL = registerForActivityResult(
             new ActivityResultContracts.StartActivityForResult(),
             result -> {
                 if (result.getResultCode() == RESULT_OK) startVpn();
@@ -153,61 +153,61 @@ public class SimpleModeActivity extends ComponentActivity {
             }
         );
 
-        connectBtn              = findViewById(R.id.btnConnect);
-        copyIdBtn               = findViewById(R.id.btnCopyLogs);
-        statusBadgeView         = findViewById(R.id.txtStatusBadge);
-        statusDotView           = findViewById(R.id.viewStatusDot);
-        statusHaloView          = findViewById(R.id.viewStatusHalo);
-        statusHaloMidView       = findViewById(R.id.viewStatusHaloMid);
-        statusDetailsView       = findViewById(R.id.txtStatusDetails);
-        deviceIdView            = findViewById(R.id.txtDeviceId);
-        daysValueView           = findViewById(R.id.txtDays);
-        pingValueView           = findViewById(R.id.txtPingValue);
-        pingPulseView           = findViewById(R.id.pingPulseView);
-        gamingModeSwitch        = findViewById(R.id.switchGamingMode);
-        gamingModeBadgeView     = findViewById(R.id.txtGamingBadge);
-        gamingDescriptionView   = findViewById(R.id.txtGamingDescription);
-        gamingSelectedCountView = findViewById(R.id.txtGamingSelectedCount);
-        selectGamingAppsBtn     = findViewById(R.id.btnSelectGamingApps);
-        gamingModePanel         = findViewById(R.id.panelGamingMode);
-        gamingControlsLayout    = findViewById(R.id.layoutGamingControls);
-        panelConnectionView     = findViewById(R.id.panelConnection);
-        userNameWideView        = findViewById(R.id.txtUserNameWide);
-        btnRingOuter            = findViewById(R.id.btnRingOuter);
-        btnRingMid              = findViewById(R.id.btnRingMid);
-        btnTopDot               = findViewById(R.id.btnTopDot);
+        cBtn              = findViewById(R.id.btnConnect);
+        cpBtn               = findViewById(R.id.btnCopyLogs);
+        stBdV         = findViewById(R.id.txtStatusBadge);
+        stDtV           = findViewById(R.id.viewStatusDot);
+        stHlV          = findViewById(R.id.viewStatusHalo);
+        stHmV       = findViewById(R.id.viewStatusHaloMid);
+        stDtlsV       = findViewById(R.id.txtStatusDetails);
+        devIdV            = findViewById(R.id.txtDeviceId);
+        daysV           = findViewById(R.id.txtDays);
+        pngV           = findViewById(R.id.txtPingValue);
+        pngPlsV           = findViewById(R.id.pingPulseView);
+        gmSw        = findViewById(R.id.switchGamingMode);
+        gmBdV     = findViewById(R.id.txtGamingBadge);
+        gmDescV   = findViewById(R.id.txtGamingDescription);
+        gmCntV = findViewById(R.id.txtGamingSelectedCount);
+        selGmBtn     = findViewById(R.id.btnSelectGamingApps);
+        gmPn         = findViewById(R.id.panelGamingMode);
+        gmCtlL    = findViewById(R.id.layoutGamingControls);
+        pnConnV     = findViewById(R.id.panelConnection);
+        usrNmWV        = findViewById(R.id.txtUserNameWide);
+        bRO            = findViewById(R.id.btnRingOuter);
+        bRM              = findViewById(R.id.btnRingMid);
+        bTD               = findViewById(R.id.btnTopDot);
 
-        internalId = BtProxy.getOrCreateInternalId(this);
+        iid = BtProxy.getOrCreateInternalId(this);
         BtProxy.applyStoredGamingMode(this);
-        hideInternalId = getSharedPreferences(PREF_UI, MODE_PRIVATE).getBoolean(KEY_HIDE_ID, false);
-        if (deviceIdView != null) deviceIdView.setText("ID: " + internalId);
+        hidIid = getSharedPreferences(PREF_UI, MODE_PRIVATE).getBoolean(KEY_HIDE_ID, false);
+        if (devIdV != null) devIdV.setText("ID: " + iid);
         refreshDeviceIdVisibility();
 
-        boolean running = BtVpnService.isRunningState();
-        setUiState(running ? UiState.CONNECTED : UiState.DISCONNECTED);
-        lastRunning = running;
+        boolean run = BtVpnService.isRunningState();
+        setUiState(run ? UiState.CONNECTED : UiState.DISCONNECTED);
+        lstRun = run;
 
-        connectBtn.setOnClickListener(v -> {
-            if (uiState == UiState.CONNECTING) return;
-            if (uiState == UiState.CONNECTED) stopVpn();
+        cBtn.setOnClickListener(v -> {
+            if (uS == UiState.CONNECTING) return;
+            if (uS == UiState.CONNECTED) stopVpn();
             else {
                 if (BtVpnService.isRunningState()) {
-                    if (!pendingManualReconnect) {
-                        pendingManualReconnect = true;
+                    if (!pendRec) {
+                        pendRec = true;
                         setUiState(UiState.CONNECTING);
-                        handler.removeCallbacks(delayedReconnectRunnable);
-                        handler.postDelayed(delayedReconnectRunnable, 850);
+                        h.removeCallbacks(delayedReconnectRunnable);
+                        h.postDelayed(delayedReconnectRunnable, 850);
                     }
                 } else {
                     startVpnWithPermission();
                 }
             }
         });
-        copyIdBtn.setOnClickListener(v -> copyInternalIdToClipboard());
+        cpBtn.setOnClickListener(v -> copyInternalIdToClipboard());
 
-        if (gamingModeSwitch != null) {
-            gamingModeSwitch.setChecked(BtProxy.isGamingMode(this));
-            gamingModeSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+        if (gmSw != null) {
+            gmSw.setChecked(BtProxy.isGamingMode(this));
+            gmSw.setOnCheckedChangeListener((buttonView, isChecked) -> {
                 BtProxy.setGamingMode(this, isChecked);
                 refreshGamingModeUi();
                 if (BtVpnService.isRunningState()) {
@@ -220,43 +220,43 @@ public class SimpleModeActivity extends ComponentActivity {
                 }
             });
         }
-        if (selectGamingAppsBtn != null)
-            selectGamingAppsBtn.setOnClickListener(v -> openGamingAppsDialog());
+        if (selGmBtn != null)
+            selGmBtn.setOnClickListener(v -> openGamingAppsDialog());
 
         refreshGamingModeUi();
         setupConnectivityMonitor();
-        handler.post(stateTicker);
+        h.post(stTick);
     }
 
     private void applyHudTheme(int accentColor) {
         float dp = getResources().getDisplayMetrics().density;
 
-        if (btnRingOuter  != null) btnRingOuter.setBackground(VisualDrawables.btnRingOuter(accentColor));
-        if (btnRingMid    != null) btnRingMid.setBackground(VisualDrawables.btnRingMid(accentColor));
-        if (btnTopDot     != null) btnTopDot.setBackgroundTintList(ColorStateList.valueOf(accentColor));
+        if (bRO  != null) bRO.setBackground(VisualDrawables.bRO(accentColor));
+        if (bRM    != null) bRM.setBackground(VisualDrawables.bRM(accentColor));
+        if (bTD     != null) bTD.setBackgroundTintList(ColorStateList.valueOf(accentColor));
 
-        if (panelConnectionView != null)
-            panelConnectionView.setBackground(VisualDrawables.statusBadge(accentColor));
+        if (pnConnV != null)
+            pnConnV.setBackground(VisualDrawables.statusBadge(accentColor));
 
         View metricsStrip = findViewById(R.id.layoutDataStrip);
         if (metricsStrip != null) metricsStrip.setBackground(VisualDrawables.panelMetrics(accentColor));
 
-        if (pingPulseView != null) pingPulseView.setLineColor(accentColor);
+        if (pngPlsV != null) pngPlsV.setLineColor(accentColor);
 
-        if (connectBtn != null)
-            connectBtn.setBackground(VisualDrawables.btnConnect(accentColor, uiState == UiState.CONNECTED));
+        if (cBtn != null)
+            cBtn.setBackground(VisualDrawables.btnConnect(accentColor, uS == UiState.CONNECTED));
     }
 
     private int resolveAccentColor() {
-        return uiState == UiState.CONNECTED  ? c(R.color.color_connected)
-             : uiState == UiState.CONNECTING ? c(R.color.color_connecting)
+        return uS == UiState.CONNECTED  ? c(R.color.color_connected)
+             : uS == UiState.CONNECTING ? c(R.color.color_connecting)
              : c(R.color.color_disconnected);
     }
 
     private void setupConnectivityMonitor() {
-        connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-        if (connectivityManager == null) return;
-        networkCallback = new ConnectivityManager.NetworkCallback() {
+        connMgr = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (connMgr == null) return;
+        netCb = new ConnectivityManager.NetworkCallback() {
             @Override public void onLost(Network network) {
                 if (BtVpnService.isRunningState()) stopVpn();
                 setUiState(UiState.DISCONNECTED);
@@ -264,22 +264,22 @@ public class SimpleModeActivity extends ComponentActivity {
             @Override public void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
                 if (caps == null) return;
                 if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                        && uiState == UiState.CONNECTING)
+                        && uS == UiState.CONNECTING)
                     setUiState(UiState.DISCONNECTED);
             }
         };
         try {
-            connectivityManager.registerNetworkCallback(
+            connMgr.registerNetworkCallback(
                 new NetworkRequest.Builder()
                     .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(),
-                networkCallback);
+                netCb);
         } catch (Throwable ignored) {}
     }
 
     private void copyInternalIdToClipboard() {
         ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         if (cm != null) {
-            cm.setPrimaryClip(ClipData.newPlainText("internal_id", internalId));
+            cm.setPrimaryClip(ClipData.newPlainText("internal_id", iid));
             Toast.makeText(this, "ID copiado", Toast.LENGTH_SHORT).show();
         } else {
             Toast.makeText(this, "Error copiando ID", Toast.LENGTH_SHORT).show();
@@ -288,20 +288,20 @@ public class SimpleModeActivity extends ComponentActivity {
 
     @Override
     protected void onDestroy() {
-        handler.removeCallbacks(stateTicker);
-        handler.removeCallbacks(autoDisconnectRunnable);
-        handler.removeCallbacks(delayedReconnectRunnable);
-        if (connectBtn != null) connectBtn.animate().cancel();
-        if (statusDetailsView != null) statusDetailsView.animate().cancel();
-        if (statusBadgeView != null) statusBadgeView.animate().cancel();
+        h.removeCallbacks(stTick);
+        h.removeCallbacks(autoDisconnectRunnable);
+        h.removeCallbacks(delayedReconnectRunnable);
+        if (cBtn != null) cBtn.animate().cancel();
+        if (stDtlsV != null) stDtlsV.animate().cancel();
+        if (stBdV != null) stBdV.animate().cancel();
         stopStatusPulse();
         stopStatusHaloWave();
         stopHudRingRotation();
-        if (connectivityManager != null && networkCallback != null) {
-            try { connectivityManager.unregisterNetworkCallback(networkCallback); } catch (Throwable ignored) {}
+        if (connMgr != null && netCb != null) {
+            try { connMgr.unregisterNetworkCallback(netCb); } catch (Throwable ignored) {}
         }
         BtVpnService.stopLocalProxy();
-        appLoadExecutor.shutdownNow();
+        appEx.shutdownNow();
         super.onDestroy();
     }
 
@@ -309,51 +309,51 @@ public class SimpleModeActivity extends ComponentActivity {
     private boolean canAnimate() { return ValueAnimator.areAnimatorsEnabled(); }
 
     private void startStatusPulse() {
-        if (statusDotView == null || !canAnimate()) return;
-        if (statusPulseAnimator == null)
-            statusPulseAnimator = AnimatorInflater.loadAnimator(this, R.animator.pulse);
-        statusPulseAnimator.setTarget(statusDotView);
-        if (!statusPulseAnimator.isStarted()) statusPulseAnimator.start();
+        if (stDtV == null || !canAnimate()) return;
+        if (stPlsA == null)
+            stPlsA = AnimatorInflater.loadAnimator(this, R.animator.pulse);
+        stPlsA.setTarget(stDtV);
+        if (!stPlsA.isStarted()) stPlsA.start();
     }
 
     private void stopStatusPulse() {
-        if (statusPulseAnimator != null) statusPulseAnimator.cancel();
-        if (statusDotView != null) {
-            statusDotView.setScaleX(1f); statusDotView.setScaleY(1f); statusDotView.setAlpha(1f);
+        if (stPlsA != null) stPlsA.cancel();
+        if (stDtV != null) {
+            stDtV.setScaleX(1f); stDtV.setScaleY(1f); stDtV.setAlpha(1f);
         }
     }
 
     private void startStatusHaloWave() {
-        if (statusHaloView == null || !canAnimate()) return;
-        if (statusHaloAnimator == null)
-            statusHaloAnimator = AnimatorInflater.loadAnimator(this, R.animator.status_halo_wave);
-        statusHaloAnimator.setTarget(statusHaloView);
-        if (!statusHaloAnimator.isStarted()) statusHaloAnimator.start();
+        if (stHlV == null || !canAnimate()) return;
+        if (stHlA == null)
+            stHlA = AnimatorInflater.loadAnimator(this, R.animator.status_halo_wave);
+        stHlA.setTarget(stHlV);
+        if (!stHlA.isStarted()) stHlA.start();
     }
 
     private void stopStatusHaloWave() {
-        if (statusHaloAnimator != null) statusHaloAnimator.cancel();
-        if (statusHaloView != null) {
-            statusHaloView.setScaleX(1f); statusHaloView.setScaleY(1f); statusHaloView.setAlpha(0.20f);
+        if (stHlA != null) stHlA.cancel();
+        if (stHlV != null) {
+            stHlV.setScaleX(1f); stHlV.setScaleY(1f); stHlV.setAlpha(0.20f);
         }
     }
 
     private void startHudRingRotation() {
-        if (!canAnimate() || btnRingOuter == null) return;
-        btnRingOuter.animate().cancel();
-        btnRingOuter.animate()
+        if (!canAnimate() || bRO == null) return;
+        bRO.animate().cancel();
+        bRO.animate()
             .rotationBy(360f)
             .setDuration(9000)
             .setInterpolator(new android.view.animation.LinearInterpolator())
             .withEndAction(() -> {
-                if (uiState == UiState.CONNECTED && btnRingOuter != null && btnRingOuter.isAttachedToWindow())
+                if (uS == UiState.CONNECTED && bRO != null && bRO.isAttachedToWindow())
                     startHudRingRotation();
             })
             .start();
     }
 
     private void stopHudRingRotation() {
-        if (btnRingOuter != null) btnRingOuter.animate().cancel();
+        if (bRO != null) bRO.animate().cancel();
     }
 
 
@@ -394,47 +394,47 @@ public class SimpleModeActivity extends ComponentActivity {
         boolean enabled = BtProxy.isGamingMode(this);
         List<String> selected = BtProxy.getGamingSelectedPackages(this);
 
-        if (gamingModeBadgeView != null) {
+        if (gmBdV != null) {
             if (enabled) {
-                gamingModeBadgeView.setText(R.string.gaming_mode_on_compact);
-                gamingModeBadgeView.setTextColor(c(R.color.color_gaming));
-                gamingModeBadgeView.setBackgroundResource(R.drawable.strike_chip_left);
-                gamingModeBadgeView.setLetterSpacing(0.14f);
+                gmBdV.setText(R.string.gaming_mode_on_compact);
+                gmBdV.setTextColor(c(R.color.color_gaming));
+                gmBdV.setBackgroundResource(R.drawable.strike_chip_left);
+                gmBdV.setLetterSpacing(0.14f);
             } else {
-                gamingModeBadgeView.setText(R.string.gaming_mode_off_compact);
-                gamingModeBadgeView.setTextColor(c(R.color.color_btn_disabled));
+                gmBdV.setText(R.string.gaming_mode_off_compact);
+                gmBdV.setTextColor(c(R.color.color_btn_disabled));
             }
         }
-        if (gamingDescriptionView != null)
-            gamingDescriptionView.setVisibility(enabled ? View.VISIBLE : View.GONE);
-        if (gamingSelectedCountView != null) {
+        if (gmDescV != null)
+            gmDescV.setVisibility(enabled ? View.VISIBLE : View.GONE);
+        if (gmCntV != null) {
             if (selected.isEmpty()) {
-                gamingSelectedCountView.setText("Ninguna app seleccionada");
-                gamingSelectedCountView.setTextColor(c(R.color.color_text_disabled));
+                gmCntV.setText("Ninguna app seleccionada");
+                gmCntV.setTextColor(c(R.color.color_text_disabled));
             } else {
                 String first   = selected.get(0);
                 String summary = selected.size() > 1 ? first + " +" + (selected.size() - 1) + " más" : first;
-                gamingSelectedCountView.setText(summary);
-                gamingSelectedCountView.setTextColor(c(R.color.color_gaming));
+                gmCntV.setText(summary);
+                gmCntV.setTextColor(c(R.color.color_gaming));
             }
         }
-        if (selectGamingAppsBtn != null) {
-            selectGamingAppsBtn.setEnabled(enabled);
-            selectGamingAppsBtn.setAlpha(enabled ? 1f : 0.55f);
+        if (selGmBtn != null) {
+            selGmBtn.setEnabled(enabled);
+            selGmBtn.setAlpha(enabled ? 1f : 0.55f);
         }
-        if (gamingControlsLayout != null) {
+        if (gmCtlL != null) {
             if (enabled) {
-                gamingControlsLayout.setVisibility(View.VISIBLE);
-                gamingControlsLayout.setAlpha(0f);
-                gamingControlsLayout.animate().alpha(1f).setDuration(180).start();
+                gmCtlL.setVisibility(View.VISIBLE);
+                gmCtlL.setAlpha(0f);
+                gmCtlL.animate().alpha(1f).setDuration(180).start();
             } else {
-                gamingControlsLayout.animate().cancel();
-                gamingControlsLayout.setVisibility(View.GONE);
+                gmCtlL.animate().cancel();
+                gmCtlL.setVisibility(View.GONE);
             }
         }
-        if (gamingModePanel != null) gamingModePanel.setActivated(enabled);
-        if (connectBtn != null && uiState != UiState.CONNECTED && uiState != UiState.CONNECTING)
-            connectBtn.setText(enabled ? getString(R.string.connect_gaming) : getString(R.string.connect));
+        if (gmPn != null) gmPn.setActivated(enabled);
+        if (cBtn != null && uS != UiState.CONNECTED && uS != UiState.CONNECTING)
+            cBtn.setText(enabled ? getString(R.string.connect_gaming) : getString(R.string.connect));
     }
 
     private void openGamingAppsDialog() {
@@ -459,7 +459,7 @@ public class SimpleModeActivity extends ComponentActivity {
             })
             .create();
 
-        appLoadExecutor.execute(() -> {
+        appEx.execute(() -> {
             List<AppOption> allApps = loadInstalledUserApps();
             runOnUiThread(() -> bindGamingDialogContent(searchView, counterView, selectedLayout, listView, selectedPackages, allApps));
         });
@@ -594,9 +594,9 @@ public class SimpleModeActivity extends ComponentActivity {
 
     private void startVpnWithPermission() {
         setUiState(UiState.CONNECTING);
-        authState = ""; lastKnownConnState = "";
+        aSt = ""; lstConn = "";
         Intent prepare = VpnService.prepare(this);
-        if (prepare != null) vpnPermissionLauncher.launch(prepare);
+        if (prepare != null) vpnPermL.launch(prepare);
         else startVpn();
     }
 
@@ -605,28 +605,28 @@ public class SimpleModeActivity extends ComponentActivity {
         i.setAction(BtVpnService.ACTION_START);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
         else startService(i);
-        connectingSinceMs = SystemClock.elapsedRealtime();
-        handshakeConfirmed = false; lastKnownConnState = "";
+        connMs = SystemClock.elapsedRealtime();
+        hsOk = false; lstConn = "";
         setUiState(UiState.CONNECTING);
     }
 
     private void stopVpn() {
-        pendingManualReconnect = false;
-        handler.removeCallbacks(delayedReconnectRunnable);
+        pendRec = false;
+        h.removeCallbacks(delayedReconnectRunnable);
         Intent i = new Intent(this, BtVpnService.class);
         i.setAction(BtVpnService.ACTION_STOP);
         startService(i);
-        handshakeConfirmed = false; lastKnownConnState = "";
+        hsOk = false; lstConn = "";
         setUiState(UiState.DISCONNECTED);
-        handler.removeCallbacks(autoDisconnectRunnable);
-        autoDisconnectAtMs = -1L;
+        h.removeCallbacks(autoDisconnectRunnable);
+        autoDcMs = -1L;
     }
 
     private void applyGamingChangesIfRunning() {
         if (!BtVpnService.isRunningState()) return;
-        applyingRuntimeChanges = true;
-        connectingSinceMs      = SystemClock.elapsedRealtime();
-        lastKnownConnState     = "";
+        apRt = true;
+        connMs      = SystemClock.elapsedRealtime();
+        lstConn     = "";
         setUiState(UiState.CONNECTING);
         Intent i = new Intent(this, BtVpnService.class);
         i.setAction(BtVpnService.ACTION_APPLY);
@@ -634,76 +634,76 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void setHideInternalId(boolean hide) {
-        if (hideInternalId == hide) return;
-        hideInternalId = hide;
+        if (hidIid == hide) return;
+        hidIid = hide;
         getSharedPreferences(PREF_UI, MODE_PRIVATE).edit().putBoolean(KEY_HIDE_ID, hide).apply();
         refreshDeviceIdVisibility();
     }
 
     private void refreshDeviceIdVisibility() {
-        if (deviceIdView != null) deviceIdView.setVisibility(hideInternalId ? View.GONE : View.VISIBLE);
-        if (copyIdBtn   != null) copyIdBtn.setVisibility(hideInternalId ? View.GONE : View.VISIBLE);
+        if (devIdV != null) devIdV.setVisibility(hidIid ? View.GONE : View.VISIBLE);
+        if (cpBtn   != null) cpBtn.setVisibility(hidIid ? View.GONE : View.VISIBLE);
     }
 
     private void showGamingApplyFeedback(String start, String done, int colorRes) {
-        if (gamingModeBadgeView == null) return;
-        gamingModeBadgeView.setText(start);
-        gamingModeBadgeView.setTextColor(c(colorRes));
-        gamingModeBadgeView.animate().cancel();
-        gamingModeBadgeView.setAlpha(0.55f);
-        gamingModeBadgeView.animate().alpha(1f).setDuration(220).start();
-        handler.postDelayed(() -> {
-            if (gamingModeBadgeView != null) gamingModeBadgeView.setText(done);
-            handler.postDelayed(this::refreshGamingModeUi, 500);
+        if (gmBdV == null) return;
+        gmBdV.setText(start);
+        gmBdV.setTextColor(c(colorRes));
+        gmBdV.animate().cancel();
+        gmBdV.setAlpha(0.55f);
+        gmBdV.animate().alpha(1f).setDuration(220).start();
+        h.postDelayed(() -> {
+            if (gmBdV != null) gmBdV.setText(done);
+            h.postDelayed(this::refreshGamingModeUi, 500);
         }, 500);
     }
 
     private void syncStateFromLogs(String logs) {
-        boolean running   = BtVpnService.isRunningState();
+        boolean run   = BtVpnService.isRunningState();
         String  connState = findLatestConnectionState(logs);
-        if (!connState.isEmpty() && !connState.equals(lastKnownConnState)) lastKnownConnState = connState;
-        if ("connected".equals(connState)) handshakeConfirmed = true;
+        if (!connState.isEmpty() && !connState.equals(lstConn)) lstConn = connState;
+        if ("connected".equals(connState)) hsOk = true;
 
-        if (running && !lastRunning) {
-            authState = ""; applyingRuntimeChanges = false;
-            setUiState(handshakeConfirmed ? UiState.CONNECTED : UiState.CONNECTING);
-        } else if (!running && lastRunning) {
-            applyingRuntimeChanges = false; handshakeConfirmed = false;
+        if (run && !lstRun) {
+            aSt = ""; apRt = false;
+            setUiState(hsOk ? UiState.CONNECTED : UiState.CONNECTING);
+        } else if (!run && lstRun) {
+            apRt = false; hsOk = false;
             setUiState(UiState.DISCONNECTED);
-        } else if (running && handshakeConfirmed) {
-            applyingRuntimeChanges = false;
-            if (uiState != UiState.CONNECTED) setUiState(UiState.CONNECTED);
-        } else if (running && !handshakeConfirmed) {
-            if ("failed".equals(lastKnownConnState)) {
-                if (SystemClock.elapsedRealtime() - connectingSinceMs > CONNECTING_TIMEOUT_MS) {
-                    applyingRuntimeChanges = false; stopVpn(); setUiState(UiState.DISCONNECTED);
+        } else if (run && hsOk) {
+            apRt = false;
+            if (uS != UiState.CONNECTED) setUiState(UiState.CONNECTED);
+        } else if (run && !hsOk) {
+            if ("failed".equals(lstConn)) {
+                if (SystemClock.elapsedRealtime() - connMs > CONNECTING_TIMEOUT_MS) {
+                    apRt = false; stopVpn(); setUiState(UiState.DISCONNECTED);
                 }
-            } else if (uiState != UiState.CONNECTING) setUiState(UiState.CONNECTING);
+            } else if (uS != UiState.CONNECTING) setUiState(UiState.CONNECTING);
             else refreshConnectingDetail();
-        } else if (!running && uiState == UiState.CONNECTING) {
-            if (SystemClock.elapsedRealtime() - connectingSinceMs > CONNECTING_TIMEOUT_MS) {
-                applyingRuntimeChanges = false; setUiState(UiState.DISCONNECTED);
+        } else if (!run && uS == UiState.CONNECTING) {
+            if (SystemClock.elapsedRealtime() - connMs > CONNECTING_TIMEOUT_MS) {
+                apRt = false; setUiState(UiState.DISCONNECTED);
             } else refreshConnectingDetail();
         }
-        lastRunning = running;
+        lstRun = run;
     }
 
     private void refreshConnectingDetail() {
-        if (statusDetailsView == null) return;
+        if (stDtlsV == null) return;
         String detail;
-        if      ("retrying".equals(lastKnownConnState)) detail = getString(R.string.status_detail_connecting_search);
-        else if ("dropped".equals(lastKnownConnState))  detail = getString(R.string.status_detail_connecting_reconnect);
-        else if ("failed".equals(lastKnownConnState))   detail = getString(R.string.status_detail_connecting_retry);
+        if      ("retrying".equals(lstConn)) detail = getString(R.string.status_detail_connecting_search);
+        else if ("dropped".equals(lstConn))  detail = getString(R.string.status_detail_connecting_reconnect);
+        else if ("failed".equals(lstConn))   detail = getString(R.string.status_detail_connecting_retry);
         else                                             detail = getString(R.string.status_detail_connecting_default);
-        if (!detail.equals(lastDetailText)) {
-            lastDetailText = detail;
-            statusDetailsView.setVisibility(View.VISIBLE);
+        if (!detail.equals(lstDtl)) {
+            lstDtl = detail;
+            stDtlsV.setVisibility(View.VISIBLE);
             if (canAnimate()) {
-                statusDetailsView.animate().cancel();
-                statusDetailsView.setAlpha(0.4f);
-                statusDetailsView.setText(detail);
-                statusDetailsView.animate().alpha(1f).setDuration(300).start();
-            } else statusDetailsView.setText(detail);
+                stDtlsV.animate().cancel();
+                stDtlsV.setAlpha(0.4f);
+                stDtlsV.setText(detail);
+                stDtlsV.animate().alpha(1f).setDuration(300).start();
+            } else stDtlsV.setText(detail);
         }
     }
 
@@ -713,27 +713,27 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void updateServerAuthStatus(String logs) {
-        if (logs == null || statusDetailsView == null) return;
+        if (logs == null || stDtlsV == null) return;
         String latestAuth = findLatestAuthState(logs);
         if ("not_registered".equals(latestAuth)) {
-            if ("not_registered".equals(authState)) return;
-            authState = "not_registered"; setHideInternalId(false);
+            if ("not_registered".equals(aSt)) return;
+            aSt = "not_registered"; setHideInternalId(false);
             if (BtVpnService.isRunningState()) stopVpn();
             setUiState(UiState.DISCONNECTED);
-            statusDetailsView.setVisibility(View.VISIBLE);
-            statusDetailsView.setText("✖ Usuario no registrado\nComparte tu ID interno para habilitación\nID: " + internalId);
-            statusDetailsView.setTextColor(c(R.color.color_disconnected));
-            if (connectBtn != null) connectBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
+            stDtlsV.setVisibility(View.VISIBLE);
+            stDtlsV.setText("✖ Usuario no registrado\nComparte tu ID interno para habilitación\nID: " + iid);
+            stDtlsV.setTextColor(c(R.color.color_disconnected));
+            if (cBtn != null) cBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
         } else if ("expired".equals(latestAuth)) {
-            if ("expired".equals(authState)) return;
-            authState = "expired"; setHideInternalId(false);
+            if ("expired".equals(aSt)) return;
+            aSt = "expired"; setHideInternalId(false);
             if (BtVpnService.isRunningState()) stopVpn();
             setUiState(UiState.DISCONNECTED);
-            statusDetailsView.setVisibility(View.VISIBLE);
-            statusDetailsView.setText("✖ Usuario expirado\nRenueva tu acceso con soporte\nID: " + internalId);
-            statusDetailsView.setTextColor(c(R.color.color_connecting));
-            if (connectBtn != null) connectBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
-        } else if ("ok".equals(latestAuth)) { authState = ""; setHideInternalId(true); }
+            stDtlsV.setVisibility(View.VISIBLE);
+            stDtlsV.setText("✖ Usuario expirado\nRenueva tu acceso con soporte\nID: " + iid);
+            stDtlsV.setTextColor(c(R.color.color_connecting));
+            if (cBtn != null) cBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
+        } else if ("ok".equals(latestAuth)) { aSt = ""; setHideInternalId(true); }
     }
 
     private String findLatestAuthState(String logs) {
@@ -776,20 +776,20 @@ public class SimpleModeActivity extends ComponentActivity {
             if (idx >= 0) {
                 String v = line.substring(idx + "user_name=".length()).trim();
                 if (!v.isEmpty()) {
-                    if (userNameWideView != null) userNameWideView.setText("Usuario: " + v);
+                    if (usrNmWV != null) usrNmWV.setText("Usuario: " + v);
                 }
                 break;
             }
         }
         for (int i = lines.length - 1; i >= 0; i--) {
             String line = lines[i].trim(); int idx = line.indexOf("user_days=");
-            if (idx >= 0 && daysValueView != null) {
+            if (idx >= 0 && daysV != null) {
                 String v = line.substring(idx + "user_days=".length()).trim();
                 if (!v.isEmpty()) {
-                    daysValueView.setText(v + " días");
+                    daysV.setText(v + " días");
                     try {
                         int days = Integer.parseInt(v.replaceAll("[^0-9]", ""));
-                        daysValueView.setTextColor(days < 7 ? c(R.color.color_connecting) : c(R.color.color_connected));
+                        daysV.setTextColor(days < 7 ? c(R.color.color_connecting) : c(R.color.color_connected));
                         scheduleAutoDisconnectFromDays(days);
                     } catch (Exception ignored) {}
                 }
@@ -804,14 +804,14 @@ public class SimpleModeActivity extends ComponentActivity {
                     try {
                         int ping = Integer.parseInt(v.replaceAll("[^0-9]", ""));
                         animatePingTo(ping);
-                        if (pingPulseView != null) {
-                            pingPulseView.setLineColor(resolvePingColor(ping));
-                            pingPulseView.pushPing(ping);
+                        if (pngPlsV != null) {
+                            pngPlsV.setLineColor(resolvePingColor(ping));
+                            pngPlsV.pushPing(ping);
                         }
                     } catch (Exception ignored) {
-                        if (pingValueView != null) {
-                            pingValueView.setText("--");
-                            pingValueView.setTextColor(c(R.color.color_text_disabled));
+                        if (pngV != null) {
+                            pngV.setText("--");
+                            pngV.setTextColor(c(R.color.color_text_disabled));
                         }
                     }
                 }
@@ -821,23 +821,23 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void animatePingTo(int targetPing) {
-        if (pingValueView == null) return;
-        int start = lastPingMs >= 0 ? lastPingMs : targetPing;
-        if (!canAnimate() || lastPingMs < 0) {
-            pingValueView.setText(String.valueOf(targetPing));
-            pingValueView.setTextColor(resolvePingColor(targetPing));
-            lastPingMs = targetPing; return;
+        if (pngV == null) return;
+        int start = lstPing >= 0 ? lstPing : targetPing;
+        if (!canAnimate() || lstPing < 0) {
+            pngV.setText(String.valueOf(targetPing));
+            pngV.setTextColor(resolvePingColor(targetPing));
+            lstPing = targetPing; return;
         }
         ValueAnimator counter = ValueAnimator.ofInt(start, targetPing);
         counter.setDuration(400);
-        counter.addUpdateListener(a -> pingValueView.setText(String.valueOf((int) a.getAnimatedValue())));
+        counter.addUpdateListener(a -> pngV.setText(String.valueOf((int) a.getAnimatedValue())));
         counter.start();
         ValueAnimator colorAnim = ValueAnimator.ofObject(
-            new ArgbEvaluator(), pingValueView.getCurrentTextColor(), resolvePingColor(targetPing));
+            new ArgbEvaluator(), pngV.getCurrentTextColor(), resolvePingColor(targetPing));
         colorAnim.setDuration(600);
-        colorAnim.addUpdateListener(a -> pingValueView.setTextColor((Integer) a.getAnimatedValue()));
+        colorAnim.addUpdateListener(a -> pngV.setTextColor((Integer) a.getAnimatedValue()));
         colorAnim.start();
-        lastPingMs = targetPing;
+        lstPing = targetPing;
     }
 
     private int resolvePingColor(int ping) {
@@ -847,66 +847,66 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void scheduleAutoDisconnectFromDays(int days) {
-        handler.removeCallbacks(autoDisconnectRunnable);
+        h.removeCallbacks(autoDisconnectRunnable);
         if (days <= 0) { runAutoDisconnect(); return; }
         long delay = days * 24L * 60L * 60L * 1000L;
-        autoDisconnectAtMs = SystemClock.elapsedRealtime() + delay;
-        handler.postDelayed(autoDisconnectRunnable, delay);
+        autoDcMs = SystemClock.elapsedRealtime() + delay;
+        h.postDelayed(autoDisconnectRunnable, delay);
     }
 
     private void runAutoDisconnect() {
         if (!BtVpnService.isRunningState()) return;
         stopVpn(); setHideInternalId(false);
-        if (statusDetailsView != null) {
-            statusDetailsView.setVisibility(View.VISIBLE);
-            statusDetailsView.setText("✖ Usuario expirado\nDesconexión automática local\nID: " + internalId);
-            statusDetailsView.setTextColor(c(R.color.color_connecting));
+        if (stDtlsV != null) {
+            stDtlsV.setVisibility(View.VISIBLE);
+            stDtlsV.setText("✖ Usuario expirado\nDesconexión automática local\nID: " + iid);
+            stDtlsV.setTextColor(c(R.color.color_connecting));
         }
     }
 
     private void setUiState(UiState newState) {
-        UiState prev         = uiState;
-        uiState              = newState;
+        UiState prev         = uS;
+        uS              = newState;
         boolean stateChanged = (prev != newState);
 
         int accentColor = resolveAccentColor();
 
         if (stateChanged) {
             applyHudTheme(accentColor);
-            animateDotColor(statusDotView, statusHaloView, accentColor, 400);
-            if (statusHaloMidView != null)
-                statusHaloMidView.setBackgroundTintList(ColorStateList.valueOf(accentColor));
+            animateDotColor(stDtV, stHlV, accentColor, 400);
+            if (stHmV != null)
+                stHmV.setBackgroundTintList(ColorStateList.valueOf(accentColor));
         }
 
-        if (connectBtn != null) {
+        if (cBtn != null) {
             if (newState == UiState.CONNECTING) {
-                connectBtn.setEnabled(false); connectBtn.setActivated(false);
-                connectBtn.setText(R.string.status_connecting);
-                connectBtn.setTextColor(c(R.color.color_connecting));
+                cBtn.setEnabled(false); cBtn.setActivated(false);
+                cBtn.setText(R.string.status_connecting);
+                cBtn.setTextColor(c(R.color.color_connecting));
                 if (stateChanged && canAnimate()) {
-                    connectBtn.setAlpha(0.7f);
-                    connectBtn.animate().alpha(1f).setDuration(300).start();
+                    cBtn.setAlpha(0.7f);
+                    cBtn.animate().alpha(1f).setDuration(300).start();
                 }
             } else if (newState == UiState.CONNECTED) {
-                connectBtn.setEnabled(true); connectBtn.setActivated(true);
-                connectBtn.setText(R.string.disconnect);
-                connectBtn.setTextColor(c(R.color.color_connected));
+                cBtn.setEnabled(true); cBtn.setActivated(true);
+                cBtn.setText(R.string.disconnect);
+                cBtn.setTextColor(c(R.color.color_connected));
                 if (stateChanged && canAnimate()) {
-                    connectBtn.setScaleX(0.92f); connectBtn.setScaleY(0.92f);
-                    connectBtn.animate().scaleX(1f).scaleY(1f).setDuration(250).start();
+                    cBtn.setScaleX(0.92f); cBtn.setScaleY(0.92f);
+                    cBtn.animate().scaleX(1f).scaleY(1f).setDuration(250).start();
                 }
             } else {
-                connectBtn.setEnabled(true); connectBtn.setActivated(false);
-                connectBtn.setText(BtProxy.isGamingMode(this) ? getString(R.string.connect_gaming) : getString(R.string.connect));
-                connectBtn.setTextColor(c(R.color.color_text_primary));
+                cBtn.setEnabled(true); cBtn.setActivated(false);
+                cBtn.setText(BtProxy.isGamingMode(this) ? getString(R.string.connect_gaming) : getString(R.string.connect));
+                cBtn.setTextColor(c(R.color.color_text_primary));
                 if (stateChanged && prev == UiState.CONNECTED && canAnimate()) {
-                    connectBtn.setAlpha(0.6f);
-                    connectBtn.animate().alpha(1f).setDuration(400).start();
+                    cBtn.setAlpha(0.6f);
+                    cBtn.animate().alpha(1f).setDuration(400).start();
                 }
             }
         }
 
-        if (statusBadgeView != null) {
+        if (stBdV != null) {
             String badgeText;
             int    badgeColor;
             if (newState == UiState.CONNECTING) {
@@ -918,64 +918,64 @@ public class SimpleModeActivity extends ComponentActivity {
                 badgeColor = BtProxy.isGamingMode(this) ? c(R.color.color_gaming) : c(R.color.color_connected);
                 stopStatusPulse(); stopStatusHaloWave();
                 startHudRingRotation();
-                if (statusHaloView != null) statusHaloView.setAlpha(0.15f);
+                if (stHlV != null) stHlV.setAlpha(0.15f);
             } else {
                 badgeText  = getString(R.string.status_disconnected); badgeColor = c(R.color.color_disconnected);
                 stopStatusPulse(); stopStatusHaloWave();
                 stopHudRingRotation();
-                if (statusHaloView != null) statusHaloView.setAlpha(0.20f);
-                if (pingPulseView  != null) pingPulseView.setIdle();
+                if (stHlV != null) stHlV.setAlpha(0.20f);
+                if (pngPlsV  != null) pngPlsV.setIdle();
             }
             if (stateChanged) {
-                animateBadgeColor(statusBadgeView, badgeColor, 350);
-                if (!statusBadgeView.getText().toString().equals(badgeText)) {
+                animateBadgeColor(stBdV, badgeColor, 350);
+                if (!stBdV.getText().toString().equals(badgeText)) {
                     if (canAnimate()) {
-                        statusBadgeView.animate().cancel();
-                        statusBadgeView.setAlpha(0f);
-                        statusBadgeView.setText(badgeText);
-                        statusBadgeView.animate().alpha(1f).setDuration(250).start();
-                    } else { statusBadgeView.setText(badgeText); statusBadgeView.setTextColor(badgeColor); }
+                        stBdV.animate().cancel();
+                        stBdV.setAlpha(0f);
+                        stBdV.setText(badgeText);
+                        stBdV.animate().alpha(1f).setDuration(250).start();
+                    } else { stBdV.setText(badgeText); stBdV.setTextColor(badgeColor); }
                 }
-            } else { statusBadgeView.setText(badgeText); statusBadgeView.setTextColor(badgeColor); }
-            statusBadgeView.setShadowLayer(0f, 0f, 0f, 0);
+            } else { stBdV.setText(badgeText); stBdV.setTextColor(badgeColor); }
+            stBdV.setShadowLayer(0f, 0f, 0f, 0);
         }
 
-        if (statusDetailsView != null) {
+        if (stDtlsV != null) {
             if (newState == UiState.CONNECTING) {
                 String detail;
-                if      ("retrying".equals(lastKnownConnState)) detail = getString(R.string.status_detail_connecting_search);
-                else if ("dropped".equals(lastKnownConnState))  detail = getString(R.string.status_detail_connecting_reconnect);
-                else if ("failed".equals(lastKnownConnState))   detail = getString(R.string.status_detail_connecting_retry);
+                if      ("retrying".equals(lstConn)) detail = getString(R.string.status_detail_connecting_search);
+                else if ("dropped".equals(lstConn))  detail = getString(R.string.status_detail_connecting_reconnect);
+                else if ("failed".equals(lstConn))   detail = getString(R.string.status_detail_connecting_retry);
                 else                                             detail = getString(R.string.status_detail_connecting_default);
-                lastDetailText = detail;
-                statusDetailsView.setVisibility(View.VISIBLE);
-                statusDetailsView.setTextColor(c(R.color.color_connecting));
+                lstDtl = detail;
+                stDtlsV.setVisibility(View.VISIBLE);
+                stDtlsV.setTextColor(c(R.color.color_connecting));
                 if (stateChanged && canAnimate()) {
-                    statusDetailsView.setAlpha(0f);
-                    statusDetailsView.setText(detail);
-                    statusDetailsView.animate().alpha(1f).setDuration(300).start();
-                } else statusDetailsView.setText(detail);
+                    stDtlsV.setAlpha(0f);
+                    stDtlsV.setText(detail);
+                    stDtlsV.animate().alpha(1f).setDuration(300).start();
+                } else stDtlsV.setText(detail);
             } else if (newState == UiState.CONNECTED) {
                 String full = getString(R.string.status_detail_connected);
-                lastDetailText = full;
-                statusDetailsView.setVisibility(View.VISIBLE);
-                statusDetailsView.setTextColor(c(R.color.color_connected));
+                lstDtl = full;
+                stDtlsV.setVisibility(View.VISIBLE);
+                stDtlsV.setTextColor(c(R.color.color_connected));
                 if (stateChanged && canAnimate())
-                    statusDetailsView.startAnimation(AnimationUtils.loadAnimation(this, R.anim.fade_slide_in));
-                statusDetailsView.setText(full);
+                    stDtlsV.startAnimation(AnimationUtils.loadAnimation(this, R.anim.fade_slide_in));
+                stDtlsV.setText(full);
             } else {
-                lastDetailText = "";
-                statusDetailsView.setVisibility(View.GONE);
-                if (pingValueView != null) {
-                    pingValueView.setText("--");
+                lstDtl = "";
+                stDtlsV.setVisibility(View.GONE);
+                if (pngV != null) {
+                    pngV.setText("--");
                     if (canAnimate()) {
                         ValueAnimator va = ValueAnimator.ofObject(new ArgbEvaluator(),
-                            pingValueView.getCurrentTextColor(), c(R.color.color_text_disabled));
+                            pngV.getCurrentTextColor(), c(R.color.color_text_disabled));
                         va.setDuration(300);
-                        va.addUpdateListener(a -> pingValueView.setTextColor((Integer) a.getAnimatedValue()));
+                        va.addUpdateListener(a -> pngV.setTextColor((Integer) a.getAnimatedValue()));
                         va.start();
-                    } else pingValueView.setTextColor(c(R.color.color_text_disabled));
-                    lastPingMs = -1;
+                    } else pngV.setTextColor(c(R.color.color_text_disabled));
+                    lstPing = -1;
                 }
             }
         }
@@ -997,8 +997,8 @@ public class SimpleModeActivity extends ComponentActivity {
         public static android.graphics.drawable.Drawable ringInner(int color) { return new RingDrawable(color, 3f, false,  0f); }
         public static android.graphics.drawable.Drawable glowRing (int color) { return new GlowRingDrawable(color); }
 
-        public static android.graphics.drawable.Drawable btnRingOuter(int color) { return new RingDrawable(color, 4f, true, 18f); }
-        public static android.graphics.drawable.Drawable btnRingMid  (int color) { return new RingDrawable(color, 2f, true, 10f); }
+        public static android.graphics.drawable.Drawable bRO(int color) { return new RingDrawable(color, 4f, true, 18f); }
+        public static android.graphics.drawable.Drawable bRM  (int color) { return new RingDrawable(color, 2f, true, 10f); }
         public static android.graphics.drawable.Drawable btnConnect  (int color, boolean connected) { return new BtnCircleDrawable(color, connected); }
 
         public static android.graphics.drawable.Drawable statusBadge (int color) { return new StatusBadgeDrawable(color); }
