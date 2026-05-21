@@ -655,7 +655,7 @@ static void *tunnel_reader(void *arg) {
             long sent = atomic_load(&g_lpt);
             if (sent > 0) {
                 long rtt = nms() - sent;
-                (void)rtt;
+                if (rtt >= 0 && rtt < 10000) pl("I", "ping_ms=%ld", rtt);
             }
             break;
         }
