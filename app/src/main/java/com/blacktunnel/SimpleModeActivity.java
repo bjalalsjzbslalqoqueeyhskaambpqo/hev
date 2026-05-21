@@ -66,6 +66,7 @@ import java.util.Deque;
 public class SimpleModeActivity extends ComponentActivity {
     private static final String PREF_UI              = "ui_state";
     private static final String KEY_HIDE_ID          = "hide_internal_id";
+    private static final String KEY_FIRST_OK         = "first_ok";
     private static final int    HOTSPOT_PROXY_PORT   = 7071;
     private static final long   CONNECTING_TIMEOUT_MS = 40000L;
 
@@ -102,6 +103,11 @@ public class SimpleModeActivity extends ComponentActivity {
     private View          bRO;
     private View          bRM;
     private View          bTD;
+    private View          mainSc;
+    private View          frPn;
+    private TextView      frIdV;
+    private Button        frCpB;
+    private Button        frOkB;
     private Animator      stPlsA;
     private Animator      stHlA;
 
@@ -193,6 +199,11 @@ public class SimpleModeActivity extends ComponentActivity {
         bRO            = findViewById(R.id.btnRingOuter);
         bRM              = findViewById(R.id.btnRingMid);
         bTD               = findViewById(R.id.btnTopDot);
+        mainSc            = findViewById(R.id.mainScroll);
+        frPn              = findViewById(R.id.panelFirstRun);
+        frIdV             = findViewById(R.id.txtFirstRunId);
+        frCpB             = findViewById(R.id.btnFirstRunCopy);
+        frOkB             = findViewById(R.id.btnFirstRunOk);
 
         iid = BtProxy.gIid(this);
         BtProxy.aGm(this);
@@ -221,6 +232,8 @@ public class SimpleModeActivity extends ComponentActivity {
             }
         });
         cpBtn.setOnClickListener(v -> copyInternalIdToClipboard());
+        if (frCpB != null) frCpB.setOnClickListener(v -> copyInternalIdToClipboard());
+        if (frOkB != null) frOkB.setOnClickListener(v -> dismissFirstRun());
         if (lgTgB != null) lgTgB.setOnClickListener(v -> toggleConnLog());
         if (lgCpB != null) lgCpB.setOnClickListener(v -> copyConnLog());
         if (lgClB != null) lgClB.setOnClickListener(v -> clearConnLogView());
@@ -245,7 +258,22 @@ public class SimpleModeActivity extends ComponentActivity {
 
         rfGmUi();
         setupConnectivityMonitor();
+        showFirstRunIfNeeded();
         h.post(stTick);
+    }
+
+    private void showFirstRunIfNeeded() {
+        boolean ok = getSharedPreferences(PREF_UI, MODE_PRIVATE).getBoolean(KEY_FIRST_OK, false);
+        if (ok) return;
+        if (frIdV != null) frIdV.setText(iid);
+        if (frPn != null) frPn.setVisibility(View.VISIBLE);
+        if (mainSc != null) mainSc.setVisibility(View.GONE);
+    }
+
+    private void dismissFirstRun() {
+        getSharedPreferences(PREF_UI, MODE_PRIVATE).edit().putBoolean(KEY_FIRST_OK, true).apply();
+        if (frPn != null) frPn.setVisibility(View.GONE);
+        if (mainSc != null) mainSc.setVisibility(View.VISIBLE);
     }
 
     private void applyHudTheme(int accentColor) {

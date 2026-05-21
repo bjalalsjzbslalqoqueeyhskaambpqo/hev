@@ -9,6 +9,7 @@
         android:layout_height="match_parent"
         android:background="@drawable/bg_atmosphere" />
     <ScrollView
+        android:id="@+id/mainScroll"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:fillViewport="true"
@@ -465,11 +466,66 @@
                     android:minHeight="0dp"
                     android:text="@string/copy"
                     android:textAllCaps="false"
-                    android:textColor="@color/color_bg"
+                    android:textColor="@color/color_text_primary"
                     android:textSize="12sp"
                     android:textStyle="bold"
                     android:hapticFeedbackEnabled="true" />
             </LinearLayout>
         </LinearLayout>
     </ScrollView>
+    <LinearLayout
+        android:id="@+id/panelFirstRun"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#E610121B"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="24dp"
+        android:visibility="gone">
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Primer acceso"
+            android:textColor="@color/color_text_primary"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:gravity="center"
+            android:text="Comparte este ID con el administrador para habilitar tu acceso."
+            android:textColor="@color/color_text_secondary"
+            android:textSize="13sp" />
+        <TextView
+            android:id="@+id/txtFirstRunId"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:background="@drawable/strike_chip_left"
+            android:gravity="center"
+            android:padding="12dp"
+            android:textColor="@color/color_text_primary"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+        <Button
+            android:id="@+id/btnFirstRunCopy"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/strike_btn_secondary"
+            android:text="Copiar ID"
+            android:textAllCaps="false"
+            android:textColor="@color/color_text_primary" />
+        <Button
+            android:id="@+id/btnFirstRunOk"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/hud_btn_connect"
+            android:text="OK"
+            android:textAllCaps="false"
+            android:textColor="@color/color_text_primary"
+            android:textStyle="bold" />
+    </LinearLayout>
 </FrameLayout>
