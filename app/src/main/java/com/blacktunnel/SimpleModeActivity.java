@@ -126,6 +126,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private String  lstConn               = "";
     private String  lstDtl                   = "";
     private long    lgClrMs                  = 0L;
+    private long    txB = 0L, rxB = 0L, stMs = 0L;
 
     private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
     private final Runnable delayedReconnectRunnable = () -> {
@@ -144,6 +145,7 @@ public class SimpleModeActivity extends ComponentActivity {
                 syncStateFromLogs(logs);
                 refreshFromLogs(logs);
                 updateConnLogUi(logs);
+                updateHevFlowHint();
             } catch (Throwable ignored) {}
             h.postDelayed(this, 3000);
         }
@@ -154,6 +156,30 @@ public class SimpleModeActivity extends ComponentActivity {
         Configuration configuration = new Configuration(newBase.getResources().getConfiguration());
         configuration.fontScale = 1.0f;
         super.attachBaseContext(newBase.createConfigurationContext(configuration));
+    }
+
+    private void updateHevFlowHint() {
+        if (uS != UiState.CONNECTED || stDtlsV == null) return;
+        try {
+            long[] s = BtVpnService.HevBridge.stats();
+            if (s == null || s.length < 4) return;
+            long now = SystemClock.elapsedRealtime();
+            long curTx = s[1], curRx = s[3];
+            if (stMs > 0 && now > stMs) {
+                long dt = now - stMs;
+                long up = Math.max(0, (curTx - txB) * 1000L / dt);
+                long dn = Math.max(0, (curRx - rxB) * 1000L / dt);
+                stDtlsV.setVisibility(View.VISIBLE);
+                stDtlsV.setText("✓ Conexión establecida\n↑ " + fmtRate(up) + "  ↓ " + fmtRate(dn));
+            }
+            txB = curTx; rxB = curRx; stMs = now;
+        } catch (Throwable ignored) {}
+    }
+
+    private String fmtRate(long bps) {
+        if (bps >= 1024L * 1024L) return String.format(Locale.US, "%.1f MB/s", bps / 1024f / 1024f);
+        if (bps >= 1024L) return String.format(Locale.US, "%.1f KB/s", bps / 1024f);
+        return bps + " B/s";
     }
 
     @Override

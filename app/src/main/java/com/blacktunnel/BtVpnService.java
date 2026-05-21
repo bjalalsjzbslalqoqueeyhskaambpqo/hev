@@ -474,6 +474,7 @@ public class BtVpnService extends VpnService {
         static { System.loadLibrary("hev-jni"); }
         static native int  start(String path, int fd);
         static native void stop();
+        static native long[] stats();
     }
 }
 
