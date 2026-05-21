@@ -101,6 +101,13 @@ public class BtVpnService extends VpnService {
         }
     }
 
+    public static void cLogs() {
+        synchronized (L_MU) {
+            L_BUF.setLength(0);
+            try { BtProxy.drainLogs(); } catch (Throwable ignored) {}
+        }
+    }
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : null;

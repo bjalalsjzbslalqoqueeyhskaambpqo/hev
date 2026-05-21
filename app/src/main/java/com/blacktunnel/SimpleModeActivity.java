@@ -641,6 +641,8 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void stVp() {
+        BtVpnService.cLogs();
+        clearConnLogView();
         setUiState(UiState.CONNECTING);
         aSt = ""; lstConn = "";
         Intent prepare = VpnService.prepare(this);
