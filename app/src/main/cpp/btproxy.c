@@ -67,6 +67,7 @@ static atomic_int      g_ns     = 1;
 static atomic_int      g_te = 0;
 static atomic_long     g_lp    = 0;
 static atomic_long     g_lpt = 0;
+static atomic_int      g_af = 0;
 static char            g_i[160] = {0};
 static JavaVM         *g_j          = NULL;
 static jobject         g_s          = NULL;
@@ -459,6 +460,7 @@ static int try_connect_ip(const char *ip, int timeout_ms) {
 }
 
 static int open_tunnel(void) {
+    pl("I", "stage=proxy_connect_start");
     pl("I", "conectando...");
 
     int fd = -1;
@@ -468,6 +470,7 @@ static int open_tunnel(void) {
     }
 
     if (fd < 0) {
+        pl("W", "stage=proxy_static_failed");
         pl("I", "IPs estaticas fallaron, resolviendo %s", PROXY_HOST);
         struct addrinfo hints = {0}, *res = NULL, *cur;
         hints.ai_family   = AF_INET6;
@@ -488,13 +491,14 @@ static int open_tunnel(void) {
         }
     }
 
-    if (fd < 0) { pl("E", "connect failed"); return -1; }
+    if (fd < 0) { pl("E", "stage=proxy_connect_failed"); pl("E", "connect failed"); return -1; }
 
     char buf[4096];
     snprintf(buf, sizeof(buf), "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", PROXY_HOST);
     send(fd, buf, strlen(buf), MSG_NOSIGNAL);
+    pl("I", "stage=proxy_connected");
     if (recv_eoh(fd, buf, sizeof(buf), HANDSHAKE_TIMEOUT_SEC) < 0) {
-        pl("E", "proxy no responde"); close(fd); return -1;
+        pl("E", "stage=proxy_no_response"); pl("E", "proxy no responde"); close(fd); return -1;
     }
 
     char req[1024];
@@ -502,6 +506,7 @@ static int open_tunnel(void) {
         "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
         "Connection: Upgrade\r\nAction: tunnel\r\nX-Internal-ID: %s\r\n\r\n",
         TUNNEL_HOST, g_i[0] ? g_i : "unknown");
+    pl("I", "stage=server_auth_request");
     send(fd, req, strlen(req), MSG_NOSIGNAL);
 
     char h2[4096];
@@ -510,6 +515,12 @@ static int open_tunnel(void) {
     sscanf(h2, "HTTP/%*d.%*d %d", &code);
 
     if (hlen < 0 || code != 101) {
+        if (code == 403 || code == 401 || code == 410) {
+            atomic_store(&g_af, 1);
+            if (code == 410) pl("E", "expired");
+            else pl("E", "not_registered");
+            pl("E", "stage=auth_rejected");
+        }
         pl("E", "handshake failed code=%d", code);
         close(fd); return -1;
     }
@@ -519,6 +530,7 @@ static int open_tunnel(void) {
     parse_hdr(h2, "X-User-Days:", udays, sizeof(udays));
     if (uname[0]) pl("I", "user_name=%s", uname);
     if (udays[0]) pl("I", "user_days=%s", udays);
+    pl("I", "stage=access_granted");
     pl("I", "tunnel ok");
     atomic_store(&g_lp, (long)time(NULL));
 
@@ -723,9 +735,14 @@ static void *main_thread(void *arg) {
     signal(SIGPIPE, SIG_IGN);
 
     while (g_r) {
+        atomic_store(&g_af, 0);
         int tfd = open_tunnel();
         if (tfd < 0) {
             if (!g_r) break;
+            if (atomic_load(&g_af)) {
+                pl("W", "stage=manual_reconnect_required");
+                break;
+            }
             sleep(3);
             continue;
         }

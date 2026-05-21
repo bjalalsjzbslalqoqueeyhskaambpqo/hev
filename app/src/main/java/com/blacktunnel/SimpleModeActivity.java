@@ -664,7 +664,11 @@ public class SimpleModeActivity extends ComponentActivity {
         if (!connState.isEmpty() && !connState.equals(lstConn)) lstConn = connState;
         if ("connected".equals(connState)) hsOk = true;
 
-        if (run && !lstRun) {
+        if ("manual_reconnect_required".equals(lstConn) || "auth_rejected".equals(lstConn)) {
+            apRt = false;
+            if (BtVpnService.isRunningState()) stopVpn();
+            setUiState(UiState.DISCONNECTED);
+        } else if (run && !lstRun) {
             aSt = ""; apRt = false;
             setUiState(hsOk ? UiState.CONNECTED : UiState.CONNECTING);
         } else if (!run && lstRun) {
@@ -691,7 +695,13 @@ public class SimpleModeActivity extends ComponentActivity {
     private void refreshConnectingDetail() {
         if (stDtlsV == null) return;
         String detail;
-        if      ("retrying".equals(lstConn)) detail = getString(R.string.status_detail_connecting_search);
+        if      ("proxy_connect_start".equals(lstConn)) detail = "Conectando al proxy...";
+        else if ("proxy_connected".equals(lstConn)) detail = "Proxy conectado";
+        else if ("server_auth_request".equals(lstConn)) detail = "Solicitando acceso al servidor...";
+        else if ("access_granted".equals(lstConn)) detail = "Acceso concedido, cargando datos...";
+        else if ("auth_rejected".equals(lstConn)) detail = "Acceso denegado por el servidor";
+        else if ("manual_reconnect_required".equals(lstConn)) detail = "Requiere reconexión manual";
+        else if ("retrying".equals(lstConn)) detail = getString(R.string.status_detail_connecting_search);
         else if ("dropped".equals(lstConn))  detail = getString(R.string.status_detail_connecting_reconnect);
         else if ("failed".equals(lstConn))   detail = getString(R.string.status_detail_connecting_retry);
         else                                             detail = getString(R.string.status_detail_connecting_default);
@@ -756,6 +766,12 @@ public class SimpleModeActivity extends ComponentActivity {
             String lower = line.trim().toLowerCase(Locale.ROOT); if (lower.isEmpty()) continue;
             if (lower.contains("tunnel ok")  || lower.contains("user_name=") ||
                 lower.contains("user_days=") || lower.contains("ping_ms="))   return "connected";
+            if (lower.contains("stage=proxy_connect_start")) return "proxy_connect_start";
+            if (lower.contains("stage=proxy_connected")) return "proxy_connected";
+            if (lower.contains("stage=server_auth_request")) return "server_auth_request";
+            if (lower.contains("stage=access_granted")) return "access_granted";
+            if (lower.contains("stage=auth_rejected")) return "auth_rejected";
+            if (lower.contains("stage=manual_reconnect_required")) return "manual_reconnect_required";
             if (lower.contains("conectando...") || lower.contains("probando ") ||
                 lower.contains("ips estaticas fallaron") || lower.contains("dns ") ||
                 lower.contains("relay listo"))                                  return "retrying";
