@@ -1037,7 +1037,6 @@ n_start(JNIEnv *env, jclass clazz,
         ul(&g_m); return -1;
     }
     lk(&g_m); g_mt = thr; ul(&g_m);
-    pthread_detach(thr);
 
     pl("I", "nativeStart lanzado");
     return 0;
@@ -1047,7 +1046,9 @@ JNIEXPORT void JNICALL
 n_stop(JNIEnv *env, jclass clazz) {
     (void)clazz;
     lk(&g_m);
-    if (!g_r) { ul(&g_m); return; }
+    if (!g_r && g_mt == 0) { ul(&g_m); return; }
+    pthread_t th = g_mt;
+    g_mt = 0;
     g_r = 0;
     g_i[0] = 0;
     jobject svc = g_s; g_s = NULL; g_j = NULL;
@@ -1074,6 +1075,7 @@ n_stop(JNIEnv *env, jclass clazz) {
     wq_flush_locked();
     ul(&g_wq_mu);
 
+    if (th) pthread_join(th, NULL);
     if (svc) (*env)->DeleteGlobalRef(env, svc);
 }
 
