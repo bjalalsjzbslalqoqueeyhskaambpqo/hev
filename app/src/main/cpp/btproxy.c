@@ -23,6 +23,9 @@
 #include <signal.h>
 #include <netdb.h>
 
+#define lk pthread_mutex_lock
+#define ul pthread_mutex_unlock
+
 #define LOG_TAG "btproxy"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
@@ -84,7 +87,7 @@ static void pl(const char *lvl, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     char msg[512]; vsnprintf(msg, sizeof(msg), fmt, ap); va_end(ap);
     if (lvl[0] == 'E') LOGE("%s", msg); else LOGI("%s", msg);
-    pthread_mutex_lock(&g_lm);
+    lk(&g_lm);
     char line[560];
     int n = snprintf(line, sizeof(line), "%s %s\n", lvl, msg);
     if (n > 0) {
@@ -97,7 +100,7 @@ static void pl(const char *lvl, const char *fmt, ...) {
         g_ll += n;
         g_lb[g_ll] = 0;
     }
-    pthread_mutex_unlock(&g_lm);
+    ul(&g_lm);
 }
 
 #define HT_SIZE 4096
@@ -118,11 +121,11 @@ static void ht_init(void) {
 
 static int ht_get(uint32_t sid) {
     int slot = sid & HT_MASK;
-    pthread_mutex_lock(&g_hm[slot]);
+    lk(&g_hm[slot]);
     hn_t *n = g_h[slot];
     while (n && n->sid != sid) n = n->next;
     int cfd = n ? n->cfd : -1;
-    pthread_mutex_unlock(&g_hm[slot]);
+    ul(&g_hm[slot]);
     return cfd;
 }
 
@@ -131,14 +134,14 @@ static void ht_put(uint32_t sid, int cfd) {
     if (!n) return;
     n->sid = sid; n->cfd = cfd;
     int slot = sid & HT_MASK;
-    pthread_mutex_lock(&g_hm[slot]);
+    lk(&g_hm[slot]);
     n->next = g_h[slot]; g_h[slot] = n;
-    pthread_mutex_unlock(&g_hm[slot]);
+    ul(&g_hm[slot]);
 }
 
 static void ht_del(uint32_t sid) {
     int slot = sid & HT_MASK;
-    pthread_mutex_lock(&g_hm[slot]);
+    lk(&g_hm[slot]);
     hn_t **pp = &g_h[slot];
     while (*pp) {
         if ((*pp)->sid == sid) {
@@ -146,12 +149,12 @@ static void ht_del(uint32_t sid) {
         }
         pp = &(*pp)->next;
     }
-    pthread_mutex_unlock(&g_hm[slot]);
+    ul(&g_hm[slot]);
 }
 
 static void ht_close_all(int epfd) {
     for (int i = 0; i < HT_SIZE; i++) {
-        pthread_mutex_lock(&g_hm[i]);
+        lk(&g_hm[i]);
         hn_t *n = g_h[i];
         while (n) {
             hn_t *nx = n->next;
@@ -161,7 +164,7 @@ static void ht_close_all(int epfd) {
             n = nx;
         }
         g_h[i] = NULL;
-        pthread_mutex_unlock(&g_hm[i]);
+        ul(&g_hm[i]);
     }
 }
 
@@ -217,11 +220,11 @@ static void si_init(void) {
 
 static sinfo_t *si_get(uint32_t sid) {
     int slot = sid & SI_MASK;
-    pthread_mutex_lock(&g_xm[slot]);
+    lk(&g_xm[slot]);
     si_hn_t *n = g_x[slot];
     while (n && n->sid != sid) n = n->next;
     sinfo_t *si = n ? n->si : NULL;
-    pthread_mutex_unlock(&g_xm[slot]);
+    ul(&g_xm[slot]);
     return si;
 }
 
@@ -230,14 +233,14 @@ static void si_put(uint32_t sid, sinfo_t *si) {
     if (!n) return;
     n->sid = sid; n->si = si;
     int slot = sid & SI_MASK;
-    pthread_mutex_lock(&g_xm[slot]);
+    lk(&g_xm[slot]);
     n->next = g_x[slot]; g_x[slot] = n;
-    pthread_mutex_unlock(&g_xm[slot]);
+    ul(&g_xm[slot]);
 }
 
 static void si_del(uint32_t sid) {
     int slot = sid & SI_MASK;
-    pthread_mutex_lock(&g_xm[slot]);
+    lk(&g_xm[slot]);
     si_hn_t **pp = &g_x[slot];
     while (*pp) {
         if ((*pp)->sid == sid) {
@@ -245,12 +248,12 @@ static void si_del(uint32_t sid) {
         }
         pp = &(*pp)->next;
     }
-    pthread_mutex_unlock(&g_xm[slot]);
+    ul(&g_xm[slot]);
 }
 
 static void si_close_all(int epfd) {
     for (int i = 0; i < SI_SIZE; i++) {
-        pthread_mutex_lock(&g_xm[i]);
+        lk(&g_xm[i]);
         si_hn_t *n = g_x[i];
         while (n) {
             si_hn_t *nx = n->next;
@@ -263,7 +266,7 @@ static void si_close_all(int epfd) {
             n = nx;
         }
         g_x[i] = NULL;
-        pthread_mutex_unlock(&g_xm[i]);
+        ul(&g_xm[i]);
     }
 }
 
@@ -351,19 +354,19 @@ static int tun_enqueue(int tfd, int epfd, uint8_t type, uint32_t sid,
                         const uint8_t *data, uint16_t dlen) {
     frame_t *f = frame_build(type, sid, data, dlen);
     if (!f) return -1;
-    pthread_mutex_lock(&g_wq_mu);
+    lk(&g_wq_mu);
     if (g_wq.tail) g_wq.tail->next = f; else g_wq.head = f;
     g_wq.tail = f; g_wq.bytes += f->total;
     int r = try_flush_wq(tfd, epfd);
-    pthread_mutex_unlock(&g_wq_mu);
+    ul(&g_wq_mu);
     return r;
 }
 
 static void protect_fd(int fd) {
-    pthread_mutex_lock(&g_m);
+    lk(&g_m);
     net_handle_t net = g_n;
     JavaVM *jvm = g_j; jobject svc = g_s;
-    pthread_mutex_unlock(&g_m);
+    ul(&g_m);
     if (net != NETWORK_UNSPECIFIED) android_setsocknetwork(net, fd);
     if (!jvm || !svc) return;
     JNIEnv *env = NULL; int att = 0;
@@ -715,7 +718,7 @@ static int make_relay_socket(int port) {
 
 static void resume_prs(int epfd) {
     for (int i = 0; i < SI_SIZE; i++) {
-        pthread_mutex_lock(&g_xm[i]);
+        lk(&g_xm[i]);
         si_hn_t *n = g_x[i];
         while (n) {
             sinfo_t *si = n->si;
@@ -728,7 +731,7 @@ static void resume_prs(int epfd) {
             }
             n = n->next;
         }
-        pthread_mutex_unlock(&g_xm[i]);
+        ul(&g_xm[i]);
     }
 }
 
@@ -776,10 +779,10 @@ static void *main_thread(void *arg) {
 
         int epoch = atomic_fetch_add(&g_te, 1) + 1;
 
-        pthread_mutex_lock(&g_m);
+        lk(&g_m);
         g_tf = tfd; g_rf = rfd;
         g_ef = epfd; g_wr = wfds[0]; g_ww = wfds[1];
-        pthread_mutex_unlock(&g_m);
+        ul(&g_m);
 
         wq_init();
 
@@ -810,7 +813,7 @@ static void *main_thread(void *arg) {
             if (now - last_to_check > 15000) {
                 last_to_check = now;
                 for (int i = 0; i < SI_SIZE; i++) {
-                    pthread_mutex_lock(&g_xm[i]);
+                    lk(&g_xm[i]);
                     si_hn_t **pp = &g_x[i];
                     while (*pp) {
                         sinfo_t *si = (*pp)->si;
@@ -825,7 +828,7 @@ static void *main_thread(void *arg) {
                             pp = &(*pp)->next;
                         }
                     }
-                    pthread_mutex_unlock(&g_xm[i]);
+                    ul(&g_xm[i]);
                 }
             }
 
@@ -837,10 +840,10 @@ static void *main_thread(void *arg) {
 
                 if (efd == tfd) {
                     if (evs & EPOLLOUT) {
-                        pthread_mutex_lock(&g_wq_mu);
+                        lk(&g_wq_mu);
                         int r = try_flush_wq(tfd, epfd);
                         size_t wq_bytes = g_wq.bytes;
-                        pthread_mutex_unlock(&g_wq_mu);
+                        ul(&g_wq_mu);
                         if (r < 0) { dead = 1; break; }
                         if (wq_bytes < WRITE_QUEUE_LOW_WATER)
                             resume_prs(epfd);
@@ -945,9 +948,9 @@ static void *main_thread(void *arg) {
                     if (nr > 0) {
                         if (si) si->la = nms();
 
-                        pthread_mutex_lock(&g_wq_mu);
+                        lk(&g_wq_mu);
                         size_t wq_total = g_wq.bytes + (g_wp ? g_wp->total - g_wp->offset : 0);
-                        pthread_mutex_unlock(&g_wq_mu);
+                        ul(&g_wq_mu);
 
                         if (wq_total > WRITE_QUEUE_HIGH_WATER && si) {
                             si->pr = 1;
@@ -976,14 +979,14 @@ static void *main_thread(void *arg) {
         si_close_all(epfd);
         ht_close_all(-1);
 
-        pthread_mutex_lock(&g_wq_mu);
+        lk(&g_wq_mu);
         wq_flush_locked();
-        pthread_mutex_unlock(&g_wq_mu);
+        ul(&g_wq_mu);
 
-        pthread_mutex_lock(&g_m);
+        lk(&g_m);
         g_tf = -1; g_rf = -1; g_ef = -1;
         g_wr = -1; g_ww   = -1;
-        pthread_mutex_unlock(&g_m);
+        ul(&g_m);
 
         close(epfd);
         close(rfd);
@@ -996,23 +999,23 @@ static void *main_thread(void *arg) {
     return NULL;
 }
 
-JNIEXPORT void JNICALL Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *, jclass);
+JNIEXPORT void JNICALL n_stop(JNIEnv *, jclass);
 
 JNIEXPORT jint JNICALL
-Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
+n_start(JNIEnv *env, jclass clazz,
                                           jint port, jobject svc, jstring iid) {
     (void)clazz;
-    pthread_mutex_lock(&g_m);
-    if (g_r) { pthread_mutex_unlock(&g_m); return 0; }
+    lk(&g_m);
+    if (g_r) { ul(&g_m); return 0; }
     pthread_t old = g_mt;
-    pthread_mutex_unlock(&g_m);
+    ul(&g_m);
 
     if (old != 0) {
         pthread_join(old, NULL);
-        pthread_mutex_lock(&g_m); g_mt = 0; pthread_mutex_unlock(&g_m);
+        lk(&g_m); g_mt = 0; ul(&g_m);
     }
 
-    pthread_mutex_lock(&g_m);
+    lk(&g_m);
     (*env)->GetJavaVM(env, &g_j);
     g_s = (*env)->NewGlobalRef(env, svc);
     g_i[0] = 0;
@@ -1025,15 +1028,15 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
     si_init();
     g_r = 1;
     atomic_store(&g_ns, 1);
-    pthread_mutex_unlock(&g_m);
+    ul(&g_m);
 
     pthread_t thr;
     if (pthread_create(&thr, NULL, main_thread, (void *)(intptr_t)port) != 0) {
-        pthread_mutex_lock(&g_m); g_r = 0;
+        lk(&g_m); g_r = 0;
         (*env)->DeleteGlobalRef(env, g_s); g_s = NULL; g_j = NULL;
-        pthread_mutex_unlock(&g_m); return -1;
+        ul(&g_m); return -1;
     }
-    pthread_mutex_lock(&g_m); g_mt = thr; pthread_mutex_unlock(&g_m);
+    lk(&g_m); g_mt = thr; ul(&g_m);
     pthread_detach(thr);
 
     pl("I", "nativeStart lanzado");
@@ -1041,10 +1044,10 @@ Java_com_blacktunnel_BtProxy_nativeStart(JNIEnv *env, jclass clazz,
 }
 
 JNIEXPORT void JNICALL
-Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
+n_stop(JNIEnv *env, jclass clazz) {
     (void)clazz;
-    pthread_mutex_lock(&g_m);
-    if (!g_r) { pthread_mutex_unlock(&g_m); return; }
+    lk(&g_m);
+    if (!g_r) { ul(&g_m); return; }
     g_r = 0;
     g_i[0] = 0;
     jobject svc = g_s; g_s = NULL; g_j = NULL;
@@ -1053,7 +1056,7 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     int epfd = g_ef;  g_ef  = -1;
     int wr   = g_wr;    g_wr    = -1;
     int ww   = g_ww;    g_ww    = -1;
-    pthread_mutex_unlock(&g_m);
+    ul(&g_m);
 
     atomic_fetch_add(&g_te, 1);
 
@@ -1067,40 +1070,40 @@ Java_com_blacktunnel_BtProxy_nativeStop(JNIEnv *env, jclass clazz) {
     si_close_all(-1);
     ht_close_all(-1);
 
-    pthread_mutex_lock(&g_wq_mu);
+    lk(&g_wq_mu);
     wq_flush_locked();
-    pthread_mutex_unlock(&g_wq_mu);
+    ul(&g_wq_mu);
 
     if (svc) (*env)->DeleteGlobalRef(env, svc);
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_blacktunnel_BtProxy_nativeDrainLogs(JNIEnv *env, jclass c) {
+n_drain(JNIEnv *env, jclass c) {
     (void)c;
-    pthread_mutex_lock(&g_lm);
-    if (!g_ll) { pthread_mutex_unlock(&g_lm); return (*env)->NewStringUTF(env, ""); }
+    lk(&g_lm);
+    if (!g_ll) { ul(&g_lm); return (*env)->NewStringUTF(env, ""); }
     char out[32768];
     memcpy(out, g_lb, g_ll); out[g_ll] = 0;
     g_ll = 0; g_lb[0] = 0;
-    pthread_mutex_unlock(&g_lm);
+    ul(&g_lm);
     return (*env)->NewStringUTF(env, out);
 }
 
 JNIEXPORT void JNICALL
-Java_com_blacktunnel_BtProxy_nativeSetNetwork(JNIEnv *e, jclass c, jlong net) {
+n_net(JNIEnv *e, jclass c, jlong net) {
     (void)e; (void)c;
-    pthread_mutex_lock(&g_m); g_n = (net_handle_t)net; pthread_mutex_unlock(&g_m);
+    lk(&g_m); g_n = (net_handle_t)net; ul(&g_m);
 }
 
 static JNINativeMethod g_methods[] = {
     {"nativeStart",      "(ILandroid/net/VpnService;Ljava/lang/String;)I",
-                         (void *)Java_com_blacktunnel_BtProxy_nativeStart},
+                         (void *)n_start},
     {"nativeStop",       "()V",
-                         (void *)Java_com_blacktunnel_BtProxy_nativeStop},
+                         (void *)n_stop},
     {"nativeDrainLogs",  "()Ljava/lang/String;",
-                         (void *)Java_com_blacktunnel_BtProxy_nativeDrainLogs},
+                         (void *)n_drain},
     {"nativeSetNetwork", "(J)V",
-                         (void *)Java_com_blacktunnel_BtProxy_nativeSetNetwork},
+                         (void *)n_net},
 };
 
 JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *r) {
