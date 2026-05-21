@@ -78,6 +78,14 @@ public class SimpleModeActivity extends ComponentActivity {
     private View          stHlV;
     private View          stHmV;
     private TextView      stDtlsV;
+    private View          lgPn;
+    private TextView      lgLtV;
+    private TextView      lgFullV;
+    private View          lgExL;
+    private Button        lgTgB;
+    private Button        lgCpB;
+    private Button        lgClB;
+    private boolean       lgEx = false;
     private TextView      devIdV;
     private TextView      usrNmWV;
     private TextView      daysV;
@@ -128,6 +136,7 @@ public class SimpleModeActivity extends ComponentActivity {
                 String logs = BtVpnService.dumpLogs();
                 syncStateFromLogs(logs);
                 refreshFromLogs(logs);
+                updateConnLogUi(logs);
             } catch (Throwable ignored) {}
             h.postDelayed(this, 3000);
         }
@@ -160,6 +169,13 @@ public class SimpleModeActivity extends ComponentActivity {
         stHlV          = findViewById(R.id.viewStatusHalo);
         stHmV       = findViewById(R.id.viewStatusHaloMid);
         stDtlsV       = findViewById(R.id.txtStatusDetails);
+        lgPn              = findViewById(R.id.panelConnLog);
+        lgLtV             = findViewById(R.id.txtConnLogLatest);
+        lgFullV           = findViewById(R.id.txtConnLogFull);
+        lgExL             = findViewById(R.id.layoutConnLogExpanded);
+        lgTgB             = findViewById(R.id.btnConnLogToggle);
+        lgCpB             = findViewById(R.id.btnConnLogCopy);
+        lgClB             = findViewById(R.id.btnConnLogClear);
         devIdV            = findViewById(R.id.txtDeviceId);
         daysV           = findViewById(R.id.txtDays);
         pngV           = findViewById(R.id.txtPingValue);
@@ -204,6 +220,9 @@ public class SimpleModeActivity extends ComponentActivity {
             }
         });
         cpBtn.setOnClickListener(v -> copyInternalIdToClipboard());
+        if (lgTgB != null) lgTgB.setOnClickListener(v -> toggleConnLog());
+        if (lgCpB != null) lgCpB.setOnClickListener(v -> copyConnLog());
+        if (lgClB != null) lgClB.setOnClickListener(v -> clearConnLogView());
 
         if (gmSw != null) {
             gmSw.setChecked(BtProxy.isGamingMode(this));
@@ -656,6 +675,41 @@ public class SimpleModeActivity extends ComponentActivity {
             if (gmBdV != null) gmBdV.setText(done);
             h.postDelayed(this::refreshGamingModeUi, 500);
         }, 500);
+    }
+
+    private void toggleConnLog() {
+        lgEx = !lgEx;
+        if (lgExL != null) lgExL.setVisibility(lgEx ? View.VISIBLE : View.GONE);
+        if (lgTgB != null) lgTgB.setText(lgEx ? "Ocultar" : "Ver más");
+    }
+
+    private void copyConnLog() {
+        String logs = BtVpnService.dumpLogs();
+        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("conn_logs", logs == null ? "" : logs));
+        Toast.makeText(this, "Logs copiados", Toast.LENGTH_SHORT).show();
+    }
+
+    private void clearConnLogView() {
+        if (lgLtV != null) lgLtV.setText("");
+        if (lgFullV != null) lgFullV.setText("");
+    }
+
+    private void updateConnLogUi(String logs) {
+        if (lgPn == null || lgLtV == null || lgFullV == null) return;
+        if (logs == null || logs.isEmpty()) {
+            lgPn.setVisibility(View.GONE);
+            return;
+        }
+        lgPn.setVisibility(View.VISIBLE);
+        String[] ls = logs.split("\n");
+        String last = "";
+        for (int i = ls.length - 1; i >= 0; i--) {
+            String t = ls[i] == null ? "" : ls[i].trim();
+            if (!t.isEmpty()) { last = t; break; }
+        }
+        lgLtV.setText(last);
+        if (lgEx) lgFullV.setText(logs);
     }
 
     private void syncStateFromLogs(String logs) {
