@@ -89,6 +89,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private boolean       lgEx = false;
     private TextView      devIdV;
     private TextView      usrNmWV;
+    private TextView      hevRtV;
     private TextView      daysV;
     private TextView      pngV;
     private PingPulseView pngPlsV;
@@ -159,7 +160,10 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void updateHevFlowHint() {
-        if (uS != UiState.CONNECTED || stDtlsV == null) return;
+        if (uS != UiState.CONNECTED) {
+            if (hevRtV != null) hevRtV.setVisibility(View.GONE);
+            return;
+        }
         try {
             long[] s = BtVpnService.HevBridge.stats();
             if (s == null || s.length < 4) return;
@@ -169,8 +173,10 @@ public class SimpleModeActivity extends ComponentActivity {
                 long dt = now - stMs;
                 long up = Math.max(0, (curTx - txB) * 1000L / dt);
                 long dn = Math.max(0, (curRx - rxB) * 1000L / dt);
-                stDtlsV.setVisibility(View.VISIBLE);
-                stDtlsV.setText("✓ Conexión establecida\n↑ " + fmtRate(up) + "  ↓ " + fmtRate(dn));
+                if (hevRtV != null) {
+                    hevRtV.setVisibility(View.VISIBLE);
+                    hevRtV.setText("↑ " + fmtRate(up) + "  ↓ " + fmtRate(dn));
+                }
             }
             txB = curTx; rxB = curRx; stMs = now;
         } catch (Throwable ignored) {}
@@ -222,6 +228,7 @@ public class SimpleModeActivity extends ComponentActivity {
         gmCtlL    = findViewById(R.id.layoutGamingControls);
         pnConnV     = findViewById(R.id.panelConnection);
         usrNmWV        = findViewById(R.id.txtUserNameWide);
+        hevRtV         = findViewById(R.id.txtHevRate);
         bRO            = findViewById(R.id.btnRingOuter);
         bRM              = findViewById(R.id.btnRingMid);
         bTD               = findViewById(R.id.btnTopDot);
@@ -694,6 +701,7 @@ public class SimpleModeActivity extends ComponentActivity {
             daysV.setText("--");
             daysV.setTextColor(c(R.color.color_text_disabled));
         }
+        if (hevRtV != null) hevRtV.setVisibility(View.GONE);
         setUiState(UiState.CONNECTING);
     }
 
@@ -718,6 +726,7 @@ public class SimpleModeActivity extends ComponentActivity {
             daysV.setText("--");
             daysV.setTextColor(c(R.color.color_text_disabled));
         }
+        if (hevRtV != null) hevRtV.setVisibility(View.GONE);
         h.removeCallbacks(autoDisconnectRunnable);
         autoDcMs = -1L;
     }

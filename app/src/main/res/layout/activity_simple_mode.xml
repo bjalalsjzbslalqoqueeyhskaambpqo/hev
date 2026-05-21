@@ -278,6 +278,16 @@
                 </LinearLayout>
             </LinearLayout>
             <TextView
+                android:id="@+id/txtHevRate"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:gravity="center"
+                android:textColor="@color/color_text_secondary"
+                android:textSize="11sp"
+                android:text="↑ --  ↓ --"
+                android:visibility="gone" />
+            <TextView
                 android:id="@+id/txtUserNameWide"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
