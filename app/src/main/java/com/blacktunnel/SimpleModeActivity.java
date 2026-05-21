@@ -872,21 +872,27 @@ public class SimpleModeActivity extends ComponentActivity {
             String line = lines[i]; if (line == null) continue;
             String lower = line.trim().toLowerCase(Locale.ROOT); if (lower.isEmpty()) continue;
             if (lower.contains("tunnel ok")  || lower.contains("user_name=") ||
-                lower.contains("user_days=") || lower.contains("ping_ms="))   return "connected";
+                lower.contains("user_days=") || lower.contains("ping_ms=") ||
+                lower.contains("stage=access_granted"))                         return "connected";
+            if (lower.contains("stage=auth_rejected")) return "auth_rejected";
+            if (lower.contains("stage=manual_reconnect_required")) return "manual_reconnect_required";
+            if (lower.contains("handshake failed") || lower.contains("proxy no responde") ||
+                lower.contains("getaddrinfo fallo") || lower.contains("connect failed") ||
+                lower.contains("stage=proxy_connect_failed") || lower.contains("stage=proxy_no_response")) return "failed";
+            if (lower.contains("tunnel caido")       || lower.contains("pong timeout") ||
+                lower.contains("tunnel read failed")  || lower.contains("payload too large") ||
+                lower.contains("payload read failed"))                          return "dropped";
+        }
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i]; if (line == null) continue;
+            String lower = line.trim().toLowerCase(Locale.ROOT); if (lower.isEmpty()) continue;
             if (lower.contains("stage=proxy_connect_start")) return "proxy_connect_start";
             if (lower.contains("stage=proxy_connected")) return "proxy_connected";
             if (lower.contains("stage=server_auth_request")) return "server_auth_request";
             if (lower.contains("stage=access_granted")) return "access_granted";
-            if (lower.contains("stage=auth_rejected")) return "auth_rejected";
-            if (lower.contains("stage=manual_reconnect_required")) return "manual_reconnect_required";
             if (lower.contains("conectando...") || lower.contains("probando ") ||
                 lower.contains("ips estaticas fallaron") || lower.contains("dns ") ||
                 lower.contains("relay listo"))                                  return "retrying";
-            if (lower.contains("tunnel caido")       || lower.contains("pong timeout") ||
-                lower.contains("tunnel read failed")  || lower.contains("payload too large") ||
-                lower.contains("payload read failed"))                          return "dropped";
-            if (lower.contains("handshake failed") || lower.contains("proxy no responde") ||
-                lower.contains("getaddrinfo fallo") || lower.contains("connect failed"))  return "failed";
         }
         return "";
     }
