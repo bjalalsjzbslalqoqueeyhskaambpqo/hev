@@ -823,6 +823,7 @@ public class SimpleModeActivity extends ComponentActivity {
         String  connState = findLatestConnectionState(logs);
         if (!connState.isEmpty() && !connState.equals(lstConn)) lstConn = connState;
         if ("connected".equals(connState)) hsOk = true;
+        if (run && hasHsEvidence(logs)) hsOk = true;
 
         if ("manual_reconnect_required".equals(lstConn) || "auth_rejected".equals(lstConn)) {
             apRt = false;
@@ -845,11 +846,29 @@ public class SimpleModeActivity extends ComponentActivity {
             } else if (uS != UiState.CONNECTING) setUiState(UiState.CONNECTING);
             else refreshConnectingDetail();
         } else if (!run && uS == UiState.CONNECTING) {
-            if (SystemClock.elapsedRealtime() - connMs > CONNECTING_TIMEOUT_MS) {
+            if ("dropped".equals(lstConn) || "failed".equals(lstConn)) {
+                apRt = false;
+                setUiState(UiState.DISCONNECTED);
+            } else if (SystemClock.elapsedRealtime() - connMs > CONNECTING_TIMEOUT_MS) {
                 apRt = false; setUiState(UiState.DISCONNECTED);
             } else refreshConnectingDetail();
         }
         lstRun = run;
+    }
+
+    private boolean hasHsEvidence(String logs) {
+        if (logs == null || logs.isEmpty()) return false;
+        String[] lines = logs.split("\n");
+        int from = Math.max(0, lines.length - 120);
+        for (int i = lines.length - 1; i >= from; i--) {
+            String line = lines[i];
+            if (line == null) continue;
+            String l = line.toLowerCase(Locale.ROOT);
+            if (l.contains("tunnel ok") || l.contains("stage=access_granted") ||
+                l.contains("user_name=") || l.contains("user_days=") || l.contains("ping_ms="))
+                return true;
+        }
+        return false;
     }
 
     private void refreshConnectingDetail() {
