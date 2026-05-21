@@ -436,12 +436,13 @@ public class BtVpnService extends VpnService {
             "  port: 53\n" +
             "  network: 198.18.0.0\n" +
             "  netmask: 255.254.0.0\n" +
-            "  cache-size: 8192\n" +
+            "  cache-size: 10000\n" +
             "misc:\n" +
             "  task-stack-size: 86016\n" +
             "  tcp-buffer-size: 65536\n" +
             "  connect-timeout: 10000\n" +
             "  read-write-timeout: 300000\n" +
+            "  tcp-read-write-timeout: 3600000\n" +
             "  max-session-count: 4096\n" +
             "  limit-nofile: 65535\n" +
             "  log-file: stderr\n" +
