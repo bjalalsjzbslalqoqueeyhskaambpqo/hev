@@ -287,6 +287,12 @@
                 android:textSize="11sp"
                 android:text="↑ --  ↓ --"
                 android:visibility="gone" />
+            <com.blacktunnel.ThroughputGraphView
+                android:id="@+id/throughputGraphView"
+                android:layout_width="match_parent"
+                android:layout_height="54dp"
+                android:layout_marginTop="4dp"
+                android:visibility="gone" />
             <TextView
                 android:id="@+id/txtUserNameWide"
                 android:layout_width="match_parent"

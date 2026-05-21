@@ -90,6 +90,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private TextView      devIdV;
     private TextView      usrNmWV;
     private TextView      hevRtV;
+    private ThroughputGraphView thrV;
     private TextView      daysV;
     private TextView      pngV;
     private PingPulseView pngPlsV;
@@ -162,6 +163,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private void updateHevFlowHint() {
         if (uS != UiState.CONNECTED) {
             if (hevRtV != null) hevRtV.setVisibility(View.GONE);
+            if (thrV != null) thrV.setVisibility(View.GONE);
             return;
         }
         try {
@@ -176,6 +178,10 @@ public class SimpleModeActivity extends ComponentActivity {
                 if (hevRtV != null) {
                     hevRtV.setVisibility(View.VISIBLE);
                     hevRtV.setText("↑ " + fmtRate(up) + "  ↓ " + fmtRate(dn));
+                }
+                if (thrV != null) {
+                    thrV.setVisibility(View.VISIBLE);
+                    thrV.push(up, dn);
                 }
             }
             txB = curTx; rxB = curRx; stMs = now;
@@ -229,6 +235,7 @@ public class SimpleModeActivity extends ComponentActivity {
         pnConnV     = findViewById(R.id.panelConnection);
         usrNmWV        = findViewById(R.id.txtUserNameWide);
         hevRtV         = findViewById(R.id.txtHevRate);
+        thrV           = findViewById(R.id.throughputGraphView);
         bRO            = findViewById(R.id.btnRingOuter);
         bRM              = findViewById(R.id.btnRingMid);
         bTD               = findViewById(R.id.btnTopDot);
@@ -702,6 +709,7 @@ public class SimpleModeActivity extends ComponentActivity {
             daysV.setTextColor(c(R.color.color_text_disabled));
         }
         if (hevRtV != null) hevRtV.setVisibility(View.GONE);
+        if (thrV != null) thrV.setVisibility(View.GONE);
         setUiState(UiState.CONNECTING);
     }
 
@@ -727,6 +735,7 @@ public class SimpleModeActivity extends ComponentActivity {
             daysV.setTextColor(c(R.color.color_text_disabled));
         }
         if (hevRtV != null) hevRtV.setVisibility(View.GONE);
+        if (thrV != null) thrV.setVisibility(View.GONE);
         h.removeCallbacks(autoDisconnectRunnable);
         autoDcMs = -1L;
     }
@@ -1511,5 +1520,56 @@ class PingPulseView extends View {
         super.onDetachedFromWindow();
         if (scrollAnimator != null) scrollAnimator.cancel();
         if (blinkAnimator  != null) blinkAnimator.cancel();
+    }
+}
+
+class ThroughputGraphView extends View {
+    private static final int MAX = 36;
+    private final Deque<Float> upH = new ArrayDeque<>();
+    private final Deque<Float> dnH = new ArrayDeque<>();
+    private final Paint upP = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint dnP = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint gridP = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Path upPath = new Path();
+    private final Path dnPath = new Path();
+
+    public ThroughputGraphView(Context c, AttributeSet a) {
+        super(c, a);
+        upP.setStyle(Paint.Style.STROKE); upP.setStrokeWidth(2.2f); upP.setColor(Color.parseColor("#3BEF8F"));
+        dnP.setStyle(Paint.Style.STROKE); dnP.setStrokeWidth(2.2f); dnP.setColor(Color.parseColor("#44B7FF"));
+        gridP.setStyle(Paint.Style.STROKE); gridP.setStrokeWidth(1f); gridP.setColor(Color.parseColor("#22FFFFFF"));
+    }
+
+    public void push(long up, long dn) {
+        if (upH.size() >= MAX) upH.removeFirst();
+        if (dnH.size() >= MAX) dnH.removeFirst();
+        upH.addLast((float) up);
+        dnH.addLast((float) dn);
+        postInvalidateOnAnimation();
+    }
+
+    @Override protected void onDraw(Canvas c) {
+        super.onDraw(c);
+        float w = getWidth(), h = getHeight(), m = 6f;
+        c.drawLine(m, h * 0.33f, w - m, h * 0.33f, gridP);
+        c.drawLine(m, h * 0.66f, w - m, h * 0.66f, gridP);
+        if (upH.isEmpty() || dnH.isEmpty()) return;
+        float max = 1f;
+        for (Float v : upH) max = Math.max(max, v);
+        for (Float v : dnH) max = Math.max(max, v);
+        drawSeries(c, upH, upPath, upP, m, w, h, max);
+        drawSeries(c, dnH, dnPath, dnP, m, w, h, max);
+    }
+
+    private void drawSeries(Canvas c, Deque<Float> hs, Path p, Paint paint, float m, float w, float h, float max) {
+        p.reset();
+        int i = 0, n = hs.size();
+        for (Float v : hs) {
+            float x = m + ((w - 2f * m) * i / Math.max(1, n - 1));
+            float y = h - m - ((h - 2f * m) * (v / max));
+            if (i == 0) p.moveTo(x, y); else p.lineTo(x, y);
+            i++;
+        }
+        c.drawPath(p, paint);
     }
 }
