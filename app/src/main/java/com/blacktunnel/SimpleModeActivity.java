@@ -651,12 +651,23 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void startVpn() {
+        BtVpnService.cLogs();
         Intent i = new Intent(this, BtVpnService.class);
         i.setAction(BtVpnService.ACTION_START);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
         else startService(i);
         connMs = SystemClock.elapsedRealtime();
-        hsOk = false; lstConn = "";
+        hsOk = false; lstConn = ""; lstDtl = ""; aSt = "";
+        lstPing = -1;
+        if (pngV != null) {
+            pngV.setText("--");
+            pngV.setTextColor(c(R.color.color_text_disabled));
+        }
+        if (usrNmWV != null) usrNmWV.setText("Usuario: --");
+        if (daysV != null) {
+            daysV.setText("--");
+            daysV.setTextColor(c(R.color.color_text_disabled));
+        }
         setUiState(UiState.CONNECTING);
     }
 
@@ -666,9 +677,21 @@ public class SimpleModeActivity extends ComponentActivity {
         Intent i = new Intent(this, BtVpnService.class);
         i.setAction(BtVpnService.ACTION_STOP);
         startService(i);
-        hsOk = false; lstConn = "";
+        BtVpnService.cLogs();
+        hsOk = false; lstConn = ""; lstDtl = ""; aSt = "";
         setUiState(UiState.DISCONNECTED);
         clearConnLogView();
+        lgPn.setVisibility(View.GONE);
+        lstPing = -1;
+        if (pngV != null) {
+            pngV.setText("--");
+            pngV.setTextColor(c(R.color.color_text_disabled));
+        }
+        if (usrNmWV != null) usrNmWV.setText("Usuario: --");
+        if (daysV != null) {
+            daysV.setText("--");
+            daysV.setTextColor(c(R.color.color_text_disabled));
+        }
         h.removeCallbacks(autoDisconnectRunnable);
         autoDcMs = -1L;
     }
