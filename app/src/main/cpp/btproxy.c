@@ -465,7 +465,7 @@ static int open_tunnel(void) {
 
     int fd = -1;
     for (int i = 0; i < PROXY_IP_COUNT && fd < 0; i++) {
-        pl("I", "probando %s", PROXY_IPS[i]);
+        pl("I", "proxy intento=proxy_%d", i + 1);
         fd = try_connect_ip(PROXY_IPS[i], 300);
     }
 
@@ -478,11 +478,13 @@ static int open_tunnel(void) {
         char port_str[8];
         snprintf(port_str, sizeof(port_str), "%d", PROXY_PORT);
         if (getaddrinfo(PROXY_HOST, port_str, &hints, &res) == 0) {
+            int dns_try = 0;
             for (cur = res; cur && fd < 0; cur = cur->ai_next) {
+                dns_try++;
                 char ipbuf[INET6_ADDRSTRLEN] = {0};
                 struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)cur->ai_addr;
                 inet_ntop(AF_INET6, &a6->sin6_addr, ipbuf, sizeof(ipbuf));
-                pl("I", "dns %s", ipbuf);
+                pl("I", "proxy intento=dns_%d", dns_try);
                 fd = try_connect_ip(ipbuf, 300);
             }
             freeaddrinfo(res);
@@ -653,7 +655,7 @@ static void *tunnel_reader(void *arg) {
             long sent = atomic_load(&g_lpt);
             if (sent > 0) {
                 long rtt = nms() - sent;
-                if (rtt >= 0 && rtt < 10000) pl("I", "ping_ms=%ld", rtt);
+                (void)rtt;
             }
             break;
         }

@@ -119,6 +119,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private boolean hsOk               = false;
     private String  lstConn               = "";
     private String  lstDtl                   = "";
+    private long    lgClrMs                  = 0L;
 
     private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
     private final Runnable delayedReconnectRunnable = () -> {
@@ -637,6 +638,7 @@ public class SimpleModeActivity extends ComponentActivity {
         startService(i);
         hsOk = false; lstConn = "";
         setUiState(UiState.DISCONNECTED);
+        clearConnLogView();
         h.removeCallbacks(autoDisconnectRunnable);
         autoDcMs = -1L;
     }
@@ -691,6 +693,7 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void clearConnLogView() {
+        lgClrMs = System.currentTimeMillis();
         if (lgLtV != null) lgLtV.setText("");
         if (lgFullV != null) lgFullV.setText("");
     }
@@ -701,15 +704,65 @@ public class SimpleModeActivity extends ComponentActivity {
             lgPn.setVisibility(View.GONE);
             return;
         }
-        lgPn.setVisibility(View.VISIBLE);
         String[] ls = logs.split("\n");
+        StringBuilder sb = new StringBuilder();
         String last = "";
         for (int i = ls.length - 1; i >= 0; i--) {
             String t = ls[i] == null ? "" : ls[i].trim();
-            if (!t.isEmpty()) { last = t; break; }
+            if (t.isEmpty()) continue;
+            if (t.contains("ping_ms=")) continue;
+            if (!isLineAfterClear(t)) continue;
+            String fx = prettifyConnLine(t);
+            if (fx.isEmpty()) continue;
+            if (last.isEmpty()) last = fx;
+            if (sb.length() < 3500) sb.insert(0, fx + "\n");
         }
+        if (last.isEmpty()) {
+            lgPn.setVisibility(View.GONE);
+            return;
+        }
+        lgPn.setVisibility(View.VISIBLE);
         lgLtV.setText(last);
-        if (lgEx) lgFullV.setText(logs);
+        if (lgEx) lgFullV.setText(sb.toString().trim());
+    }
+
+    private boolean isLineAfterClear(String line) {
+        if (lgClrMs <= 0L) return true;
+        int a = line.indexOf('['), b = line.indexOf(']');
+        if (a != 0 || b <= 1) return true;
+        try {
+            String hhmmss = line.substring(1, b);
+            String[] p = hhmmss.split(":");
+            if (p.length != 3) return true;
+            java.util.Calendar c = java.util.Calendar.getInstance();
+            c.set(java.util.Calendar.HOUR_OF_DAY, Integer.parseInt(p[0]));
+            c.set(java.util.Calendar.MINUTE, Integer.parseInt(p[1]));
+            c.set(java.util.Calendar.SECOND, Integer.parseInt(p[2]));
+            c.set(java.util.Calendar.MILLISECOND, 0);
+            return c.getTimeInMillis() >= lgClrMs - 1000;
+        } catch (Throwable ignored) { return true; }
+    }
+
+    private String prettifyConnLine(String t) {
+        String l = t.toLowerCase(Locale.ROOT);
+        if (l.contains("proxy intento=proxy_1")) return "Intentando Proxy 1";
+        if (l.contains("proxy intento=proxy_2")) return "Intentando Proxy 2";
+        if (l.contains("proxy intento=dns_")) return "Intentando proxy por resolución dinámica";
+        if (l.contains("stage=proxy_connect_start")) return "Iniciando conexión de proxy";
+        if (l.contains("stage=proxy_connected")) return "Proxy conectado";
+        if (l.contains("stage=server_auth_request")) return "Solicitando acceso al servidor";
+        if (l.contains("stage=access_granted")) return "Acceso concedido";
+        if (l.contains("stage=proxy_no_response")) return "Proxy no responde";
+        if (l.contains("stage=proxy_connect_failed")) return "Conexión al proxy fallida";
+        if (l.contains("stage=auth_rejected")) return "Acceso denegado por servidor";
+        if (l.contains("stage=manual_reconnect_required")) return "Requiere reconexión manual";
+        if (l.contains("not_registered")) return "Usuario no registrado";
+        if (l.contains("expired")) return "Usuario expirado";
+        if (l.contains("tunnel ok")) return "Túnel activo";
+        if (l.contains("relay listo")) return "Relay listo";
+        if (l.contains("pong timeout")) return "Tiempo de espera agotado";
+        if (l.contains("tunnel caido")) return "Túnel caído";
+        return "";
     }
 
     private void syncStateFromLogs(String logs) {
