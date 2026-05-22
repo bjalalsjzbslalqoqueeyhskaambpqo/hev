@@ -161,7 +161,7 @@ class MainActivity : AppCompatActivity() {
         if (user.isBlank() || password.isBlank()) return showStatus("Usuario y contraseña son obligatorios", false)
         val name = sshNameInput.text.toString().trim().ifBlank { user }
         val days = sshDaysInput.text.toString().trim().toIntOrNull() ?: 30
-        request("POST", "/ssh/create", JSONObject().put("user", user).put("password", password).put("name", name).put("days", days)) {
+        request("POST", "/user/create", JSONObject().put("user", user).put("password", password).put("name", name).put("days", days)) {
             showStatus("Usuario SSH creado", true)
             refreshClientsSsh()
         }
@@ -171,7 +171,7 @@ class MainActivity : AppCompatActivity() {
         val user = sshUserInput.text.toString().trim()
         val days = sshDaysInput.text.toString().trim().toIntOrNull() ?: 0
         if (user.isBlank() || days <= 0) return showStatus("Usuario o días inválidos", false)
-        request("POST", "/ssh/update", JSONObject().put("user", user).put("days", days).put("add_days", days)) {
+        request("POST", "/user/update", JSONObject().put("user", user).put("add_days", days)) {
             showStatus("Días actualizados en SSH", true)
             refreshClientsSsh()
         }
@@ -180,13 +180,13 @@ class MainActivity : AppCompatActivity() {
     private fun deleteSshClient() {
         val user = sshUserInput.text.toString().trim()
         if (user.isBlank()) return showStatus("Falta usuario SSH", false)
-        request("POST", "/ssh/delete", JSONObject().put("user", user)) {
+        request("POST", "/user/delete", JSONObject().put("user", user)) {
             showStatus("Usuario SSH eliminado", true)
             refreshClientsSsh()
         }
     }
 
-    private fun refreshClientsSsh() = request("GET", "/ssh/users", null) { json ->
+    private fun refreshClientsSsh() = request("GET", "/users", null) { json ->
         sshClients.clear()
         val arr = json.optJSONArray("users") ?: json.optJSONArray("clients") ?: JSONArray()
         for (i in 0 until arr.length()) {
@@ -229,7 +229,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun deleteFromList(item: ClientItem) {
-        request("POST", "/ssh/delete", JSONObject().put("user", item.id)) { refreshClientsSsh() }
+        request("POST", "/user/delete", JSONObject().put("user", item.id)) { refreshClientsSsh() }
     }
 
     private fun editName(item: ClientItem) {
@@ -239,7 +239,7 @@ class MainActivity : AppCompatActivity() {
             .setView(input)
             .setPositiveButton("Guardar") { _, _ ->
                 val newName = input.text.toString().trim()
-                request("POST", "/ssh/update", JSONObject().put("user", item.id).put("name", newName)) { refreshClientsSsh() }
+                request("POST", "/user/update", JSONObject().put("user", item.id).put("name", newName)) { refreshClientsSsh() }
             }
             .setNegativeButton("Cancelar", null)
             .show()
@@ -253,7 +253,7 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("Aplicar") { _, _ ->
                 val days = input.text.toString().toIntOrNull() ?: 0
                 if (days > 0) {
-                    request("POST", "/ssh/update", JSONObject().put("user", item.id).put("days", days).put("add_days", days)) { refreshClientsSsh() }
+                    request("POST", "/user/update", JSONObject().put("user", item.id).put("add_days", days)) { refreshClientsSsh() }
                 }
             }
             .setNegativeButton("Cancelar", null)
