@@ -584,7 +584,7 @@ static int open_tunnel(void) {
                  "Host: d36wp69rjuikpvh.cloudfront.net\r\n"
                  "Upgrade: websocket\r\n"
                  "Connection: Upgrade\r\n"
-                 "action:ssh\r\n"
+                 "Action: tunnel\r\n"
                  "X-Internal-ID: %s\r\n\r\n",
                  active_proxy_host, active_proxy_host, g_i[0] ? g_i : "unknown");
     } else {
