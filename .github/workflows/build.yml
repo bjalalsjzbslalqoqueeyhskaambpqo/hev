@@ -33,10 +33,11 @@ jobs:
       - name: Download HEV
         run: |
           mkdir -p app/src/main/jniLibs/arm64-v8a
-          if [ ! -f app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so ]; then
-            curl -L "https://github.com/bjalalsjzbslalqoqueeyhskaambpqo/hev/raw/libs/jniLibs/arm64-v8a/libhev-socks5-tunnel.so" \
-              -o app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so
-          fi
+          mkdir -p app/src/main/jniLibs/armeabi-v7a
+          curl -L "https://github.com/bjalalsjzbslalqoqueeyhskaambpqo/hev/raw/libs/jniLibs/arm64-v8a/libhev-socks5-tunnel.so" \
+            -o app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so
+          curl -L "https://github.com/bjalalsjzbslalqoqueeyhskaambpqo/hev/raw/libs/jniLibs/armeabi-v7a/libhev-socks5-tunnel.so" \
+            -o app/src/main/jniLibs/armeabi-v7a/libhev-socks5-tunnel.so
 
       - name: Prepare release keystore
         env:
