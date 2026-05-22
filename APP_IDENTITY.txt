@@ -1,2 +1,2 @@
-APPLICATION_ID=com.blacktunnel.panel2
-APP_NAME=ADM VPS2
+APPLICATION_ID=com.adminssh.panel
+APP_NAME=Admin SSH

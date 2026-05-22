@@ -33,7 +33,7 @@ val hasInjectedConfig = baseUrlRaw.isNotBlank() && tokenRaw.isNotBlank()
 val appIdentityFile = rootProject.file("APP_IDENTITY.txt")
 val appIdentityDefaults = mapOf(
     "APPLICATION_ID" to "com.blacktunnel.panel",
-    "APP_NAME" to "ADM VPS"
+    "APP_NAME" to "Admin SSH"
 )
 val appIdentityRaw = if (appIdentityFile.exists()) appIdentityFile.readText() else ""
 val appIdentityOverrides = appIdentityRaw

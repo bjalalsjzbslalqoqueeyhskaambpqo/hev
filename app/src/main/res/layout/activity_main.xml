@@ -16,7 +16,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="ADM VPS"
+            android:text="ADMIN SSH"
             android:textColor="#FFFFFF"
             android:textSize="26sp"
             android:textStyle="bold" />
