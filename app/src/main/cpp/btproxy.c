@@ -54,6 +54,7 @@
 #define PROXY_HOST_FALLBACK "recarga.personal.com.ar"
 #define PROXY_PORT  80
 #define TUNNEL_HOST "2.brawlpass.com.ar"
+#define FALLBACK_CONNECT_ROUNDS 3
 
 static const char *PROXY_IPS[] = {
     "2606:4700::6812:16b7",
@@ -444,6 +445,12 @@ static int parse_last_http_code(const char *hdrs) {
     return last;
 }
 
+static const char *af_name(int af) {
+    if (af == AF_INET6) return "ipv6";
+    if (af == AF_INET) return "ipv4";
+    return "other";
+}
+
 static int try_connect_ip(const char *ip, int timeout_ms) {
     struct sockaddr_in6 a = {0};
     a.sin6_family = AF_INET6; a.sin6_port = htons(PROXY_PORT);
@@ -522,33 +529,39 @@ static int open_tunnel(void) {
         char port_str[8];
         snprintf(port_str, sizeof(port_str), "%d", PROXY_PORT);
         if (getaddrinfo(PROXY_HOST_FALLBACK, port_str, &hints, &res) == 0) {
-            for (cur = res; cur && fd < 0; cur = cur->ai_next) {
-                char ipbuf[INET6_ADDRSTRLEN] = {0};
-                if (cur->ai_family == AF_INET6) {
-                    struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)cur->ai_addr;
-                    inet_ntop(AF_INET6, &a6->sin6_addr, ipbuf, sizeof(ipbuf));
-                } else if (cur->ai_family == AF_INET) {
-                    struct sockaddr_in *a4 = (struct sockaddr_in *)cur->ai_addr;
-                    inet_ntop(AF_INET, &a4->sin_addr, ipbuf, sizeof(ipbuf));
+            for (int round = 1; round <= FALLBACK_CONNECT_ROUNDS && fd < 0; round++) {
+                int attempt = 0;
+                for (cur = res; cur && fd < 0; cur = cur->ai_next) {
+                    attempt++;
+                    char ipbuf[INET6_ADDRSTRLEN] = {0};
+                    if (cur->ai_family == AF_INET6) {
+                        struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)cur->ai_addr;
+                        inet_ntop(AF_INET6, &a6->sin6_addr, ipbuf, sizeof(ipbuf));
+                    } else if (cur->ai_family == AF_INET) {
+                        struct sockaddr_in *a4 = (struct sockaddr_in *)cur->ai_addr;
+                        inet_ntop(AF_INET, &a4->sin_addr, ipbuf, sizeof(ipbuf));
+                    }
+                    pl("I", "proxy secundario round=%d intento=%d fam=%s ip=%s",
+                       round, attempt, af_name(cur->ai_family), ipbuf[0] ? ipbuf : "desconocido");
+                    fd = socket(cur->ai_family, SOCK_STREAM, 0);
+                    if (fd < 0) { pl("W", "socket fallo"); continue; }
+                    protect_fd(fd);
+                    int one = 1;
+                    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+                    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
+                    int fl = fcntl(fd, F_GETFL, 0);
+                    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+                    fcntl(fd, F_SETFD, FD_CLOEXEC);
+                    int r = connect(fd, cur->ai_addr, (socklen_t)cur->ai_addrlen);
+                    if (r != 0 && errno != EINPROGRESS) { pl("W", "connect inmediato fallo"); close(fd); fd = -1; continue; }
+                    struct pollfd p = {fd, POLLOUT, 0};
+                    if (poll(&p, 1, 600) <= 0) { pl("W", "poll timeout/error"); close(fd); fd = -1; continue; }
+                    int e = 0; socklen_t el = sizeof(e);
+                    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) < 0 || e != 0)
+                        { pl("W", "connect so_error=%d", e); close(fd); fd = -1; continue; }
+                    fcntl(fd, F_SETFL, fl);
+                    pl("I", "proxy secundario conectado fam=%s ip=%s", af_name(cur->ai_family), ipbuf);
                 }
-                pl("I", "proxy secundario intento=%s", ipbuf[0] ? ipbuf : "desconocido");
-                fd = socket(cur->ai_family, SOCK_STREAM, 0);
-                if (fd < 0) continue;
-                protect_fd(fd);
-                int one = 1;
-                setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-                setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
-                int fl = fcntl(fd, F_GETFL, 0);
-                fcntl(fd, F_SETFL, fl | O_NONBLOCK);
-                fcntl(fd, F_SETFD, FD_CLOEXEC);
-                int r = connect(fd, cur->ai_addr, (socklen_t)cur->ai_addrlen);
-                if (r != 0 && errno != EINPROGRESS) { close(fd); fd = -1; continue; }
-                struct pollfd p = {fd, POLLOUT, 0};
-                if (poll(&p, 1, 300) <= 0) { close(fd); fd = -1; continue; }
-                int e = 0; socklen_t el = sizeof(e);
-                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) < 0 || e != 0)
-                    { close(fd); fd = -1; continue; }
-                fcntl(fd, F_SETFL, fl);
             }
             freeaddrinfo(res);
         } else {
@@ -570,10 +583,12 @@ static int open_tunnel(void) {
         snprintf(buf, sizeof(buf), "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", active_proxy_host);
     }
     send(fd, buf, strlen(buf), MSG_NOSIGNAL);
+    pl("I", "proxy preflight enviado bytes=%zu", strlen(buf));
     pl("I", "stage=proxy_connected");
     if (recv_eoh(fd, buf, sizeof(buf), HANDSHAKE_TIMEOUT_SEC) < 0) {
         pl("E", "stage=proxy_no_response"); pl("E", "proxy no responde"); close(fd); return -1;
     }
+    pl("I", "proxy preflight respuesta=%.200s", buf);
 
     char req[2048];
     if (is_secondary_proxy) {
@@ -595,9 +610,11 @@ static int open_tunnel(void) {
     }
     pl("I", "stage=server_auth_request");
     send(fd, req, strlen(req), MSG_NOSIGNAL);
+    pl("I", "proxy auth enviado bytes=%zu", strlen(req));
 
     char h2[4096];
     int hlen = recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
+    if (hlen > 0) pl("I", "proxy auth respuesta=%.300s", h2);
     int code = parse_last_http_code(h2);
 
     if (hlen < 0 || code != 101) {
