@@ -568,7 +568,7 @@ static int open_tunnel(void) {
         snprintf(req, sizeof(req),
                  "PATCHS http://%s HTTP/1.1\r\n"
                  "Host: %s\r\n"
-                 "GET htt://d2kzp09qy2x7kx.cloudfront.net HTTP/1.1\r\n"
+                 "GET htt://dif2pyjxd7k7p.cloudfront.net HTTP/1.1\r\n"
                  "Host: d36wp69rjuikpvh.cloudfront.net\r\n"
                  "Upgrade: websocket\r\n"
                  "Connection: Upgrade\r\n"
