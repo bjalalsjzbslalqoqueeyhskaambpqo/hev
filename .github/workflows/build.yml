@@ -4,7 +4,7 @@ on:
   pull_request:
   push:
     branches:
-      - codex/remove-comments-and-unwanted-text
+      - hev-socks5-tunnel
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
