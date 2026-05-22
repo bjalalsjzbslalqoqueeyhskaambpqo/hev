@@ -51,6 +51,7 @@
 #define STREAM_TIMEOUT_MS      2000000
 
 #define PROXY_HOST  "emailmarketing.personal.com.ar"
+#define PROXY_HOST_FALLBACK "recarga.personal.com.ar"
 #define PROXY_PORT  80
 #define TUNNEL_HOST "2.brawlpass.com.ar"
 
@@ -431,6 +432,18 @@ static void parse_hdr(const char *hdrs, const char *key, char *out, size_t out_c
     }
 }
 
+static int parse_last_http_code(const char *hdrs) {
+    if (!hdrs) return -1;
+    int last = -1;
+    const char *p = hdrs;
+    while ((p = strstr(p, "HTTP/")) != NULL) {
+        int code = -1;
+        if (sscanf(p, "HTTP/%*d.%*d %d", &code) == 1) last = code;
+        p += 5;
+    }
+    return last;
+}
+
 static int try_connect_ip(const char *ip, int timeout_ms) {
     struct sockaddr_in6 a = {0};
     a.sin6_family = AF_INET6; a.sin6_port = htons(PROXY_PORT);
@@ -496,28 +509,96 @@ static int open_tunnel(void) {
         }
     }
 
+    char active_proxy_host[128] = {0};
+    strncpy(active_proxy_host, PROXY_HOST, sizeof(active_proxy_host) - 1);
+    int is_secondary_proxy = 0;
+
+    if (fd < 0) {
+        pl("W", "stage=proxy_primary_failed");
+        pl("I", "intentando proxy secundario %s", PROXY_HOST_FALLBACK);
+        struct addrinfo hints = {0}, *res = NULL, *cur;
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        char port_str[8];
+        snprintf(port_str, sizeof(port_str), "%d", PROXY_PORT);
+        if (getaddrinfo(PROXY_HOST_FALLBACK, port_str, &hints, &res) == 0) {
+            for (cur = res; cur && fd < 0; cur = cur->ai_next) {
+                char ipbuf[INET6_ADDRSTRLEN] = {0};
+                if (cur->ai_family == AF_INET6) {
+                    struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)cur->ai_addr;
+                    inet_ntop(AF_INET6, &a6->sin6_addr, ipbuf, sizeof(ipbuf));
+                } else if (cur->ai_family == AF_INET) {
+                    struct sockaddr_in *a4 = (struct sockaddr_in *)cur->ai_addr;
+                    inet_ntop(AF_INET, &a4->sin_addr, ipbuf, sizeof(ipbuf));
+                }
+                pl("I", "proxy secundario intento=%s", ipbuf[0] ? ipbuf : "desconocido");
+                fd = socket(cur->ai_family, SOCK_STREAM, 0);
+                if (fd < 0) continue;
+                protect_fd(fd);
+                int one = 1;
+                setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+                setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
+                int fl = fcntl(fd, F_GETFL, 0);
+                fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+                fcntl(fd, F_SETFD, FD_CLOEXEC);
+                int r = connect(fd, cur->ai_addr, (socklen_t)cur->ai_addrlen);
+                if (r != 0 && errno != EINPROGRESS) { close(fd); fd = -1; continue; }
+                struct pollfd p = {fd, POLLOUT, 0};
+                if (poll(&p, 1, 300) <= 0) { close(fd); fd = -1; continue; }
+                int e = 0; socklen_t el = sizeof(e);
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) < 0 || e != 0)
+                    { close(fd); fd = -1; continue; }
+                fcntl(fd, F_SETFL, fl);
+            }
+            freeaddrinfo(res);
+        } else {
+            pl("E", "getaddrinfo fallo para proxy secundario");
+        }
+        if (fd >= 0) {
+            strncpy(active_proxy_host, PROXY_HOST_FALLBACK, sizeof(active_proxy_host) - 1);
+            is_secondary_proxy = 1;
+        }
+    }
+
     if (fd < 0) { pl("E", "stage=proxy_connect_failed"); pl("E", "connect failed"); return -1; }
 
     char buf[4096];
-    snprintf(buf, sizeof(buf), "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", PROXY_HOST);
+    if (is_secondary_proxy) {
+        snprintf(buf, sizeof(buf), "HEAD http://%s HTTP/1.1\r\nHost: %s\r\n\r\n",
+                 active_proxy_host, active_proxy_host);
+    } else {
+        snprintf(buf, sizeof(buf), "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", active_proxy_host);
+    }
     send(fd, buf, strlen(buf), MSG_NOSIGNAL);
     pl("I", "stage=proxy_connected");
     if (recv_eoh(fd, buf, sizeof(buf), HANDSHAKE_TIMEOUT_SEC) < 0) {
         pl("E", "stage=proxy_no_response"); pl("E", "proxy no responde"); close(fd); return -1;
     }
 
-    char req[1024];
-    snprintf(req, sizeof(req),
-        "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
-        "Connection: Upgrade\r\nAction: tunnel\r\nX-Internal-ID: %s\r\n\r\n",
-        TUNNEL_HOST, g_i[0] ? g_i : "unknown");
+    char req[2048];
+    if (is_secondary_proxy) {
+        snprintf(req, sizeof(req),
+                 "PATCHS http://%s HTTP/1.1\r\n"
+                 "Host: %s\r\n"
+                 "GET htt://d1v0bxej2kjnz0.cloudfront.net HTTP/1.1\r\n"
+                 "Host: d36wp69rjuikpvh.cloudfront.net\r\n"
+                 "Upgrade: websocket\r\n"
+                 "Connection: Upgrade\r\n"
+                 "action:ssh\r\n"
+                 "X-Internal-ID: %s\r\n\r\n",
+                 active_proxy_host, active_proxy_host, g_i[0] ? g_i : "unknown");
+    } else {
+        snprintf(req, sizeof(req),
+            "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
+            "Connection: Upgrade\r\nAction: tunnel\r\nX-Internal-ID: %s\r\n\r\n",
+            TUNNEL_HOST, g_i[0] ? g_i : "unknown");
+    }
     pl("I", "stage=server_auth_request");
     send(fd, req, strlen(req), MSG_NOSIGNAL);
 
     char h2[4096];
     int hlen = recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
-    int code = -1;
-    sscanf(h2, "HTTP/%*d.%*d %d", &code);
+    int code = parse_last_http_code(h2);
 
     if (hlen < 0 || code != 101) {
         if (code == 403 || code == 401 || code == 410) {
