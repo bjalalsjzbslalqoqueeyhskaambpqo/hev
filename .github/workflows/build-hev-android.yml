@@ -1,6 +1,8 @@
 name: Build hev-socks5-tunnel for Android
 
 on:
+  schedule:
+    - cron: '0 6 * * *'
   workflow_dispatch:
   push:
     branches:
@@ -14,11 +16,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Get latest release tag
+        id: latest
+        run: |
+          TAG=$(curl -s https://api.github.com/repos/heiher/hev-socks5-tunnel/releases/latest | jq -r .tag_name)
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
       - name: Checkout hev-socks5-tunnel
         run: |
           mkdir hev-socks5-tunnel
           cd hev-socks5-tunnel
-          git clone --recursive https://github.com/heiher/hev-socks5-tunnel jni
+          git clone --recursive --branch ${{ steps.latest.outputs.tag }} https://github.com/heiher/hev-socks5-tunnel jni
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
@@ -47,13 +55,19 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
+          git clone --depth=1 --branch libs \
+            https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git \
+            libs-branch 2>/dev/null || \
           git clone --depth=1 \
             https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git \
             libs-branch
 
           cd libs-branch
 
-          if git ls-remote --exit-code --heads origin libs; then
+          if git show-ref --quiet refs/heads/libs; then
+            git checkout libs
+          elif git ls-remote --exit-code --heads origin libs; then
+            git fetch origin libs
             git checkout libs
           else
             git checkout --orphan libs
@@ -63,5 +77,5 @@ jobs:
           cp -r ../output/jniLibs ./
 
           git add jniLibs/
-          git commit -m "Update hev-socks5-tunnel libs [$(date +'%Y-%m-%d %H:%M:%S')]" || echo "Nothing to commit"
+          git commit -m "Update hev-socks5-tunnel libs ${{ steps.latest.outputs.tag }} [$(date +'%Y-%m-%d %H:%M:%S')]" || echo "Nothing to commit"
           git push origin libs
