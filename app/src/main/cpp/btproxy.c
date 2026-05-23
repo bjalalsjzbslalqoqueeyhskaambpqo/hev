@@ -443,6 +443,18 @@ static int recv_until_http101(int fd, char *buf, int cap, int total_timeout_ms, 
     return -1;
 }
 
+static int recv_any(int fd, char *buf, int cap, int timeout_ms) {
+    if (!buf || cap < 2) return -1;
+    struct pollfd p = {fd, POLLIN, 0};
+    int pr;
+    do { pr = poll(&p, 1, timeout_ms); } while (pr < 0 && errno == EINTR);
+    if (pr <= 0 || !(p.revents & (POLLIN | POLLPRI))) return -1;
+    ssize_t n = recv(fd, buf, cap - 1, 0);
+    if (n <= 0) return -1;
+    buf[n] = 0;
+    return (int)n;
+}
+
 static void parse_hdr(const char *hdrs, const char *key, char *out, size_t out_cap) {
     if (!hdrs || !key || !out || out_cap == 0) return;
     out[0] = 0;
@@ -555,7 +567,8 @@ static int try_cf_fallback(int timeout_ms, int *tunnel_ready) {
         send(fd, req1, strlen(req1), MSG_NOSIGNAL);
 
         char h1[2048];
-        if (recv_eoh(fd, h1, sizeof(h1), HANDSHAKE_TIMEOUT_SEC) < 0) {
+        if (recv_any(fd, h1, sizeof(h1), HANDSHAKE_TIMEOUT_SEC * 1000 + 2000) < 0) {
+            pl("W", "fallback bloque1 sin respuesta");
             close(fd);
             fd = -1;
             continue;
@@ -571,7 +584,7 @@ static int try_cf_fallback(int timeout_ms, int *tunnel_ready) {
 
         char h2[8192];
         int code = -1;
-        int hlen = recv_until_http101(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC * 1000 + 1200, &code);
+        int hlen = recv_until_http101(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC * 1000 + 5000, &code);
         if (hlen < 0) {
             pl("W", "fallback handshake failed last_code=%d", code);
             close(fd);
@@ -625,7 +638,7 @@ static int open_tunnel(void) {
     if (fd < 0) {
         pl("W", "stage=proxy_dns_failed");
         pl("I", "intentando fallback cloudfront");
-        fd = try_cf_fallback(800, &used_fallback_tunnel);
+        fd = try_cf_fallback(8000, &used_fallback_tunnel);
     }
 
     if (fd < 0) { pl("E", "stage=proxy_connect_failed"); pl("E", "connect failed"); return -1; }
