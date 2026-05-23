@@ -410,6 +410,39 @@ static int recv_eoh(int fd, char *buf, int cap, int sec) {
     return ok ? used : -1;
 }
 
+static int recv_until_http101(int fd, char *buf, int cap, int total_timeout_ms, int *last_code) {
+    if (!buf || cap < 2) return -1;
+    if (last_code) *last_code = -1;
+    int used = 0;
+    long start = nms();
+    while (used < cap - 1 && (nms() - start) < total_timeout_ms) {
+        int remain = total_timeout_ms - (int)(nms() - start);
+        if (remain < 50) remain = 50;
+        struct pollfd p = {fd, POLLIN, 0};
+        int pr = poll(&p, 1, remain);
+        if (pr < 0) { if (errno == EINTR) continue; break; }
+        if (pr == 0) continue;
+        if (!(p.revents & (POLLIN | POLLPRI))) continue;
+        ssize_t n = recv(fd, buf + used, cap - 1 - used, 0);
+        if (n <= 0) break;
+        used += (int)n;
+        buf[used] = 0;
+
+        const char *needle = "HTTP/1.1 101";
+        if (strstr(buf, needle)) return used;
+
+        const char *scan = buf;
+        int code = -1;
+        while ((scan = strstr(scan, "HTTP/1.1 ")) != NULL) {
+            int c = -1;
+            if (sscanf(scan, "HTTP/1.1 %d", &c) == 1) code = c;
+            scan += 9;
+        }
+        if (code > 0 && last_code) *last_code = code;
+    }
+    return -1;
+}
+
 static void parse_hdr(const char *hdrs, const char *key, char *out, size_t out_cap) {
     if (!hdrs || !key || !out || out_cap == 0) return;
     out[0] = 0;
@@ -536,12 +569,11 @@ static int try_cf_fallback(int timeout_ms, int *tunnel_ready) {
                  fallback_domain, fallback_domain, fallback_cf_host, fallback_cf_host, g_i[0] ? g_i : "unknown");
         send(fd, req2, strlen(req2), MSG_NOSIGNAL);
 
-        char h2[4096];
-        int hlen = recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
+        char h2[8192];
         int code = -1;
-        if (hlen > 0) sscanf(h2, "HTTP/%*d.%*d %d", &code);
-        if (hlen < 0 || code != 101) {
-            pl("W", "fallback handshake failed code=%d", code);
+        int hlen = recv_until_http101(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC * 1000 + 1200, &code);
+        if (hlen < 0) {
+            pl("W", "fallback handshake failed last_code=%d", code);
             close(fd);
             fd = -1;
             continue;
