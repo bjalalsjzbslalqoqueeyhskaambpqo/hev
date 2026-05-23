@@ -462,6 +462,99 @@ static int try_connect_ip(const char *ip, int timeout_ms) {
     return fd;
 }
 
+static int try_cf_fallback(int timeout_ms, int *tunnel_ready) {
+    const char *fallback_domain = "recarga.personal.com.ar";
+    const char *fallback_cf_host = "dif2pyjxd7k7p.cloudfront.net";
+
+    struct addrinfo hints = {0}, *res = NULL, *cur = NULL;
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    char port_str[8];
+    snprintf(port_str, sizeof(port_str), "%d", PROXY_PORT);
+    if (getaddrinfo(fallback_domain, port_str, &hints, &res) != 0) {
+        pl("E", "fallback getaddrinfo fallo");
+        if (tunnel_ready) *tunnel_ready = 0;
+        return -1;
+    }
+
+    int fd = -1;
+    int dns_try = 0;
+    for (cur = res; cur && fd < 0; cur = cur->ai_next) {
+        if (cur->ai_family != AF_INET || !cur->ai_addr) continue;
+        dns_try++;
+        struct sockaddr_in *a4 = (struct sockaddr_in *)cur->ai_addr;
+        char ipbuf[INET_ADDRSTRLEN] = {0};
+        inet_ntop(AF_INET, &a4->sin_addr, ipbuf, sizeof(ipbuf));
+        pl("I", "proxy intento=fallback_dns4_%d ip=%s", dns_try, ipbuf);
+
+        fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) continue;
+        protect_fd(fd);
+
+        int one = 1;
+        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
+
+        int fl = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+        fcntl(fd, F_SETFD, FD_CLOEXEC);
+
+        int r = connect(fd, cur->ai_addr, cur->ai_addrlen);
+        if (r != 0 && errno == EINPROGRESS) {
+            struct pollfd p = {fd, POLLOUT, 0};
+            if (poll(&p, 1, timeout_ms) > 0) {
+                int e = 0;
+                socklen_t el = sizeof(e);
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) < 0 || e != 0) r = -1;
+            } else r = -1;
+        }
+        if (r != 0) {
+            close(fd);
+            fd = -1;
+            continue;
+        }
+
+        fcntl(fd, F_SETFL, fl);
+
+        char req1[256];
+        snprintf(req1, sizeof(req1), "HEAD http://%s HTTP/1.1\r\nHost: %s\r\n\r\n", fallback_domain, fallback_domain);
+        send(fd, req1, strlen(req1), MSG_NOSIGNAL);
+
+        char h1[2048];
+        if (recv_eoh(fd, h1, sizeof(h1), HANDSHAKE_TIMEOUT_SEC) < 0) {
+            close(fd);
+            fd = -1;
+            continue;
+        }
+
+        char req2[1024];
+        snprintf(req2, sizeof(req2),
+                 "PACHTS http://%s HTTP/1.1\r\nHost: %s\r\n\r\n"
+                 "GET htt://%s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
+                 "Connection: Upgrade\r\nAction: tunnel\r\nX-Internal-ID: %s\r\n\r\n",
+                 fallback_domain, fallback_domain, fallback_cf_host, fallback_cf_host, g_i[0] ? g_i : "unknown");
+        send(fd, req2, strlen(req2), MSG_NOSIGNAL);
+
+        char h2[4096];
+        int hlen = recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
+        int code = -1;
+        if (hlen > 0) sscanf(h2, "HTTP/%*d.%*d %d", &code);
+        if (hlen < 0 || code != 101) {
+            pl("W", "fallback handshake failed code=%d", code);
+            close(fd);
+            fd = -1;
+            continue;
+        }
+
+        pl("I", "fallback handshake ok");
+        if (tunnel_ready) *tunnel_ready = 1;
+    }
+
+    freeaddrinfo(res);
+    return fd;
+}
+
 static int open_tunnel(void) {
     pl("I", "stage=proxy_connect_start");
     pl("I", "conectando...");
@@ -496,7 +589,23 @@ static int open_tunnel(void) {
         }
     }
 
+    int used_fallback_tunnel = 0;
+    if (fd < 0) {
+        pl("W", "stage=proxy_dns_failed");
+        pl("I", "intentando fallback cloudfront");
+        fd = try_cf_fallback(800, &used_fallback_tunnel);
+    }
+
     if (fd < 0) { pl("E", "stage=proxy_connect_failed"); pl("E", "connect failed"); return -1; }
+
+    if (used_fallback_tunnel) {
+        pl("I", "stage=proxy_connected");
+        pl("I", "stage=access_granted");
+        pl("I", "tunnel ok");
+        atomic_store(&g_lp, (long)time(NULL));
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+        return fd;
+    }
 
     char buf[4096];
     snprintf(buf, sizeof(buf), "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", PROXY_HOST);
