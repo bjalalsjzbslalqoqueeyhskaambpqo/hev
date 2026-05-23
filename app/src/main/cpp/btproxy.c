@@ -525,16 +525,19 @@ static int try_cf_fallback(int timeout_ms, int *tunnel_ready) {
 
     int fd = -1;
     int dns_try = 0;
-    for (cur = res; cur && fd < 0; cur = cur->ai_next) {
-        if (cur->ai_family != AF_INET || !cur->ai_addr) continue;
-        dns_try++;
-        struct sockaddr_in *a4 = (struct sockaddr_in *)cur->ai_addr;
+    struct addrinfo *first_v4 = NULL;
+    for (cur = res; cur; cur = cur->ai_next) {
+        if (cur->ai_family == AF_INET && cur->ai_addr) { first_v4 = cur; break; }
+    }
+    if (first_v4) {
+        dns_try = 1;
+        struct sockaddr_in *a4 = (struct sockaddr_in *)first_v4->ai_addr;
         char ipbuf[INET_ADDRSTRLEN] = {0};
         inet_ntop(AF_INET, &a4->sin_addr, ipbuf, sizeof(ipbuf));
         pl("I", "proxy intento=fallback_dns4_%d ip=%s", dns_try, ipbuf);
 
         fd = socket(AF_INET, SOCK_STREAM, 0);
-        if (fd < 0) continue;
+        if (fd < 0) goto out;
         protect_fd(fd);
 
         int one = 1;
@@ -545,7 +548,7 @@ static int try_cf_fallback(int timeout_ms, int *tunnel_ready) {
         fcntl(fd, F_SETFL, fl | O_NONBLOCK);
         fcntl(fd, F_SETFD, FD_CLOEXEC);
 
-        int r = connect(fd, cur->ai_addr, cur->ai_addrlen);
+        int r = connect(fd, first_v4->ai_addr, first_v4->ai_addrlen);
         if (r != 0 && errno == EINPROGRESS) {
             struct pollfd p = {fd, POLLOUT, 0};
             if (poll(&p, 1, timeout_ms) > 0) {
@@ -581,6 +584,7 @@ static int try_cf_fallback(int timeout_ms, int *tunnel_ready) {
                  "Connection: Upgrade\r\nAction: tunnel\r\nX-Internal-ID: %s\r\n\r\n",
                  fallback_domain, fallback_domain, fallback_cf_host, fallback_cf_host, g_i[0] ? g_i : "unknown");
         send(fd, req2, strlen(req2), MSG_NOSIGNAL);
+        usleep(800000);
 
         char h2[8192];
         int code = -1;
@@ -596,6 +600,7 @@ static int try_cf_fallback(int timeout_ms, int *tunnel_ready) {
         if (tunnel_ready) *tunnel_ready = 1;
     }
 
+out:
     freeaddrinfo(res);
     return fd;
 }
