@@ -560,7 +560,7 @@ static int try_cf_fallback(int timeout_ms, int *tunnel_ready) {
         if (r != 0) {
             close(fd);
             fd = -1;
-            continue;
+            goto out;
         }
 
         fcntl(fd, F_SETFL, fl);
@@ -574,7 +574,7 @@ static int try_cf_fallback(int timeout_ms, int *tunnel_ready) {
             pl("W", "fallback bloque1 sin respuesta");
             close(fd);
             fd = -1;
-            continue;
+            goto out;
         }
 
         char req2[1024];
@@ -593,7 +593,7 @@ static int try_cf_fallback(int timeout_ms, int *tunnel_ready) {
             pl("W", "fallback handshake failed last_code=%d", code);
             close(fd);
             fd = -1;
-            continue;
+            goto out;
         }
 
         pl("I", "fallback handshake ok");
