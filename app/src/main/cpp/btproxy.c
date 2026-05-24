@@ -23,6 +23,17 @@
 #include <signal.h>
 #include <netdb.h>
 
+#if defined(__ANDROID__)
+#ifndef pthread_cancel
+/* bionic may not expose pthread_cancel in some NDK toolchains. */
+static int btproxy_pthread_cancel_compat(pthread_t thread) {
+    (void)thread;
+    return 0;
+}
+#define pthread_cancel(btproxy_thread) btproxy_pthread_cancel_compat((btproxy_thread))
+#endif
+#endif
+
 #define lk pthread_mutex_lock
 #define ul pthread_mutex_unlock
 
