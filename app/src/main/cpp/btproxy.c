@@ -42,7 +42,6 @@
 #define PONG_TIMEOUT_SEC       120
 #define KEEPALIVE_INTERVAL_SEC 3
 #define CONNECT_TIMEOUT_SEC    15
-#define HANDSHAKE_TIMEOUT_SEC  4
 #define MAX_EPOLL_EVENTS       64
 
 #define LOCAL_QUEUE_HARD_LIMIT (512 * 1024)
@@ -50,8 +49,8 @@
 #define WRITE_QUEUE_LOW_WATER  (128 * 1024)
 #define STREAM_TIMEOUT_MS      2000000
 
-#define PROXY_HOST  "recarga.personal.com.ar"
-#define PROXY_PORT  80
+#define DOMAIN "recarga.personal.com.ar"
+#define PORT 80
 #define TUNNEL_HOST "dif2pyjxd7k7p.cloudfront.net"
 
 static volatile int    g_r      = 0;
@@ -357,66 +356,83 @@ static int tun_try_flush(int tfd) {
     return has_data ? 1 : 0;
 }
 
-static int ipv4_connect(const char *host, int port, int timeout_sec) {
+static int connect_and_handshake(const char *iid) {
     struct addrinfo hints, *res = NULL, *rp = NULL;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
 
-    char service[8];
-    snprintf(service, sizeof(service), "%d", port);
+    pl("I", "Resolviendo DNS para %s...", DOMAIN);
+    if (getaddrinfo(DOMAIN, NULL, &hints, &res) != 0) {
+        pl("E", "Error en getaddrinfo");
+        return -1;
+    }
 
-    if (getaddrinfo(host, service, &hints, &res) != 0) return -1;
-
+    char ipv4[INET_ADDRSTRLEN];
     int fd = -1;
+
     for (rp = res; rp; rp = rp->ai_next) {
-        fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        struct sockaddr_in *sa = (struct sockaddr_in *)rp->ai_addr;
+        inet_ntop(AF_INET, &sa->sin_addr, ipv4, sizeof(ipv4));
+        
+        fd = socket(AF_INET, SOCK_STREAM, 0);
         if (fd < 0) continue;
 
-        int flags = fcntl(fd, F_GETFL, 0);
-        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        sa->sin_port = htons(PORT);
 
-        int rc = connect(fd, rp->ai_addr, rp->ai_addrlen);
-        if (rc == 0) break;
-        if (errno != EINPROGRESS) {
-            close(fd); fd = -1; continue;
+        pl("I", "Conectando a la IP: %s", ipv4);
+        
+        if (connect(fd, (struct sockaddr *)sa, sizeof(*sa)) == 0) {
+            break;
         }
-
-        struct pollfd pfd = { .fd = fd, .events = POLLOUT };
-        int pr = poll(&pfd, 1, timeout_sec * 1000);
-        if (pr > 0 && (pfd.revents & POLLOUT)) {
-            int err = 0; socklen_t elen = sizeof(err);
-            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &elen) == 0 && err == 0) {
-                fcntl(fd, F_SETFL, flags);
-                break;
-            }
-        }
-        close(fd); fd = -1;
+        
+        close(fd);
+        fd = -1;
     }
-    if (res) freeaddrinfo(res);
-    return fd;
-}
 
-static int cloudfront_handshake(int fd, const char *iid) {
-    char blk1[256];
-    snprintf(blk1, sizeof(blk1),
+    if (res) freeaddrinfo(res);
+    
+    if (fd < 0) {
+        pl("E", "No se pudo conectar");
+        return -1;
+    }
+
+    pl("I", "Socket conectado.");
+
+    int on = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
+
+    int timeout = 8;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
+    char bloque_uno[256];
+    snprintf(bloque_uno, sizeof(bloque_uno),
              "HEAD http://%s HTTP/1.1\r\n"
              "Host: %s\r\n\r\n",
-             PROXY_HOST, PROXY_HOST);
+             DOMAIN, DOMAIN);
 
-    ssize_t ns1 = send(fd, blk1, strlen(blk1), MSG_NOSIGNAL);
-    if (ns1 <= 0) return -1;
+    pl("I", "Enviando Bloque Inicial...");
+    ssize_t sent = send(fd, bloque_uno, strlen(bloque_uno), 0);
+    if (sent <= 0) {
+        pl("E", "Error enviando bloque inicial");
+        close(fd);
+        return -1;
+    }
 
-    struct pollfd pfd = { .fd = fd, .events = POLLIN };
-    int pr = poll(&pfd, 1, HANDSHAKE_TIMEOUT_SEC * 1000);
-    if (pr <= 0) return -1;
+    char resp_uno[2048];
+    ssize_t recv_bytes = recv(fd, resp_uno, sizeof(resp_uno) - 1, 0);
+    if (recv_bytes <= 0) {
+        pl("E", "No se recibió respuesta intermedia");
+        close(fd);
+        return -1;
+    }
+    
+    resp_uno[recv_bytes] = 0;
+    pl("I", "Respuesta intermedia recibida.");
 
-    char rbuf[2048];
-    ssize_t nr = recv(fd, rbuf, sizeof(rbuf) - 1, 0);
-    if (nr <= 0) return -1;
-
-    char blk2[512];
-    snprintf(blk2, sizeof(blk2),
+    char bloque_dos[512];
+    snprintf(bloque_dos, sizeof(bloque_dos),
              "PACHTS http://%s HTTP/1.1\r\n"
              "Host: %s\r\n"
              "\r\n"
@@ -426,26 +442,41 @@ static int cloudfront_handshake(int fd, const char *iid) {
              "Connection: Upgrade\r\n"
              "Action: tunnel\r\n"
              "X-Internal-ID: %s\r\n\r\n",
-             PROXY_HOST, PROXY_HOST,
+             DOMAIN, DOMAIN,
              TUNNEL_HOST, TUNNEL_HOST, iid);
 
-    ssize_t ns2 = send(fd, blk2, strlen(blk2), MSG_NOSIGNAL);
-    if (ns2 <= 0) return -1;
+    pl("I", "Inyectando Bloque con nuevo formato de aplicación...");
+    sent = send(fd, bloque_dos, strlen(bloque_dos), 0);
+    if (sent <= 0) {
+        pl("E", "Error enviando bloque dos");
+        close(fd);
+        return -1;
+    }
 
     usleep(800000);
 
-    pr = poll(&pfd, 1, HANDSHAKE_TIMEOUT_SEC * 1000);
-    if (pr <= 0) return -1;
-
-    nr = recv(fd, rbuf, sizeof(rbuf) - 1, 0);
-    if (nr <= 0) return -1;
-
-    rbuf[nr] = 0;
-    if (strstr(rbuf, "101") && strstr(rbuf, "websocket")) {
-        return 0;
+    char resp_final[8192];
+    recv_bytes = recv(fd, resp_final, sizeof(resp_final) - 1, 0);
+    if (recv_bytes <= 0) {
+        pl("E", "No se recibió respuesta final");
+        close(fd);
+        return -1;
     }
 
-    return -1;
+    resp_final[recv_bytes] = 0;
+    
+    if (strstr(resp_final, "101") && strstr(resp_final, "websocket")) {
+        pl("I", "Handshake exitoso - 101 Switching Protocols");
+        
+        int flags = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        
+        return fd;
+    } else {
+        pl("E", "Respuesta inesperada del servidor");
+        close(fd);
+        return -1;
+    }
 }
 
 static void *main_thread(void *arg) {
@@ -454,34 +485,19 @@ static void *main_thread(void *arg) {
 
     while (g_r) {
         epoch++;
-        pl("I", "epoch=%d conectando cloudfront", epoch);
-
-        int tfd = ipv4_connect(PROXY_HOST, PROXY_PORT, CONNECT_TIMEOUT_SEC);
-        if (tfd < 0) {
-            pl("E", "fallo connect ipv4");
-            if (g_r) sleep(3);
-            continue;
-        }
+        pl("I", "epoch=%d iniciando conexión CloudFront", epoch);
 
         char iid[160];
         lk(&g_m);
         snprintf(iid, sizeof(iid), "%s", g_i);
         ul(&g_m);
 
-        if (cloudfront_handshake(tfd, iid) < 0) {
-            pl("E", "handshake cloudfront fallo");
-            close(tfd);
+        int tfd = connect_and_handshake(iid);
+        if (tfd < 0) {
+            pl("E", "Fallo al conectar y hacer handshake");
             if (g_r) sleep(3);
             continue;
         }
-
-        pl("I", "handshake cloudfront ok");
-
-        int flags = fcntl(tfd, F_GETFL, 0);
-        fcntl(tfd, F_SETFL, flags | O_NONBLOCK);
-
-        int on = 1;
-        setsockopt(tfd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
 
         lk(&g_m); g_tf = tfd; ul(&g_m);
 
@@ -493,6 +509,7 @@ static void *main_thread(void *arg) {
             continue;
         }
 
+        int on = 1;
         setsockopt(rfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
 
         struct sockaddr_in sa;
