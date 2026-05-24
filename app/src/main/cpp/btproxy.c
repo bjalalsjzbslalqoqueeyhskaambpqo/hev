@@ -506,9 +506,15 @@ static int open_tunnel(void) {
         pl("E", "stage=proxy_no_response"); pl("E", "proxy no responde"); close(fd); return -1;
     }
 
+    /*
+     * Handshake HTTP/WebSocket estandar:
+     * - Metodo GET valido.
+     * - Upgrade websocket.
+     * - Mantiene headers de aplicacion requeridos por el backend.
+     */
     char req[1024];
     snprintf(req, sizeof(req),
-        "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
+        "GET / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
         "Connection: Upgrade\r\nAction: tunnel\r\nX-Internal-ID: %s\r\n\r\n",
         TUNNEL_HOST, g_i[0] ? g_i : "unknown");
     pl("I", "stage=server_auth_request");
