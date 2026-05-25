@@ -470,71 +470,142 @@ static int try_connect_ip(const char *ip, int timeout_ms) {
     return fd;
 }
 
-static int open_tunnel(void) {
-    pl("I", "stage=proxy_connect_start");
-
-    struct addrinfo hints = {0}, *res = NULL, *cur = NULL;
-    hints.ai_family = AF_UNSPEC;
+static int connect_tunnel_cloudfront(void) {
+    struct addrinfo hints, *res = NULL, *rp;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
-    char port_str[8];
-    snprintf(port_str, sizeof(port_str), "%d", PROXY_PORT);
 
-    int fd = -1;
-    if (getaddrinfo(PROXY_HOST, port_str, &hints, &res) != 0) {
-        pl("E", "getaddrinfo fallo para %s", PROXY_HOST);
+    char portstr[16];
+    snprintf(portstr, sizeof(portstr), "%d", PROXY_PORT);
+
+    pl("I", "Resolviendo DNS para %s...", PROXY_HOST);
+    if (getaddrinfo(PROXY_HOST, portstr, &hints, &res) != 0) {
+        pl("E", "Fallo en getaddrinfo para %s", PROXY_HOST);
         return -1;
     }
 
-    for (cur = res; cur; cur = cur->ai_next) {
-        char ipbuf[INET6_ADDRSTRLEN] = {0};
-        void *addr = NULL;
-        if (cur->ai_family == AF_INET) addr = &((struct sockaddr_in *)cur->ai_addr)->sin_addr;
-        else if (cur->ai_family == AF_INET6) addr = &((struct sockaddr_in6 *)cur->ai_addr)->sin6_addr;
-        if (addr) inet_ntop(cur->ai_family, addr, ipbuf, sizeof(ipbuf));
-        pl("I", "conectando a %s", ipbuf[0] ? ipbuf : "?");
+    int tfd = -1;
+    for (rp = res; rp; rp = rp->ai_next) {
+        tfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (tfd < 0) continue;
 
-        fd = socket(cur->ai_family, cur->ai_socktype, cur->ai_protocol);
-        if (fd < 0) continue;
-        protect_fd(fd);
-        int one = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        int flag = 1;
+        setsockopt(tfd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+
         struct timeval tv = {CONNECT_TIMEOUT_SEC, 0};
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(tfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        setsockopt(tfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-        if (connect(fd, cur->ai_addr, cur->ai_addrlen) == 0) break;
-        close(fd); fd = -1;
+        protect_fd(tfd);
+
+        char ip[INET_ADDRSTRLEN] = {0};
+        inet_ntop(AF_INET, &((struct sockaddr_in *)rp->ai_addr)->sin_addr, ip, sizeof(ip));
+        pl("I", "Conectando a IP: %s", ip);
+
+        if (connect(tfd, rp->ai_addr, rp->ai_addrlen) == 0) {
+            pl("I", "Socket conectado");
+            break;
+        }
+
+        pl("E", "connect() falló: %s", strerror(errno));
+        close(tfd);
+        tfd = -1;
     }
     freeaddrinfo(res);
-    if (fd < 0) return -1;
 
-    char b1[256];
-    int n1 = snprintf(b1, sizeof(b1), "HEAD http://%s HTTP/1.1\r\nHost: %s\r\n\r\n", PROXY_HOST, PROXY_HOST);
-    if (n1 <= 0 || (size_t)n1 >= sizeof(b1) || send_all(fd, b1, (size_t)n1) < 0) { close(fd); return -1; }
-
-    char resp1[2048];
-    if (recv_eoh(fd, resp1, sizeof(resp1), HANDSHAKE_TIMEOUT_SEC) < 0) { close(fd); return -1; }
-
-    char b2[768];
-    int n2 = snprintf(b2, sizeof(b2),
-        "GET http://%s HTTP/1.1\r\n"
-        "Host: %s\r\n"
-        "Upgrade: websocket\r\n"
-        "Connection: Upgrade\r\n"
-        "Action: tunnel\r\n"
-        "X-Internal-ID: %s\r\n\r\n",
-        CLOUDFRONT_HOST, CLOUDFRONT_HOST, g_i[0] ? g_i : "unknown");
-    if (n2 <= 0 || (size_t)n2 >= sizeof(b2) || send_all(fd, b2, (size_t)n2) < 0) { close(fd); return -1; }
-
-    char h2[4096]; int hlen = recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
-    int code = -1; if (hlen > 0) sscanf(h2, "HTTP/%*d.%*d %d", &code);
-    if (hlen < 0 || code != 101) {
-        pl("E", "handshake failed code=%d", code);
-        close(fd);
+    if (tfd < 0) {
+        pl("E", "No se pudo conectar a %s", PROXY_HOST);
         return -1;
     }
 
-    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-    return fd;
+    char bloque1[256];
+    int len1 = snprintf(bloque1, sizeof(bloque1),
+        "HEAD http://%s HTTP/1.1
+"
+        "Host: %s
+
+",
+        PROXY_HOST, PROXY_HOST);
+    if (len1 <= 0 || len1 >= (int)sizeof(bloque1)) { close(tfd); return -1; }
+
+    pl("I", "Enviando Bloque Inicial...");
+    if (send_all(tfd, bloque1, (size_t)len1) < 0) {
+        pl("E", "Fallo al enviar bloque 1");
+        close(tfd);
+        return -1;
+    }
+
+    char resp1[2048];
+    ssize_t nr = recv(tfd, resp1, sizeof(resp1) - 1, 0);
+    if (nr <= 0) {
+        pl("E", "Canal cerrado prematuramente en respuesta HEAD");
+        close(tfd);
+        return -1;
+    }
+    resp1[nr] = 0;
+
+    if (strstr(resp1, "HTTP/1.") == NULL) {
+        pl("E", "Respuesta HEAD inválida");
+        close(tfd);
+        return -1;
+    }
+
+    char bloque2[512];
+    int len2 = snprintf(bloque2, sizeof(bloque2),
+        "PACHTS http://%s HTTP/1.1
+"
+        "Host: %s
+"
+        "
+"
+        "GET htt://%s HTTP/1.1
+"
+        "Host: %s
+"
+        "Upgrade: websocket
+"
+        "Connection: Upgrade
+"
+        "Action: tunnel
+"
+        "X-Internal-ID: %s
+
+",
+        PROXY_HOST, PROXY_HOST,
+        CLOUDFRONT_HOST, CLOUDFRONT_HOST,
+        g_i[0] ? g_i : "unknown");
+    if (len2 <= 0 || len2 >= (int)sizeof(bloque2)) { close(tfd); return -1; }
+
+    pl("I", "Inyectando Bloque con CloudFront...");
+    if (send_all(tfd, bloque2, (size_t)len2) < 0) {
+        pl("E", "Fallo al enviar bloque 2");
+        close(tfd);
+        return -1;
+    }
+
+    usleep(800000);
+
+    char resp2[8192];
+    nr = recv(tfd, resp2, sizeof(resp2) - 1, 0);
+    if (nr <= 0) {
+        pl("E", "No se recibió respuesta final");
+        close(tfd);
+        return -1;
+    }
+    resp2[nr] = 0;
+
+    if (strstr(resp2, "101 Switching Protocols") == NULL) {
+        pl("E", "No se recibió 101 Switching Protocols");
+        pl("E", "Respuesta recibida: %.300s", resp2);
+        close(tfd);
+        return -1;
+    }
+
+    int flags = fcntl(tfd, F_GETFL, 0);
+    if (flags >= 0) fcntl(tfd, F_SETFL, flags | O_NONBLOCK);
+
+    return tfd;
 }
 
 typedef struct { int tfd; int epoch; int epfd; int wake_w; } thr_t;
@@ -735,7 +806,7 @@ static void *main_thread(void *arg) {
 
     while (g_r) {
         atomic_store(&g_af, 0);
-        int tfd = open_tunnel();
+        int tfd = connect_tunnel_cloudfront();
         if (tfd < 0) {
             if (!g_r) break;
             if (atomic_load(&g_af)) {
