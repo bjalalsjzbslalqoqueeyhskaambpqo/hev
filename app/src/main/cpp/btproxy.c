@@ -470,21 +470,6 @@ static int try_connect_ip(const char *ip, int timeout_ms) {
     return fd;
 }
 
-static void extract_hdr_value(const char *src, const char *key, char *out, size_t cap) {
-    if (!src || !key || !out || cap == 0) return;
-    out[0] = 0;
-    const char *p = strstr(src, key);
-    if (!p) return;
-    p += strlen(key);
-    while (*p == ' ' || *p == '\t') p++;
-    size_t i = 0;
-    while (p[i] && p[i] > 31 && i + 1 < cap) {
-        out[i] = p[i];
-        i++;
-    }
-' && i + 1 < cap) { out[i] = p[i]; i++; }
-    out[i] = 0;
-}
 
 static int connect_tunnel_cloudfront(void) {
     struct addrinfo hints, *res = NULL, *rp;
@@ -587,8 +572,8 @@ static int connect_tunnel_cloudfront(void) {
         return -1;
     }
 
-    usleep(800000);
-
+    parse_hdr(resp2, "X-User-Name:", uname, sizeof(uname));
+    parse_hdr(resp2, "X-User-Days:", udays, sizeof(udays));
     char resp2[8192];
     nr = recv(tfd, resp2, sizeof(resp2) - 1, 0);
     if (nr <= 0) {
