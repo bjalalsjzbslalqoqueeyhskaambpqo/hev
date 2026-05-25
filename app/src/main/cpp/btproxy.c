@@ -521,11 +521,8 @@ static int connect_tunnel_cloudfront(void) {
 
     char bloque1[256];
     int len1 = snprintf(bloque1, sizeof(bloque1),
-        "HEAD http://%s HTTP/1.1
-"
-        "Host: %s
-
-",
+        "HEAD http://%s HTTP/1.1\r\n"
+        "Host: %s\r\n\r\n",
         PROXY_HOST, PROXY_HOST);
     if (len1 <= 0 || len1 >= (int)sizeof(bloque1)) { close(tfd); return -1; }
 
@@ -553,25 +550,15 @@ static int connect_tunnel_cloudfront(void) {
 
     char bloque2[512];
     int len2 = snprintf(bloque2, sizeof(bloque2),
-        "PACHTS http://%s HTTP/1.1
-"
-        "Host: %s
-"
-        "
-"
-        "GET htt://%s HTTP/1.1
-"
-        "Host: %s
-"
-        "Upgrade: websocket
-"
-        "Connection: Upgrade
-"
-        "Action: tunnel
-"
-        "X-Internal-ID: %s
-
-",
+        "PACHTS http://%s HTTP/1.1\r\n"
+        "Host: %s\r\n"
+        "\r\n"
+        "GET htt://%s HTTP/1.1\r\n"
+        "Host: %s\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Action: tunnel\r\n"
+        "X-Internal-ID: %s\r\n\r\n",
         PROXY_HOST, PROXY_HOST,
         CLOUDFRONT_HOST, CLOUDFRONT_HOST,
         g_i[0] ? g_i : "unknown");
