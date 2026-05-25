@@ -478,7 +478,10 @@ static void extract_hdr_value(const char *src, const char *key, char *out, size_
     p += strlen(key);
     while (*p == ' ' || *p == '	') p++;
     size_t i = 0;
-    while (p[i] && p[i] != '' && p[i] != '
+    while (p[i] && p[i] != '\r' && p[i] != '\n' && i + 1 < cap) {
+        out[i] = p[i];
+        i++;
+    }
 ' && i + 1 < cap) { out[i] = p[i]; i++; }
     out[i] = 0;
 }
