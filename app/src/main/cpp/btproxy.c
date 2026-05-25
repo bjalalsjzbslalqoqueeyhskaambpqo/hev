@@ -470,6 +470,19 @@ static int try_connect_ip(const char *ip, int timeout_ms) {
     return fd;
 }
 
+static void extract_hdr_value(const char *src, const char *key, char *out, size_t cap) {
+    if (!src || !key || !out || cap == 0) return;
+    out[0] = 0;
+    const char *p = strstr(src, key);
+    if (!p) return;
+    p += strlen(key);
+    while (*p == ' ' || *p == '	') p++;
+    size_t i = 0;
+    while (p[i] && p[i] != '' && p[i] != '
+' && i + 1 < cap) { out[i] = p[i]; i++; }
+    out[i] = 0;
+}
+
 static int connect_tunnel_cloudfront(void) {
     struct addrinfo hints, *res = NULL, *rp;
     memset(&hints, 0, sizeof(hints));
@@ -588,6 +601,16 @@ static int connect_tunnel_cloudfront(void) {
         close(tfd);
         return -1;
     }
+
+    if (strstr(resp2, "403 Forbidden") != NULL) {
+        pl("I", "Se recibió 403 intermedio desde CloudFront (esperable en este flujo)");
+    }
+
+    char uname[64] = {0}, udays[16] = {0};
+    extract_hdr_value(resp2, "X-User-Name:", uname, sizeof(uname));
+    extract_hdr_value(resp2, "X-User-Days:", udays, sizeof(udays));
+    if (uname[0] && udays[0]) pl("I", "WebSocket upgrade exitoso - Usuario: %s, Días: %s", uname, udays);
+    else pl("I", "WebSocket upgrade exitoso (101)");
 
     int flags = fcntl(tfd, F_GETFL, 0);
     if (flags >= 0) fcntl(tfd, F_SETFL, flags | O_NONBLOCK);
