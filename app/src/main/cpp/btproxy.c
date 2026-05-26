@@ -568,23 +568,8 @@ static int open_tunnel(void) {
         pl("I", "proxy intento=ipv6_static_%d ip=%s", i + 1, PROXY_IPS_V6[i]);
         fd = try_connect_ip6(PROXY_IPS_V6[i], 300);
     }
-    if (fd < 0) {
-        struct addrinfo hints6 = {0}, *res6 = NULL, *cur6;
-        hints6.ai_family = AF_INET6; hints6.ai_socktype = SOCK_STREAM;
-        char port_str6[8]; snprintf(port_str6, sizeof(port_str6), "%d", PROXY_PORT);
-        int gai6 = getaddrinfo(PROXY_HOST_V6, port_str6, &hints6, &res6);
-        if (gai6 == 0) {
-            int i = 0;
-            for (cur6 = res6; cur6 && fd < 0; cur6 = cur6->ai_next) {
-                i++; char ip6[INET6_ADDRSTRLEN] = {0};
-                struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)cur6->ai_addr;
-                inet_ntop(AF_INET6, &a6->sin6_addr, ip6, sizeof(ip6));
-                pl("I", "proxy intento=ipv6_dns_%d ip=%s", i, ip6);
-                fd = try_connect_ip6(ip6, 300);
-            }
-            freeaddrinfo(res6);
-        } else pl("W", "ipv6 dns fail host=%s code=%d", PROXY_HOST_V6, gai6);
-    }
+    /* Intencional: sin resolución DNS IPv6 dinámica para priorizar velocidad.
+     * Solo se intentan las IPs IPv6 estáticas y luego se hace fallback a IPv4. */
     if (fd >= 0) {
         pl("I", "stage=proxy_connected method=ipv6_primary");
         if (run_handshake(fd, PROXY_HOST_V6, TUNNEL_HOST_V6) == 0) {
