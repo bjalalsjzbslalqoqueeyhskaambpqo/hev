@@ -50,9 +50,17 @@
 #define WRITE_QUEUE_LOW_WATER  (128 * 1024)
 #define STREAM_TIMEOUT_MS      2000000
 
-#define PROXY_HOST  "recarga.personal.com.ar"
-#define PROXY_PORT  80
-#define TUNNEL_HOST "dif2pyjxd7k7p.cloudfront.net"
+#define PROXY_HOST_V6  "emailmarketing.personal.com.ar"
+#define TUNNEL_HOST_V6 "2.brawlpass.com.ar"
+#define PROXY_HOST_V4  "recarga.personal.com.ar"
+#define TUNNEL_HOST_V4 "dif2pyjxd7k7p.cloudfront.net"
+#define PROXY_PORT      80
+
+static const char *PROXY_IPS_V6[] = {
+    "2606:4700::6812:16b7",
+    "2606:4700::6812:17b7",
+};
+#define PROXY_IP_COUNT_V6 2
 
 #define CONNECT_TIMEOUT_MS 8000
 
@@ -445,7 +453,7 @@ static void parse_hdr(const char *hdrs, const char *key, char *out, size_t out_c
     }
 }
 
-static int try_connect_ip(const char *ip, int timeout_ms) {
+static int try_connect_ip4(const char *ip, int timeout_ms) {
     struct sockaddr_in a = {0};
     a.sin_family = AF_INET;
     a.sin_port = htons(PROXY_PORT);
@@ -478,89 +486,67 @@ static int try_connect_ip(const char *ip, int timeout_ms) {
     return fd;
 }
 
-static int open_tunnel(void) {
-    pl("I", "stage=proxy_connect_start");
-    pl("I", "conectando...");
+static int try_connect_ip6(const char *ip, int timeout_ms) {
+    struct sockaddr_in6 a = {0};
+    a.sin6_family = AF_INET6;
+    a.sin6_port = htons(PROXY_PORT);
+    if (inet_pton(AF_INET6, ip, &a.sin6_addr) != 1) return -1;
+    int fd = socket(AF_INET6, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    protect_fd(fd);
+    int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,   &one, sizeof(one));
+    setsockopt(fd, SOL_SOCKET,  SO_KEEPALIVE,  &one, sizeof(one));
+    int v;
+    v = 30;     setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,  &v, sizeof(v));
+    v = 10;     setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &v, sizeof(v));
+    v = 3;      setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,   &v, sizeof(v));
+    v = 524288; setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &v, sizeof(v));
+    v = 524288; setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &v, sizeof(v));
+    int fl = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    int r = connect(fd, (struct sockaddr *)&a, sizeof(a));
+    if (r == 0) { fcntl(fd, F_SETFL, fl); return fd; }
+    if (errno != EINPROGRESS) { pl("W", "connect immediate fail ipv6=%s errno=%d", ip, errno); close(fd); return -1; }
+    struct pollfd p = {fd, POLLOUT, 0};
+    int pr = poll(&p, 1, 300);
+    if (pr <= 0) { pl("W", "connect timeout ipv6=%s ms=300", ip); close(fd); return -1; }
+    int e = 0; socklen_t el = sizeof(e);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) < 0 || e != 0)
+        { pl("W", "connect so_error ipv6=%s err=%d", ip, e); close(fd); return -1; }
+    fcntl(fd, F_SETFL, fl);
+    return fd;
+}
 
-    int fd = -1;
-    pl("I", "resolviendo host=%s family=AF_INET", PROXY_HOST);
-    struct addrinfo hints = {0}, *res = NULL, *cur;
-    hints.ai_family   = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    char port_str[8];
-    snprintf(port_str, sizeof(port_str), "%d", PROXY_PORT);
-    int gai = getaddrinfo(PROXY_HOST, port_str, &hints, &res);
-    if (gai == 0) {
-        int dns_try = 0;
-        for (cur = res; cur && fd < 0; cur = cur->ai_next) {
-            dns_try++;
-            char ipbuf[INET_ADDRSTRLEN] = {0};
-            struct sockaddr_in *a4 = (struct sockaddr_in *)cur->ai_addr;
-            inet_ntop(AF_INET, &a4->sin_addr, ipbuf, sizeof(ipbuf));
-            pl("I", "proxy intento=dns_%d ip=%s port=%d timeout_ms=%d",
-               dns_try, ipbuf, PROXY_PORT, CONNECT_TIMEOUT_MS);
-            fd = try_connect_ip(ipbuf, CONNECT_TIMEOUT_MS);
-        }
-        freeaddrinfo(res);
-    } else {
-        pl("E", "getaddrinfo fallo host=%s code=%d", PROXY_HOST, gai);
-    }
-
-    if (fd < 0) { pl("E", "stage=proxy_connect_failed"); pl("E", "connect failed"); return -1; }
-
+static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host) {
     char buf[8192];
-    snprintf(buf, sizeof(buf), "HEAD http://%s HTTP/1.1\r\nHost: %s\r\n\r\n",
-             PROXY_HOST, PROXY_HOST);
-    pl("I", "tx block1 method=HEAD host=%s", PROXY_HOST);
+    snprintf(buf, sizeof(buf), "HEAD http://%s HTTP/1.1\r\nHost: %s\r\n\r\n", proxy_host, proxy_host);
+    pl("I", "tx block1 method=HEAD host=%s", proxy_host);
     send(fd, buf, strlen(buf), MSG_NOSIGNAL);
-    pl("I", "stage=proxy_connected");
     if (recv_eoh(fd, buf, sizeof(buf), HANDSHAKE_TIMEOUT_SEC) < 0) {
-        pl("E", "stage=proxy_no_response"); pl("E", "proxy no responde"); close(fd); return -1;
+        pl("E", "stage=proxy_no_response host=%s", proxy_host); return -1;
     }
-
     char req[2048];
     snprintf(req, sizeof(req),
-        "PACHTS http://%s HTTP/1.1\r\n"
-        "Host: %s\r\n"
-        "\r\n"
-        "GET htt://%s HTTP/1.1\r\n"
-        "Host: %s\r\n"
-        "Upgrade: websocket\r\n"
-        "Connection: Upgrade\r\n"
-        "Action: tunnel\r\n"
-        "X-Internal-ID: %s\r\n\r\n",
-        PROXY_HOST, PROXY_HOST, TUNNEL_HOST, TUNNEL_HOST, g_i[0] ? g_i : "unknown");
+             "PACHTS http://%s HTTP/1.1\r\nHost: %s\r\n\r\nGET htt://%s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nAction: tunnel\r\nX-Internal-ID: %s\r\n\r\n",
+             proxy_host, proxy_host, tunnel_host, tunnel_host, g_i[0] ? g_i : "unknown");
     pl("I", "stage=server_auth_request");
-    pl("I", "tx block2 host_proxy=%s host_tunnel=%s iid=%s",
-       PROXY_HOST, TUNNEL_HOST, g_i[0] ? g_i : "unknown");
+    pl("I", "tx block2 host_proxy=%s host_tunnel=%s iid=%s", proxy_host, tunnel_host, g_i[0] ? g_i : "unknown");
     send(fd, req, strlen(req), MSG_NOSIGNAL);
-
     usleep(800000);
-    char h2[16384];
-    memset(h2, 0, sizeof(h2));
+    char h2[16384] = {0};
     int hlen = recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
     pl("I", "rx block2 bytes=%d", hlen);
     int code = -1, codes[8] = {0};
     int code_count = parse_http_codes(h2, hlen > 0 ? hlen : 0, codes, 8);
-    if (code_count >= 3) code = codes[2];
-    else if (code_count > 0) code = codes[code_count - 1];
-    pl("I", "handshake_codes=%d/%d/%d count=%d",
-       code_count > 0 ? codes[0] : -1,
-       code_count > 1 ? codes[1] : -1,
-       code_count > 2 ? codes[2] : -1,
-       code_count);
-
+    if (code_count >= 3) code = codes[2]; else if (code_count > 0) code = codes[code_count - 1];
+    pl("I", "handshake_codes=%d/%d/%d count=%d", code_count > 0 ? codes[0] : -1, code_count > 1 ? codes[1] : -1, code_count > 2 ? codes[2] : -1, code_count);
     if (hlen < 0 || code != 101) {
-        if (code == 403 || code == 401 || code == 410) {
-            atomic_store(&g_af, 1);
-            if (code == 410) pl("E", "expired");
-            else pl("E", "not_registered");
-            pl("E", "stage=auth_rejected");
-        }
+        if (code == 403 || code == 401 || code == 410) { atomic_store(&g_af, 1); pl("E", "stage=auth_rejected"); }
         pl("E", "handshake failed code=%d", code);
-        close(fd); return -1;
+        return -1;
     }
-
     char uname[128] = {0}, udays[32] = {0};
     parse_hdr(h2, "X-User-Name:", uname, sizeof(uname));
     parse_hdr(h2, "X-User-Days:", udays, sizeof(udays));
@@ -569,6 +555,69 @@ static int open_tunnel(void) {
     pl("I", "stage=access_granted");
     pl("I", "tunnel ok");
     atomic_store(&g_lp, (long)time(NULL));
+    return 0;
+}
+
+static int open_tunnel(void) {
+    pl("I", "stage=proxy_connect_start");
+    pl("I", "conectando...");
+
+    int fd = -1;
+    pl("I", "method=ipv6_primary start host=%s", PROXY_HOST_V6);
+    for (int i = 0; i < PROXY_IP_COUNT_V6 && fd < 0; i++) {
+        pl("I", "proxy intento=ipv6_static_%d ip=%s", i + 1, PROXY_IPS_V6[i]);
+        fd = try_connect_ip6(PROXY_IPS_V6[i], 300);
+    }
+    if (fd < 0) {
+        struct addrinfo hints6 = {0}, *res6 = NULL, *cur6;
+        hints6.ai_family = AF_INET6; hints6.ai_socktype = SOCK_STREAM;
+        char port_str6[8]; snprintf(port_str6, sizeof(port_str6), "%d", PROXY_PORT);
+        int gai6 = getaddrinfo(PROXY_HOST_V6, port_str6, &hints6, &res6);
+        if (gai6 == 0) {
+            int i = 0;
+            for (cur6 = res6; cur6 && fd < 0; cur6 = cur6->ai_next) {
+                i++; char ip6[INET6_ADDRSTRLEN] = {0};
+                struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)cur6->ai_addr;
+                inet_ntop(AF_INET6, &a6->sin6_addr, ip6, sizeof(ip6));
+                pl("I", "proxy intento=ipv6_dns_%d ip=%s", i, ip6);
+                fd = try_connect_ip6(ip6, 300);
+            }
+            freeaddrinfo(res6);
+        } else pl("W", "ipv6 dns fail host=%s code=%d", PROXY_HOST_V6, gai6);
+    }
+    if (fd >= 0) {
+        pl("I", "stage=proxy_connected method=ipv6_primary");
+        if (run_handshake(fd, PROXY_HOST_V6, TUNNEL_HOST_V6) == 0) {
+            fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+            return fd;
+        }
+        close(fd); fd = -1;
+        pl("W", "method=ipv6_primary failed, fallback=ipv4_secondary");
+    } else {
+        pl("W", "method=ipv6_primary connect_failed, fallback=ipv4_secondary");
+    }
+
+    pl("I", "method=ipv4_secondary start host=%s", PROXY_HOST_V4);
+    struct addrinfo hints = {0}, *res = NULL, *cur;
+    hints.ai_family   = AF_INET; hints.ai_socktype = SOCK_STREAM;
+    char port_str[8]; snprintf(port_str, sizeof(port_str), "%d", PROXY_PORT);
+    int gai = getaddrinfo(PROXY_HOST_V4, port_str, &hints, &res);
+    if (gai == 0) {
+        int dns_try = 0;
+        for (cur = res; cur && fd < 0; cur = cur->ai_next) {
+            dns_try++; char ipbuf[INET_ADDRSTRLEN] = {0};
+            struct sockaddr_in *a4 = (struct sockaddr_in *)cur->ai_addr;
+            inet_ntop(AF_INET, &a4->sin_addr, ipbuf, sizeof(ipbuf));
+            pl("I", "proxy intento=ipv4_dns_%d ip=%s port=%d timeout_ms=%d", dns_try, ipbuf, PROXY_PORT, CONNECT_TIMEOUT_MS);
+            fd = try_connect_ip4(ipbuf, CONNECT_TIMEOUT_MS);
+        }
+        freeaddrinfo(res);
+    } else {
+        pl("E", "getaddrinfo fallo host=%s code=%d", PROXY_HOST_V4, gai);
+    }
+    if (fd < 0) { pl("E", "stage=proxy_connect_failed"); pl("E", "connect failed both methods"); return -1; }
+    pl("I", "stage=proxy_connected method=ipv4_secondary");
+    if (run_handshake(fd, PROXY_HOST_V4, TUNNEL_HOST_V4) < 0) { close(fd); return -1; }
 
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
     return fd;
