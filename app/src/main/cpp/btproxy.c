@@ -522,26 +522,22 @@ static int try_connect_ip6(const char *ip, int timeout_ms) {
 static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host) {
     char buf[8192];
     snprintf(buf, sizeof(buf), "HEAD http://%s HTTP/1.1\r\nHost: %s\r\n\r\n", proxy_host, proxy_host);
-    pl("I", "tx block1 method=HEAD host=%s", proxy_host);
     send(fd, buf, strlen(buf), MSG_NOSIGNAL);
     if (recv_eoh(fd, buf, sizeof(buf), HANDSHAKE_TIMEOUT_SEC) < 0) {
-        pl("E", "stage=proxy_no_response host=%s", proxy_host); return -1;
+        pl("E", "stage=proxy_no_response"); return -1;
     }
     char req[2048];
     snprintf(req, sizeof(req),
              "PACHTS http://%s HTTP/1.1\r\nHost: %s\r\n\r\nGET htt://%s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nAction: tunnel\r\nX-Internal-ID: %s\r\n\r\n",
              proxy_host, proxy_host, tunnel_host, tunnel_host, g_i[0] ? g_i : "unknown");
     pl("I", "stage=server_auth_request");
-    pl("I", "tx block2 host_proxy=%s host_tunnel=%s iid=%s", proxy_host, tunnel_host, g_i[0] ? g_i : "unknown");
     send(fd, req, strlen(req), MSG_NOSIGNAL);
     usleep(800000);
     char h2[16384] = {0};
     int hlen = recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
-    pl("I", "rx block2 bytes=%d", hlen);
     int code = -1, codes[8] = {0};
     int code_count = parse_http_codes(h2, hlen > 0 ? hlen : 0, codes, 8);
     if (code_count >= 3) code = codes[2]; else if (code_count > 0) code = codes[code_count - 1];
-    pl("I", "handshake_codes=%d/%d/%d count=%d", code_count > 0 ? codes[0] : -1, code_count > 1 ? codes[1] : -1, code_count > 2 ? codes[2] : -1, code_count);
     if (hlen < 0 || code != 101) {
         if (code == 403 || code == 401 || code == 410) { atomic_store(&g_af, 1); pl("E", "stage=auth_rejected"); }
         pl("E", "handshake failed code=%d", code);
@@ -563,9 +559,9 @@ static int open_tunnel(void) {
     pl("I", "conectando...");
 
     int fd = -1;
-    pl("I", "method=ipv6_primary start host=%s", PROXY_HOST_V6);
+    pl("I", "method=ipv6_primary start");
     for (int i = 0; i < PROXY_IP_COUNT_V6 && fd < 0; i++) {
-        pl("I", "proxy intento=ipv6_static_%d ip=%s", i + 1, PROXY_IPS_V6[i]);
+        pl("I", "proxy intento=ipv6_static_%d", i + 1);
         fd = try_connect_ip6(PROXY_IPS_V6[i], 300);
     }
     /* Intencional: sin resolución DNS IPv6 dinámica para priorizar velocidad.
@@ -582,7 +578,7 @@ static int open_tunnel(void) {
         pl("W", "method=ipv6_primary connect_failed, fallback=ipv4_secondary");
     }
 
-    pl("I", "method=ipv4_secondary start host=%s", PROXY_HOST_V4);
+    pl("I", "method=ipv4_secondary start");
     struct addrinfo hints = {0}, *res = NULL, *cur;
     hints.ai_family   = AF_INET; hints.ai_socktype = SOCK_STREAM;
     char port_str[8]; snprintf(port_str, sizeof(port_str), "%d", PROXY_PORT);
@@ -593,7 +589,7 @@ static int open_tunnel(void) {
             dns_try++; char ipbuf[INET_ADDRSTRLEN] = {0};
             struct sockaddr_in *a4 = (struct sockaddr_in *)cur->ai_addr;
             inet_ntop(AF_INET, &a4->sin_addr, ipbuf, sizeof(ipbuf));
-            pl("I", "proxy intento=ipv4_dns_%d ip=%s port=%d timeout_ms=%d", dns_try, ipbuf, PROXY_PORT, CONNECT_TIMEOUT_MS);
+            pl("I", "proxy intento=ipv4_dns_%d", dns_try);
             fd = try_connect_ip4(ipbuf, CONNECT_TIMEOUT_MS);
         }
         freeaddrinfo(res);
