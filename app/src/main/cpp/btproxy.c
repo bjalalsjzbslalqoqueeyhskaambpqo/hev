@@ -62,7 +62,7 @@ static const char *PROXY_IPS_V6[] = {
 };
 #define PROXY_IP_COUNT_V6 2
 
-#define CONNECT_TIMEOUT_MS 8000
+#define CONNECT_TIMEOUT_MS 2000
 
 static volatile int    g_r      = 0;
 static int             g_rf     = -1;
