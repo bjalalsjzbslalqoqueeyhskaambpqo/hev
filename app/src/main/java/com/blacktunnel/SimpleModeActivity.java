@@ -1,6 +1,7 @@
 package com.blacktunnel;
 
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.animation.Animator;
 import android.animation.AnimatorInflater;
 import android.animation.ArgbEvaluator;
@@ -132,6 +133,8 @@ public class SimpleModeActivity extends ComponentActivity {
     private String  lstDtl                   = "";
     private long    lgClrMs                  = 0L;
     private long    txB = 0L, rxB = 0L, stMs = 0L;
+    private Dialog disconnOverlay;
+    private String shownOverlayReason = "";
 
     private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
     private final Runnable delayedReconnectRunnable = () -> {
@@ -969,6 +972,7 @@ public class SimpleModeActivity extends ComponentActivity {
             stDtlsV.setVisibility(View.VISIBLE);
             stDtlsV.setText("✖ Usuario no registrado\nComparte tu ID interno para habilitación\nID: " + iid);
             stDtlsV.setTextColor(c(R.color.color_disconnected));
+            showDisconnectOverlay("not_registered");
             if (cBtn != null) cBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
         } else if ("expired".equals(latestAuth)) {
             if ("expired".equals(aSt)) return;
@@ -978,6 +982,17 @@ public class SimpleModeActivity extends ComponentActivity {
             stDtlsV.setVisibility(View.VISIBLE);
             stDtlsV.setText("✖ Usuario expirado\nRenueva tu acceso con soporte\nID: " + iid);
             stDtlsV.setTextColor(c(R.color.color_connecting));
+            showDisconnectOverlay("expired");
+            if (cBtn != null) cBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
+        } else if ("kick".equals(latestAuth)) {
+            if ("kick".equals(aSt)) return;
+            aSt = "kick"; setHideInternalId(false);
+            if (BtVpnService.iRun()) stopVpn();
+            setUiState(UiState.DISCONNECTED);
+            stDtlsV.setVisibility(View.VISIBLE);
+            stDtlsV.setText("✖ Sesión cerrada por el administrador");
+            stDtlsV.setTextColor(c(R.color.color_disconnected));
+            showDisconnectOverlay("kick");
             if (cBtn != null) cBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
         } else if ("ok".equals(latestAuth)) { aSt = ""; setHideInternalId(true); }
     }
@@ -989,9 +1004,37 @@ public class SimpleModeActivity extends ComponentActivity {
             String lower = line.trim().toLowerCase(Locale.ROOT); if (lower.isEmpty()) continue;
             if (lower.contains("usuario no registrado") || lower.contains("not_registered")) return "not_registered";
             if (lower.contains("usuario expirado")      || lower.contains("expired"))        return "expired";
+            if (lower.contains("disconnect_reason=kick")) return "kick";
+            if (lower.contains("disconnect_reason=not_registered")) return "not_registered";
+            if (lower.contains("disconnect_reason=expired")) return "expired";
             if (lower.contains("user_name=") || lower.contains("user_days=") || lower.contains("ping_ms=")) return "ok";
         }
         return "";
+    }
+
+    private void showDisconnectOverlay(String reason) {
+        if (reason == null || reason.isEmpty()) return;
+        if (reason.equals(shownOverlayReason) && disconnOverlay != null && disconnOverlay.isShowing()) return;
+        shownOverlayReason = reason;
+        if (disconnOverlay != null && disconnOverlay.isShowing()) disconnOverlay.dismiss();
+        TextView tv = new TextView(this);
+        tv.setPadding(48, 72, 48, 72);
+        tv.setTextSize(24f);
+        tv.setTextColor(Color.WHITE);
+        tv.setGravity(android.view.Gravity.CENTER);
+        tv.setBackgroundColor(Color.parseColor("#E0181E2A"));
+        if ("not_registered".equals(reason)) {
+            tv.setText("USUARIO NO REGISTRADO\n\nComparte tu ID con soporte.");
+        } else if ("expired".equals(reason)) {
+            tv.setText("USUARIO EXPIRADO\n\nRenueva tu acceso para continuar.");
+        } else {
+            tv.setText("SESIÓN CERRADA POR EL ADMINISTRADOR");
+        }
+        disconnOverlay = new AlertDialog.Builder(this).setView(tv).setCancelable(true).create();
+        if (disconnOverlay.getWindow() != null) {
+            disconnOverlay.getWindow().setDimAmount(0.75f);
+        }
+        disconnOverlay.show();
     }
 
     private String findLatestConnectionState(String logs) {
