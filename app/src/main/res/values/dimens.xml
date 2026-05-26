@@ -1,0 +1,14 @@
+<resources>
+    <dimen name="screen_padding_h">20dp</dimen>
+    <dimen name="title_text_size">22sp</dimen>
+    <dimen name="status_badge_text_size">11sp</dimen>
+    <dimen name="status_details_text_size">11sp</dimen>
+    <dimen name="main_button_text_size">13sp</dimen>
+    <dimen name="main_button_height">54dp</dimen>
+    <dimen name="connect_ring_size">160dp</dimen>
+    <dimen name="connect_ring_mid_size">136dp</dimen>
+    <dimen name="connect_ring_inner_size">124dp</dimen>
+    <dimen name="overlay_margin">24dp</dimen>
+    <dimen name="overlay_title_size">28sp</dimen>
+    <dimen name="overlay_message_size">17sp</dimen>
+</resources>

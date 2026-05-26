@@ -20,7 +20,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:paddingHorizontal="20dp"
+            android:paddingHorizontal="@dimen/screen_padding_h"
             android:paddingTop="16dp"
             android:paddingBottom="28dp"
             android:gravity="center_horizontal">
@@ -52,7 +52,7 @@
                             android:text="@string/app_brand"
                             android:textColor="@color/color_text_primary"
                             android:letterSpacing="0.20"
-                            android:textSize="22sp"
+                            android:textSize="@dimen/title_text_size"
                             android:textStyle="bold" />
                         <TextView
                             android:layout_width="wrap_content"
@@ -105,7 +105,7 @@
                         android:letterSpacing="0.16"
                         android:text="DESCONECTADO"
                         android:textColor="@color/color_disconnected"
-                        android:textSize="11sp"
+                        android:textSize="@dimen/status_badge_text_size"
                         android:textStyle="bold" />
                 </LinearLayout>
                 <TextView
@@ -118,7 +118,7 @@
                     android:paddingHorizontal="12dp"
                     android:paddingVertical="10dp"
                     android:textColor="@color/color_text_secondary"
-                    android:textSize="11sp"
+                    android:textSize="@dimen/status_details_text_size"
                     android:lineSpacingMultiplier="1.2"
                     android:visibility="gone" />
                 <LinearLayout
@@ -293,7 +293,7 @@
             <com.blacktunnel.ThroughputGraphView
                 android:id="@+id/throughputGraphView"
                 android:layout_width="match_parent"
-                android:layout_height="54dp"
+                android:layout_height="@dimen/main_button_height"
                 android:layout_marginTop="4dp"
                 android:visibility="gone" />
             <TextView
@@ -406,21 +406,21 @@
                 </LinearLayout>
             </LinearLayout>
             <FrameLayout
-                android:layout_width="160dp"
-                android:layout_height="160dp"
+                android:layout_width="@dimen/connect_ring_size"
+                android:layout_height="@dimen/connect_ring_size"
                 android:layout_marginTop="20dp"
                 android:layout_gravity="center_horizontal">
                 <View
                     android:id="@+id/btnRingOuter"
-                    android:layout_width="160dp"
-                    android:layout_height="160dp"
+                    android:layout_width="@dimen/connect_ring_size"
+                    android:layout_height="@dimen/connect_ring_size"
                     android:layout_gravity="center"
                     android:background="@drawable/hud_btn_ring_outer"
                     android:alpha="0.5" />
                 <View
                     android:id="@+id/btnRingMid"
-                    android:layout_width="136dp"
-                    android:layout_height="136dp"
+                    android:layout_width="@dimen/connect_ring_mid_size"
+                    android:layout_height="@dimen/connect_ring_mid_size"
                     android:layout_gravity="center"
                     android:background="@drawable/hud_btn_ring_mid" />
                 <View
@@ -432,8 +432,8 @@
                     android:background="@drawable/shape_status_dot" />
                 <Button
                     android:id="@+id/btnConnect"
-                    android:layout_width="124dp"
-                    android:layout_height="124dp"
+                    android:layout_width="@dimen/connect_ring_inner_size"
+                    android:layout_height="@dimen/connect_ring_inner_size"
                     android:layout_gravity="center"
                     android:background="@drawable/hud_btn_connect"
                     android:stateListAnimator="@animator/btn_press"
@@ -441,7 +441,7 @@
                     android:text="@string/connect"
                     android:textAllCaps="true"
                     android:textColor="@color/color_text_primary"
-                    android:textSize="13sp"
+                    android:textSize="@dimen/main_button_text_size"
                     android:textStyle="bold"
                     android:fontFamily="sans-serif-medium"
                     android:maxLines="1"
@@ -559,7 +559,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_gravity="center"
-            android:layout_margin="24dp"
+            android:layout_margin="@dimen/overlay_margin"
             android:background="@drawable/bg_disconnect_overlay_panel"
             android:orientation="vertical"
             android:padding="24dp">
@@ -582,7 +582,7 @@
                 android:layout_marginTop="10dp"
                 android:gravity="center"
                 android:textColor="@color/color_disconnected"
-                android:textSize="28sp"
+                android:textSize="@dimen/overlay_title_size"
                 android:textStyle="bold" />
             <TextView
                 android:id="@+id/txtOverlayMessage"
@@ -591,7 +591,7 @@
                 android:layout_marginTop="14dp"
                 android:gravity="center"
                 android:textColor="@color/color_text_primary"
-                android:textSize="17sp" />
+                android:textSize="@dimen/overlay_message_size" />
             <Button
                 android:id="@+id/btnOverlayClose"
                 android:layout_width="match_parent"
