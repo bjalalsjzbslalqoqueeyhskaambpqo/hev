@@ -114,7 +114,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupActions() {
         findViewById<MaterialButton>(R.id.btnCreate).setOnClickListener { createClient() }
-        findViewById<MaterialButton>(R.id.btnAddDays).setOnClickListener { addDays() }
+        findViewById<MaterialButton>(R.id.btnAddDays).setOnClickListener { editDays() }
         findViewById<MaterialButton>(R.id.btnDelete).setOnClickListener { deleteClient() }
         findViewById<MaterialButton>(R.id.btnList).setOnClickListener { refreshClients() }
         findViewById<MaterialButton>(R.id.btnSortDays).setOnClickListener {
@@ -147,12 +147,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun addDays() {
+    private fun editDays() {
         val id = clientIdInput.text.toString().trim()
         val days = daysInput.text.toString().trim().toIntOrNull() ?: 0
         if (id.isBlank() || days <= 0) return showStatus("ID o días inválidos", false)
-        request("POST", "/client/update", JSONObject().put("id", id).put("add_days", days)) {
-            showStatus("Días agregados", true)
+        request("POST", "/client/update", JSONObject().put("id", id).put("days", days)) {
+            showStatus("Días editados", true)
             refreshClients()
         }
     }
@@ -196,13 +196,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showItemMenu(item: ClientItem) {
-        val options = arrayOf("Editar nombre", "Aumentar días", "Eliminar")
+        val options = arrayOf("Editar nombre", "Editar días", "Eliminar")
         AlertDialog.Builder(this)
             .setTitle(item.name)
             .setItems(options) { _, which ->
                 when (which) {
                     0 -> editName(item)
-                    1 -> promptAddDays(item)
+                    1 -> promptEditDays(item)
                     2 -> request("POST", "/client/delete", JSONObject().put("id", item.id)) { refreshClients() }
                 }
             }.show()
@@ -220,14 +220,14 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun promptAddDays(item: ClientItem) {
+    private fun promptEditDays(item: ClientItem) {
         val input = EditText(this).apply { setText("30") }
         AlertDialog.Builder(this)
-            .setTitle("Aumentar días")
+            .setTitle("Editar días")
             .setView(input)
             .setPositiveButton("Aplicar") { _, _ ->
                 val days = input.text.toString().toIntOrNull() ?: 0
-                if (days > 0) request("POST", "/client/update", JSONObject().put("id", item.id).put("add_days", days)) { refreshClients() }
+                if (days > 0) request("POST", "/client/update", JSONObject().put("id", item.id).put("days", days)) { refreshClients() }
             }
             .setNegativeButton("Cancelar", null)
             .show()
