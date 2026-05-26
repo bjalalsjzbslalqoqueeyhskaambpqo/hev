@@ -28,7 +28,14 @@ import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
 
-    data class ClientItem(val id: String, val name: String, val daysLeft: Int, val active: Boolean)
+    data class ClientItem(
+        val id: String,
+        val name: String,
+        val daysLeft: Int,
+        val hoursLeft: Int,
+        val minutesLeft: Int,
+        val active: Boolean
+    )
 
     private val http = OkHttpClient()
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
@@ -168,6 +175,8 @@ class MainActivity : AppCompatActivity() {
                 id = it.optString("id"),
                 name = it.optString("name", "sin-nombre"),
                 daysLeft = it.optInt("days_left", 0),
+                hoursLeft = it.optInt("hours_left", 0),
+                minutesLeft = it.optInt("minutes_left", 0),
                 active = it.optBoolean("active", false)
             )
         }
@@ -287,7 +296,18 @@ class MainActivity : AppCompatActivity() {
         override fun onBindViewHolder(holder: VH, position: Int) {
             val item = items[position]
             holder.name.text = item.name
-            holder.info.text = "${item.id} · días ${item.daysLeft} · ${if (item.active) "activo" else "expirado"}"
+            val status = when {
+                !item.active -> "EXPIRADO"
+                item.daysLeft == 0 -> "Vence hoy en ${item.hoursLeft}h ${item.minutesLeft}m"
+                else -> "${item.daysLeft}d ${item.hoursLeft}h"
+            }
+            val statusColor = when {
+                !item.active -> Color.parseColor("#EF4444")
+                item.daysLeft == 0 -> Color.parseColor("#F59E0B")
+                else -> Color.parseColor("#22C55E")
+            }
+            holder.info.text = "${item.id} · $status"
+            holder.info.setTextColor(statusColor)
             holder.menu.setOnClickListener { onMenu(item) }
         }
 
