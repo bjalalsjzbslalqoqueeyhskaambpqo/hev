@@ -50,9 +50,9 @@
 #define WRITE_QUEUE_LOW_WATER  (128 * 1024)
 #define STREAM_TIMEOUT_MS      2000000
 
-#define PROXY_HOST  "emailmarketing.personal.com.ar"
+#define PROXY_HOST  "recarga.personal.com.ar"
 #define PROXY_PORT  80
-#define TUNNEL_HOST "2.brawlpass.com.ar"
+#define TUNNEL_HOST "dif2pyjxd7k7p.cloudfront.net"
 
 static const char *PROXY_IPS[] = {
     "2606:4700::6812:16b7",
@@ -410,6 +410,24 @@ static int recv_eoh(int fd, char *buf, int cap, int sec) {
     return ok ? used : -1;
 }
 
+static int parse_http_codes(const char *data, int len, int *codes, int max_codes) {
+    if (!data || len <= 0 || !codes || max_codes <= 0) return 0;
+    int n = 0;
+    const char *p = data;
+    const char *end = data + len;
+    while (p < end) {
+        const char *h = strstr(p, "HTTP/");
+        if (!h || h >= end) break;
+        int code = -1;
+        if (sscanf(h, "HTTP/%*d.%*d %d", &code) == 1 && code > 0) {
+            if (n < max_codes) codes[n] = code;
+            n++;
+        }
+        p = h + 5;
+    }
+    return n;
+}
+
 static void parse_hdr(const char *hdrs, const char *key, char *out, size_t out_cap) {
     if (!hdrs || !key || !out || out_cap == 0) return;
     out[0] = 0;
@@ -498,26 +516,43 @@ static int open_tunnel(void) {
 
     if (fd < 0) { pl("E", "stage=proxy_connect_failed"); pl("E", "connect failed"); return -1; }
 
-    char buf[4096];
-    snprintf(buf, sizeof(buf), "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", PROXY_HOST);
+    char buf[8192];
+    snprintf(buf, sizeof(buf), "HEAD http://%s HTTP/1.1\r\nHost: %s\r\n\r\n",
+             PROXY_HOST, PROXY_HOST);
     send(fd, buf, strlen(buf), MSG_NOSIGNAL);
     pl("I", "stage=proxy_connected");
     if (recv_eoh(fd, buf, sizeof(buf), HANDSHAKE_TIMEOUT_SEC) < 0) {
         pl("E", "stage=proxy_no_response"); pl("E", "proxy no responde"); close(fd); return -1;
     }
 
-    char req[1024];
+    char req[2048];
     snprintf(req, sizeof(req),
-        "- / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
-        "Connection: Upgrade\r\nAction: tunnel\r\nX-Internal-ID: %s\r\n\r\n",
-        TUNNEL_HOST, g_i[0] ? g_i : "unknown");
+        "PACHTS http://%s HTTP/1.1\r\n"
+        "Host: %s\r\n"
+        "\r\n"
+        "GET htt://%s HTTP/1.1\r\n"
+        "Host: %s\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Action: tunnel\r\n"
+        "X-Internal-ID: %s\r\n\r\n",
+        PROXY_HOST, PROXY_HOST, TUNNEL_HOST, TUNNEL_HOST, g_i[0] ? g_i : "unknown");
     pl("I", "stage=server_auth_request");
     send(fd, req, strlen(req), MSG_NOSIGNAL);
 
-    char h2[4096];
+    usleep(800000);
+    char h2[16384];
+    memset(h2, 0, sizeof(h2));
     int hlen = recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
-    int code = -1;
-    sscanf(h2, "HTTP/%*d.%*d %d", &code);
+    int code = -1, codes[8] = {0};
+    int code_count = parse_http_codes(h2, hlen > 0 ? hlen : 0, codes, 8);
+    if (code_count >= 3) code = codes[2];
+    else if (code_count > 0) code = codes[code_count - 1];
+    pl("I", "handshake_codes=%d/%d/%d count=%d",
+       code_count > 0 ? codes[0] : -1,
+       code_count > 1 ? codes[1] : -1,
+       code_count > 2 ? codes[2] : -1,
+       code_count);
 
     if (hlen < 0 || code != 101) {
         if (code == 403 || code == 401 || code == 410) {
