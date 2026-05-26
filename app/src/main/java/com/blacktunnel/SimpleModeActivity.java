@@ -132,6 +132,11 @@ public class SimpleModeActivity extends ComponentActivity {
     private String  lstDtl                   = "";
     private long    lgClrMs                  = 0L;
     private long    txB = 0L, rxB = 0L, stMs = 0L;
+    private View disconnOvL;
+    private TextView disconnOvTitleV;
+    private TextView disconnOvBodyV;
+    private Button disconnOvCloseB;
+    private String shownOverlayReason = "";
 
     private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
     private final Runnable delayedReconnectRunnable = () -> {
@@ -257,6 +262,11 @@ public class SimpleModeActivity extends ComponentActivity {
         frIdV             = findViewById(R.id.txtFirstRunId);
         frCpB             = findViewById(R.id.btnFirstRunCopy);
         frOkB             = findViewById(R.id.btnFirstRunOk);
+        disconnOvL        = findViewById(R.id.layoutDisconnectOverlay);
+        disconnOvTitleV   = findViewById(R.id.txtDisconnectOverlayTitle);
+        disconnOvBodyV    = findViewById(R.id.txtDisconnectOverlayBody);
+        disconnOvCloseB   = findViewById(R.id.btnDisconnectOverlayClose);
+        if (disconnOvCloseB != null) disconnOvCloseB.setOnClickListener(v -> hideDisconnectOverlay());
 
         iid = BtProxy.gIid(this);
         BtProxy.aGm(this);
@@ -751,6 +761,7 @@ public class SimpleModeActivity extends ComponentActivity {
         if (thrV != null) thrV.setVisibility(View.GONE);
         h.removeCallbacks(autoDisconnectRunnable);
         autoDcMs = -1L;
+        hideDisconnectOverlay();
     }
 
     private void apGmIfRun() {
@@ -969,6 +980,7 @@ public class SimpleModeActivity extends ComponentActivity {
             stDtlsV.setVisibility(View.VISIBLE);
             stDtlsV.setText("✖ Usuario no registrado\nComparte tu ID interno para habilitación\nID: " + iid);
             stDtlsV.setTextColor(c(R.color.color_disconnected));
+            showDisconnectOverlay("not_registered");
             if (cBtn != null) cBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
         } else if ("expired".equals(latestAuth)) {
             if ("expired".equals(aSt)) return;
@@ -978,8 +990,19 @@ public class SimpleModeActivity extends ComponentActivity {
             stDtlsV.setVisibility(View.VISIBLE);
             stDtlsV.setText("✖ Usuario expirado\nRenueva tu acceso con soporte\nID: " + iid);
             stDtlsV.setTextColor(c(R.color.color_connecting));
+            showDisconnectOverlay("expired");
             if (cBtn != null) cBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
-        } else if ("ok".equals(latestAuth)) { aSt = ""; setHideInternalId(true); }
+        } else if ("kick".equals(latestAuth)) {
+            if ("kick".equals(aSt)) return;
+            aSt = "kick"; setHideInternalId(false);
+            if (BtVpnService.iRun()) stopVpn();
+            setUiState(UiState.DISCONNECTED);
+            stDtlsV.setVisibility(View.VISIBLE);
+            stDtlsV.setText("✖ Sesión cerrada por el administrador");
+            stDtlsV.setTextColor(c(R.color.color_disconnected));
+            showDisconnectOverlay("kick");
+            if (cBtn != null) cBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
+        } else if ("ok".equals(latestAuth)) { aSt = ""; setHideInternalId(true); hideDisconnectOverlay(); }
     }
 
     private String findLatestAuthState(String logs) {
@@ -989,9 +1012,41 @@ public class SimpleModeActivity extends ComponentActivity {
             String lower = line.trim().toLowerCase(Locale.ROOT); if (lower.isEmpty()) continue;
             if (lower.contains("usuario no registrado") || lower.contains("not_registered")) return "not_registered";
             if (lower.contains("usuario expirado")      || lower.contains("expired"))        return "expired";
+            if (lower.contains("disconnect_reason=kick")) return "kick";
+            if (lower.contains("disconnect_reason=not_registered")) return "not_registered";
+            if (lower.contains("disconnect_reason=expired")) return "expired";
             if (lower.contains("user_name=") || lower.contains("user_days=") || lower.contains("ping_ms=")) return "ok";
         }
         return "";
+    }
+
+    private void showDisconnectOverlay(String reason) {
+        if (reason == null || reason.isEmpty()) return;
+        if (reason.equals(shownOverlayReason) && disconnOvL != null && disconnOvL.getVisibility() == View.VISIBLE) return;
+        shownOverlayReason = reason;
+        if (disconnOvL == null || disconnOvTitleV == null || disconnOvBodyV == null) return;
+        if ("not_registered".equals(reason)) {
+            disconnOvTitleV.setText("USUARIO NO REGISTRADO");
+            disconnOvBodyV.setText("Este identificador no está habilitado.\n\nComparte tu ID con soporte para activación.\nID: " + iid);
+            disconnOvTitleV.setTextColor(c(R.color.color_disconnected));
+        } else if ("expired".equals(reason)) {
+            disconnOvTitleV.setText("USUARIO EXPIRADO");
+            disconnOvBodyV.setText("Tu acceso venció.\n\nRenueva tu plan para volver a conectar.\nID: " + iid);
+            disconnOvTitleV.setTextColor(c(R.color.color_connecting));
+        } else {
+            disconnOvTitleV.setText("SESIÓN CERRADA");
+            disconnOvBodyV.setText("La sesión fue cerrada por el administrador\nu otro dispositivo con el mismo ID.");
+            disconnOvTitleV.setTextColor(c(R.color.color_disconnected));
+        }
+        disconnOvL.setVisibility(View.VISIBLE);
+        disconnOvL.bringToFront();
+        if (cBtn != null) cBtn.setEnabled(false);
+    }
+
+    private void hideDisconnectOverlay() {
+        shownOverlayReason = "";
+        if (disconnOvL != null) disconnOvL.setVisibility(View.GONE);
+        if (cBtn != null && uS != UiState.CONNECTING) cBtn.setEnabled(true);
     }
 
     private String findLatestConnectionState(String logs) {
