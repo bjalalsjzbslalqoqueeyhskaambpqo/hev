@@ -135,6 +135,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private boolean hsOk               = false;
     private String  lstConn               = "";
     private String  lstDtl                   = "";
+    private String  lstDcReason         = "";
     private long    lgClrMs                  = 0L;
     private long    txB = 0L, rxB = 0L, stMs = 0L;
 
@@ -965,7 +966,12 @@ public class SimpleModeActivity extends ComponentActivity {
         else if ("proxy_connected".equals(lstConn)) detail = "Proxy conectado";
         else if ("server_auth_request".equals(lstConn)) detail = "Solicitando acceso al servidor...";
         else if ("access_granted".equals(lstConn)) detail = "Acceso concedido, cargando datos...";
-        else if ("auth_rejected".equals(lstConn)) detail = "Acceso denegado por el servidor";
+        else if ("auth_rejected".equals(lstConn)) {
+            if ("not_registered".equals(lstDcReason)) detail = "Usuario no registrado";
+            else if ("expired".equals(lstDcReason)) detail = "Usuario expirado";
+            else if ("kick".equals(lstDcReason)) detail = "Sesión cerrada por el administrador";
+            else detail = "Acceso denegado por el servidor";
+        }
         else if ("manual_reconnect_required".equals(lstConn)) detail = "Requiere reconexión manual";
         else if ("retrying".equals(lstConn)) detail = getString(R.string.status_detail_connecting_search);
         else if ("dropped".equals(lstConn))  detail = getString(R.string.status_detail_connecting_reconnect);
@@ -984,6 +990,7 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void refreshFromLogs(String logs) {
+        lstDcReason = findLatestDisconnectReason(logs);
         updateServerAuthStatus(logs);
         updateUserMetadata(logs);
     }
@@ -1037,10 +1044,26 @@ public class SimpleModeActivity extends ComponentActivity {
         for (int i = lines.length - 1; i >= 0; i--) {
             String line = lines[i]; if (line == null) continue;
             String lower = line.trim().toLowerCase(Locale.ROOT); if (lower.isEmpty()) continue;
+            if (lower.contains("disconnect_reason=not_registered")) return "not_registered";
+            if (lower.contains("disconnect_reason=expired")) return "expired";
             if (lower.contains("usuario no registrado") || lower.contains("not_registered")) return "not_registered";
             if (lower.contains("disconnect_reason=kick")) return "kick";
             if (lower.contains("usuario expirado")      || lower.contains("expired"))        return "expired";
             if (lower.contains("user_name=") || lower.contains("user_days=") || lower.contains("ping_ms=")) return "ok";
+        }
+        return "";
+    }
+
+    private String findLatestDisconnectReason(String logs) {
+        if (logs == null || logs.isEmpty()) return "";
+        String[] lines = logs.split("\n");
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i];
+            if (line == null) continue;
+            String lower = line.trim().toLowerCase(Locale.ROOT);
+            if (lower.contains("disconnect_reason=not_registered")) return "not_registered";
+            if (lower.contains("disconnect_reason=expired")) return "expired";
+            if (lower.contains("disconnect_reason=kick")) return "kick";
         }
         return "";
     }
