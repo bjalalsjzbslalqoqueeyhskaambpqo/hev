@@ -551,11 +551,17 @@ static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host
         pl("E", "handshake failed code=%d", code);
         return -1;
     }
-    char uname[128] = {0}, udays[32] = {0};
+    char uname[128] = {0}, udays[32] = {0}, uhours[32] = {0}, umins[32] = {0}, uexpires[64] = {0};
     parse_hdr(h2, "X-User-Name:", uname, sizeof(uname));
     parse_hdr(h2, "X-User-Days:", udays, sizeof(udays));
+    parse_hdr(h2, "X-User-Hours:", uhours, sizeof(uhours));
+    parse_hdr(h2, "X-User-Minutes:", umins, sizeof(umins));
+    parse_hdr(h2, "X-User-Expires:", uexpires, sizeof(uexpires));
     if (uname[0]) pl("I", "user_name=%s", uname);
     if (udays[0]) pl("I", "user_days=%s", udays);
+    if (uhours[0]) pl("I", "user_hours=%s", uhours);
+    if (umins[0]) pl("I", "user_minutes=%s", umins);
+    if (uexpires[0]) pl("I", "user_expires=%s", uexpires);
     pl("I", "stage=access_granted");
     pl("I", "tunnel ok");
     atomic_store(&g_lp, (long)time(NULL));

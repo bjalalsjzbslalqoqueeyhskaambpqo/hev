@@ -205,7 +205,10 @@ public class BtVpnService extends VpnService {
                     if (lower.isEmpty()) continue;
                     if (lower.contains("tunnel ok") ||
                         lower.contains("user_name=") ||
-                        lower.contains("user_days=")) return true;
+                        lower.contains("user_days=") ||
+                        lower.contains("user_hours=") ||
+                        lower.contains("user_minutes=") ||
+                        lower.contains("user_expires=")) return true;
                     if (lower.contains("handshake failed") ||
                         lower.contains("proxy no responde") ||
                         lower.contains("connect failed") ||

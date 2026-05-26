@@ -55,6 +55,8 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.LinearGradient;
@@ -70,6 +72,8 @@ public class SimpleModeActivity extends ComponentActivity {
     private static final String PREF_UI              = "ui_state";
     private static final String KEY_HIDE_ID          = "hide_internal_id";
     private static final String KEY_FIRST_OK         = "first_ok";
+    private static final String KEY_EXP_AT_MS        = "exp_at_ms";
+    private static final String KEY_EXP_RAW          = "exp_raw";
     private static final int    HOTSPOT_PROXY_PORT   = 7071;
     private static final long   CONNECTING_TIMEOUT_MS = 40000L;
 
@@ -138,6 +142,8 @@ public class SimpleModeActivity extends ComponentActivity {
     private String  lstDcReason         = "";
     private long    lgClrMs                  = 0L;
     private long    txB = 0L, rxB = 0L, stMs = 0L;
+    private long    expAtMs = -1L;
+    private String  expRaw = "";
 
     private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
     private final Runnable delayedReconnectRunnable = () -> {
@@ -272,6 +278,8 @@ public class SimpleModeActivity extends ComponentActivity {
         iid = BtProxy.gIid(this);
         BtProxy.aGm(this);
         hidIid = getSharedPreferences(PREF_UI, MODE_PRIVATE).getBoolean(KEY_HIDE_ID, false);
+        expAtMs = getSharedPreferences(PREF_UI, MODE_PRIVATE).getLong(KEY_EXP_AT_MS, -1L);
+        expRaw = getSharedPreferences(PREF_UI, MODE_PRIVATE).getString(KEY_EXP_RAW, "");
         if (devIdV != null) devIdV.setText("ID: " + iid);
         refreshDeviceIdVisibility();
 
@@ -752,6 +760,7 @@ public class SimpleModeActivity extends ComponentActivity {
             daysV.setText("--");
             daysV.setTextColor(c(R.color.color_text_disabled));
         }
+        clearPersistedExpiry();
         if (hevRtV != null) hevRtV.setVisibility(View.GONE);
         if (thrV != null) thrV.setVisibility(View.GONE);
         setUiState(UiState.CONNECTING);
@@ -778,6 +787,7 @@ public class SimpleModeActivity extends ComponentActivity {
             daysV.setText("--");
             daysV.setTextColor(c(R.color.color_text_disabled));
         }
+        clearPersistedExpiry();
         if (hevRtV != null) hevRtV.setVisibility(View.GONE);
         if (thrV != null) thrV.setVisibility(View.GONE);
         h.removeCallbacks(autoDisconnectRunnable);
@@ -1102,14 +1112,13 @@ public class SimpleModeActivity extends ComponentActivity {
 
     private void updateUserMetadata(String logs) {
         if (logs == null) return;
+        String userName = null, userDays = null, userHours = null, userMinutes = null, userExpires = null;
         String[] lines = logs.split("\n");
         for (int i = lines.length - 1; i >= 0; i--) {
             String line = lines[i].trim(); int idx = line.indexOf("user_name=");
             if (idx >= 0) {
                 String v = line.substring(idx + "user_name=".length()).trim();
-                if (!v.isEmpty()) {
-                    if (usrNmWV != null) usrNmWV.setText("Usuario: " + v);
-                }
+                if (!v.isEmpty()) userName = v;
                 break;
             }
         }
@@ -1117,17 +1126,24 @@ public class SimpleModeActivity extends ComponentActivity {
             String line = lines[i].trim(); int idx = line.indexOf("user_days=");
             if (idx >= 0 && daysV != null) {
                 String v = line.substring(idx + "user_days=".length()).trim();
-                if (!v.isEmpty()) {
-                    daysV.setText(v + " días");
-                    try {
-                        int days = Integer.parseInt(v.replaceAll("[^0-9]", ""));
-                        daysV.setTextColor(days < 7 ? c(R.color.color_connecting) : c(R.color.color_connected));
-                        scheduleAutoDisconnectFromDays(days);
-                    } catch (Exception ignored) {}
-                }
+                if (!v.isEmpty()) userDays = v;
                 break;
             }
         }
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i].trim(); int idx = line.indexOf("user_hours=");
+            if (idx >= 0) { String v = line.substring(idx + "user_hours=".length()).trim(); if (!v.isEmpty()) userHours = v; break; }
+        }
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i].trim(); int idx = line.indexOf("user_minutes=");
+            if (idx >= 0) { String v = line.substring(idx + "user_minutes=".length()).trim(); if (!v.isEmpty()) userMinutes = v; break; }
+        }
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i].trim(); int idx = line.indexOf("user_expires=");
+            if (idx >= 0) { String v = line.substring(idx + "user_expires=".length()).trim(); if (!v.isEmpty()) userExpires = v; break; }
+        }
+        if (userName != null && usrNmWV != null) usrNmWV.setText("Usuario: " + userName);
+        updateExpiryUi(userDays, userHours, userMinutes, userExpires);
         for (int i = lines.length - 1; i >= 0; i--) {
             String line = lines[i].trim(); int idx = line.indexOf("ping_ms=");
             if (idx >= 0) {
@@ -1150,6 +1166,70 @@ public class SimpleModeActivity extends ComponentActivity {
                 break;
             }
         }
+    }
+
+    private void updateExpiryUi(String days, String hours, String minutes, String expiresRaw) {
+        if (daysV == null) return;
+        boolean hasAny = (days != null) || (hours != null) || (minutes != null) || (expiresRaw != null);
+        if (!hasAny && expAtMs <= 0) return;
+
+        if (expiresRaw != null) {
+            long parsed = parseExpiryMillis(expiresRaw);
+            if (parsed > 0) {
+                expAtMs = parsed;
+                expRaw = expiresRaw;
+                getSharedPreferences(PREF_UI, MODE_PRIVATE).edit()
+                    .putLong(KEY_EXP_AT_MS, expAtMs)
+                    .putString(KEY_EXP_RAW, expRaw)
+                    .apply();
+            }
+        }
+
+        long remMs = expAtMs > 0 ? (expAtMs - System.currentTimeMillis()) : -1L;
+        if (remMs <= 0 && expAtMs > 0) {
+            scheduleAutoDisconnectInMillis(0);
+            daysV.setText("0 días 0 h 0 min\nExpira: " + (expRaw.isEmpty() ? "--" : expRaw));
+            daysV.setTextColor(c(R.color.color_connecting));
+            return;
+        }
+
+        int d = safeToInt(days), hVal = safeToInt(hours), mVal = safeToInt(minutes);
+        if (remMs > 0) {
+            long totalMin = remMs / 60000L;
+            d = (int) (totalMin / (24L * 60L));
+            hVal = (int) ((totalMin / 60L) % 24L);
+            mVal = (int) (totalMin % 60L);
+            scheduleAutoDisconnectInMillis(remMs);
+        } else if (d >= 0) {
+            long totalMin = (long) d * 24L * 60L + Math.max(0, hVal) * 60L + Math.max(0, mVal);
+            scheduleAutoDisconnectInMillis(totalMin * 60000L);
+        }
+
+        String expiresTxt = (expiresRaw != null && !expiresRaw.isEmpty()) ? expiresRaw : (expRaw.isEmpty() ? "--" : expRaw);
+        daysV.setText(Math.max(0, d) + " días " + Math.max(0, hVal) + " h " + Math.max(0, mVal) + " min\nExpira: " + expiresTxt);
+        daysV.setTextColor(Math.max(0, d) < 7 ? c(R.color.color_connecting) : c(R.color.color_connected));
+    }
+
+    private int safeToInt(String v) {
+        if (v == null || v.isEmpty()) return -1;
+        try { return Integer.parseInt(v.replaceAll("[^0-9-]", "")); } catch (Exception ignored) { return -1; }
+    }
+
+    private long parseExpiryMillis(String raw) {
+        try {
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US);
+            Date dt = sdf.parse(raw.trim());
+            return dt != null ? dt.getTime() : -1L;
+        } catch (Exception ignored) { return -1L; }
+    }
+
+    private void clearPersistedExpiry() {
+        expAtMs = -1L;
+        expRaw = "";
+        getSharedPreferences(PREF_UI, MODE_PRIVATE).edit()
+            .remove(KEY_EXP_AT_MS)
+            .remove(KEY_EXP_RAW)
+            .apply();
     }
 
     private void animatePingTo(int targetPing) {
@@ -1179,9 +1259,12 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void scheduleAutoDisconnectFromDays(int days) {
+        scheduleAutoDisconnectInMillis(days * 24L * 60L * 60L * 1000L);
+    }
+
+    private void scheduleAutoDisconnectInMillis(long delay) {
         h.removeCallbacks(autoDisconnectRunnable);
-        if (days <= 0) { runAutoDisconnect(); return; }
-        long delay = days * 24L * 60L * 60L * 1000L;
+        if (delay <= 0) { runAutoDisconnect(); return; }
         autoDcMs = SystemClock.elapsedRealtime() + delay;
         h.postDelayed(autoDisconnectRunnable, delay);
     }
