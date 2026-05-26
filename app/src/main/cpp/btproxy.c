@@ -35,6 +35,8 @@
 #define T_CLOSE 0x03
 #define T_PING  0x04
 #define T_PONG  0x05
+#define T_KICK  0x06
+#define T_EXPIRED 0x07
 
 #define FRAME_HDR              7
 #define MAX_PAYLOAD            16384
@@ -539,7 +541,13 @@ static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host
     int code_count = parse_http_codes(h2, hlen > 0 ? hlen : 0, codes, 8);
     if (code_count >= 3) code = codes[2]; else if (code_count > 0) code = codes[code_count - 1];
     if (hlen < 0 || code != 101) {
-        if (code == 403 || code == 401 || code == 410) { atomic_store(&g_af, 1); pl("E", "stage=auth_rejected"); }
+        if (code == 403 || code == 401 || code == 410) {
+            char reason[64] = {0};
+            parse_hdr(h2, "X-Disconnect-Reason:", reason, sizeof(reason));
+            atomic_store(&g_af, 1);
+            pl("E", "stage=auth_rejected");
+            if (reason[0]) pl("E", "disconnect_reason=%s", reason);
+        }
         pl("E", "handshake failed code=%d", code);
         return -1;
     }
@@ -723,6 +731,24 @@ static void *tunnel_reader(void *arg) {
             }
             break;
         }
+        case T_KICK:
+            if (sid == 0) {
+                pl("E", "disconnect_reason=kick");
+                pl("E", "stage=manual_reconnect_required");
+                if (atomic_load(&g_te) == epoch) {
+                    uint8_t b = 1; write(wake_w, &b, 1);
+                }
+            }
+            break;
+        case T_EXPIRED:
+            if (sid == 0) {
+                pl("E", "disconnect_reason=expired");
+                pl("E", "stage=auth_rejected");
+                if (atomic_load(&g_te) == epoch) {
+                    uint8_t b = 1; write(wake_w, &b, 1);
+                }
+            }
+            break;
         }
     }
     return NULL;

@@ -544,4 +544,46 @@
             android:textColor="@color/color_text_primary"
             android:textStyle="bold" />
     </LinearLayout>
+    <FrameLayout
+        android:id="@+id/disconnectOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#D9111622"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone">
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:layout_margin="24dp"
+            android:background="@drawable/strike_chip_left"
+            android:orientation="vertical"
+            android:padding="24dp">
+            <TextView
+                android:id="@+id/txtOverlayTitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:textColor="@color/color_disconnected"
+                android:textSize="28sp"
+                android:textStyle="bold" />
+            <TextView
+                android:id="@+id/txtOverlayMessage"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:gravity="center"
+                android:textColor="@color/color_text_primary"
+                android:textSize="17sp" />
+            <Button
+                android:id="@+id/btnOverlayClose"
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:layout_marginTop="18dp"
+                android:background="@drawable/strike_btn_secondary"
+                android:text="@string/overlay_close"
+                android:textAllCaps="false" />
+        </LinearLayout>
+    </FrameLayout>
 </FrameLayout>
