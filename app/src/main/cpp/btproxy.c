@@ -54,11 +54,7 @@
 #define PROXY_PORT  80
 #define TUNNEL_HOST "dif2pyjxd7k7p.cloudfront.net"
 
-static const char *PROXY_IPS[] = {
-    "2606:4700::6812:16b7",
-    "2606:4700::6812:17b7",
-};
-#define PROXY_IP_COUNT 2
+#define CONNECT_TIMEOUT_MS 8000
 
 static volatile int    g_r      = 0;
 static int             g_rf     = -1;
@@ -450,10 +446,11 @@ static void parse_hdr(const char *hdrs, const char *key, char *out, size_t out_c
 }
 
 static int try_connect_ip(const char *ip, int timeout_ms) {
-    struct sockaddr_in6 a = {0};
-    a.sin6_family = AF_INET6; a.sin6_port = htons(PROXY_PORT);
-    if (inet_pton(AF_INET6, ip, &a.sin6_addr) != 1) return -1;
-    int fd = socket(AF_INET6, SOCK_STREAM, 0);
+    struct sockaddr_in a = {0};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(PROXY_PORT);
+    if (inet_pton(AF_INET, ip, &a.sin_addr) != 1) return -1;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
     protect_fd(fd);
     int one = 1;
@@ -470,12 +467,13 @@ static int try_connect_ip(const char *ip, int timeout_ms) {
     fcntl(fd, F_SETFD, FD_CLOEXEC);
     int r = connect(fd, (struct sockaddr *)&a, sizeof(a));
     if (r == 0) { fcntl(fd, F_SETFL, fl); return fd; }
-    if (errno != EINPROGRESS) { close(fd); return -1; }
+    if (errno != EINPROGRESS) { pl("W", "connect immediate fail ip=%s errno=%d", ip, errno); close(fd); return -1; }
     struct pollfd p = {fd, POLLOUT, 0};
-    if (poll(&p, 1, timeout_ms) <= 0) { close(fd); return -1; }
+    int pr = poll(&p, 1, timeout_ms);
+    if (pr <= 0) { pl("W", "connect timeout ip=%s ms=%d", ip, timeout_ms); close(fd); return -1; }
     int e = 0; socklen_t el = sizeof(e);
     if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) < 0 || e != 0)
-        { close(fd); return -1; }
+        { pl("W", "connect so_error ip=%s err=%d", ip, e); close(fd); return -1; }
     fcntl(fd, F_SETFL, fl);
     return fd;
 }
@@ -485,33 +483,27 @@ static int open_tunnel(void) {
     pl("I", "conectando...");
 
     int fd = -1;
-    for (int i = 0; i < PROXY_IP_COUNT && fd < 0; i++) {
-        pl("I", "proxy intento=proxy_%d", i + 1);
-        fd = try_connect_ip(PROXY_IPS[i], 300);
-    }
-
-    if (fd < 0) {
-        pl("W", "stage=proxy_static_failed");
-        pl("I", "IPs estaticas fallaron, resolviendo %s", PROXY_HOST);
-        struct addrinfo hints = {0}, *res = NULL, *cur;
-        hints.ai_family   = AF_INET6;
-        hints.ai_socktype = SOCK_STREAM;
-        char port_str[8];
-        snprintf(port_str, sizeof(port_str), "%d", PROXY_PORT);
-        if (getaddrinfo(PROXY_HOST, port_str, &hints, &res) == 0) {
-            int dns_try = 0;
-            for (cur = res; cur && fd < 0; cur = cur->ai_next) {
-                dns_try++;
-                char ipbuf[INET6_ADDRSTRLEN] = {0};
-                struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)cur->ai_addr;
-                inet_ntop(AF_INET6, &a6->sin6_addr, ipbuf, sizeof(ipbuf));
-                pl("I", "proxy intento=dns_%d", dns_try);
-                fd = try_connect_ip(ipbuf, 300);
-            }
-            freeaddrinfo(res);
-        } else {
-            pl("E", "getaddrinfo fallo");
+    pl("I", "resolviendo host=%s family=AF_INET", PROXY_HOST);
+    struct addrinfo hints = {0}, *res = NULL, *cur;
+    hints.ai_family   = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    char port_str[8];
+    snprintf(port_str, sizeof(port_str), "%d", PROXY_PORT);
+    int gai = getaddrinfo(PROXY_HOST, port_str, &hints, &res);
+    if (gai == 0) {
+        int dns_try = 0;
+        for (cur = res; cur && fd < 0; cur = cur->ai_next) {
+            dns_try++;
+            char ipbuf[INET_ADDRSTRLEN] = {0};
+            struct sockaddr_in *a4 = (struct sockaddr_in *)cur->ai_addr;
+            inet_ntop(AF_INET, &a4->sin_addr, ipbuf, sizeof(ipbuf));
+            pl("I", "proxy intento=dns_%d ip=%s port=%d timeout_ms=%d",
+               dns_try, ipbuf, PROXY_PORT, CONNECT_TIMEOUT_MS);
+            fd = try_connect_ip(ipbuf, CONNECT_TIMEOUT_MS);
         }
+        freeaddrinfo(res);
+    } else {
+        pl("E", "getaddrinfo fallo host=%s code=%d", PROXY_HOST, gai);
     }
 
     if (fd < 0) { pl("E", "stage=proxy_connect_failed"); pl("E", "connect failed"); return -1; }
@@ -519,6 +511,7 @@ static int open_tunnel(void) {
     char buf[8192];
     snprintf(buf, sizeof(buf), "HEAD http://%s HTTP/1.1\r\nHost: %s\r\n\r\n",
              PROXY_HOST, PROXY_HOST);
+    pl("I", "tx block1 method=HEAD host=%s", PROXY_HOST);
     send(fd, buf, strlen(buf), MSG_NOSIGNAL);
     pl("I", "stage=proxy_connected");
     if (recv_eoh(fd, buf, sizeof(buf), HANDSHAKE_TIMEOUT_SEC) < 0) {
@@ -538,12 +531,15 @@ static int open_tunnel(void) {
         "X-Internal-ID: %s\r\n\r\n",
         PROXY_HOST, PROXY_HOST, TUNNEL_HOST, TUNNEL_HOST, g_i[0] ? g_i : "unknown");
     pl("I", "stage=server_auth_request");
+    pl("I", "tx block2 host_proxy=%s host_tunnel=%s iid=%s",
+       PROXY_HOST, TUNNEL_HOST, g_i[0] ? g_i : "unknown");
     send(fd, req, strlen(req), MSG_NOSIGNAL);
 
     usleep(800000);
     char h2[16384];
     memset(h2, 0, sizeof(h2));
     int hlen = recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
+    pl("I", "rx block2 bytes=%d", hlen);
     int code = -1, codes[8] = {0};
     int code_count = parse_http_codes(h2, hlen > 0 ? hlen : 0, codes, 8);
     if (code_count >= 3) code = codes[2];
