@@ -1188,7 +1188,7 @@ public class SimpleModeActivity extends ComponentActivity {
         long remMs = expAtMs > 0 ? (expAtMs - System.currentTimeMillis()) : -1L;
         if (remMs <= 0 && expAtMs > 0) {
             scheduleAutoDisconnectInMillis(0);
-            daysV.setText("0 días 0 h 0 min\nExpira: " + (expRaw.isEmpty() ? "--" : expRaw));
+            daysV.setText("0 días 0 h 0 min");
             daysV.setTextColor(c(R.color.color_connecting));
             return;
         }
@@ -1205,8 +1205,7 @@ public class SimpleModeActivity extends ComponentActivity {
             scheduleAutoDisconnectInMillis(totalMin * 60000L);
         }
 
-        String expiresTxt = (expiresRaw != null && !expiresRaw.isEmpty()) ? expiresRaw : (expRaw.isEmpty() ? "--" : expRaw);
-        daysV.setText(Math.max(0, d) + " días " + Math.max(0, hVal) + " h " + Math.max(0, mVal) + " min\nExpira: " + expiresTxt);
+        daysV.setText(Math.max(0, d) + " días " + Math.max(0, hVal) + " h " + Math.max(0, mVal) + " min");
         daysV.setTextColor(Math.max(0, d) < 7 ? c(R.color.color_connecting) : c(R.color.color_connected));
     }
 

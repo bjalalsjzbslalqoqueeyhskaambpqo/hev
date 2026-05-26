@@ -269,14 +269,21 @@
                         android:alpha="0.7" />
                     <TextView
                         android:id="@+id/txtDays"
-                        android:layout_width="wrap_content"
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="4dp"
+                        android:gravity="center"
+                        android:textAlignment="center"
                         android:text="--"
                         android:textColor="@color/color_connected"
-                        android:textSize="16sp"
+                        android:textSize="15sp"
                         android:textStyle="bold"
-                        android:maxLines="1"
+                        android:maxLines="2"
+                        android:ellipsize="end"
+                        android:autoSizeTextType="uniform"
+                        android:autoSizeMinTextSize="11sp"
+                        android:autoSizeMaxTextSize="15sp"
+                        android:autoSizeStepGranularity="1sp"
                         android:includeFontPadding="false" />
                 </LinearLayout>
             </LinearLayout>
