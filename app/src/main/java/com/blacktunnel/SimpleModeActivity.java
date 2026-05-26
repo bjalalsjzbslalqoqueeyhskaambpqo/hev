@@ -112,6 +112,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private View          frPn;
     private View          dcOv;
     private TextView      dcOvTitle;
+    private TextView      dcOvBadge;
     private TextView      dcOvMsg;
     private Button        dcOvClose;
     private TextView      frIdV;
@@ -260,6 +261,7 @@ public class SimpleModeActivity extends ComponentActivity {
         frPn              = findViewById(R.id.panelFirstRun);
         dcOv              = findViewById(R.id.disconnectOverlay);
         dcOvTitle         = findViewById(R.id.txtOverlayTitle);
+        dcOvBadge         = findViewById(R.id.txtOverlayBadge);
         dcOvMsg           = findViewById(R.id.txtOverlayMessage);
         dcOvClose         = findViewById(R.id.btnOverlayClose);
         frIdV             = findViewById(R.id.txtFirstRunId);
@@ -340,6 +342,13 @@ public class SimpleModeActivity extends ComponentActivity {
 
     private void showDisconnectOverlay(String title, String message, int titleColor) {
         if (dcOv == null || dcOvTitle == null || dcOvMsg == null) return;
+        if (dcOvBadge != null) {
+            String badge = "BLOQUEO DE CONEXIÓN";
+            if (title.contains("EXPIRADO")) badge = "ACCESO EXPIRADO";
+            else if (title.contains("NO REGISTRADO")) badge = "USUARIO NO HABILITADO";
+            else if (title.contains("SESIÓN")) badge = "SESIÓN FINALIZADA";
+            dcOvBadge.setText(badge);
+        }
         dcOvTitle.setText(title);
         dcOvTitle.setTextColor(titleColor);
         dcOvMsg.setText(message);
