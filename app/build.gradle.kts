@@ -5,37 +5,44 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// --- Seller code ---
 val sellerCodeFile = rootProject.file("SELLER_CODE.txt")
 val sellerCodeRaw = if (sellerCodeFile.exists()) sellerCodeFile.readText().trim() else "DEMO-CODE"
 val sellerCodeEscaped = sellerCodeRaw.replace("\\", "\\\\").replace("\"", "\\\"")
 
+// --- Panel config ---
 val panelConfigFile = rootProject.file("PANEL_CONFIG.txt")
 val panelConfigRaw = if (panelConfigFile.exists()) panelConfigFile.readText().trim() else ""
-val (baseUrlRaw, tokenRaw) = if (panelConfigRaw.isBlank()) {
-    "" to ""
-} else {
-    val parts = panelConfigRaw.lines()
-        .firstOrNull { it.trim().isNotEmpty() }
-        ?.trim()
-        ?.split(Regex("\\s+"), limit = 2)
-        ?: emptyList()
 
+val baseUrlRaw: String
+val tokenRaw: String
+
+if (panelConfigRaw.isBlank()) {
+    baseUrlRaw = ""
+    tokenRaw = ""
+} else {
+    val firstLine = panelConfigRaw.lines().firstOrNull { it.trim().isNotEmpty() }?.trim() ?: ""
+    val parts = firstLine.split(Regex("\\s+"), limit = 2)
     if (parts.size < 2) {
         throw GradleException("PANEL_CONFIG.txt debe tener: <BASE_URL> <TOKEN>")
     }
-    parts[0] to parts[1]
+    baseUrlRaw = parts[0]
+    tokenRaw = parts[1]
 }
 
 val baseUrlEscaped = baseUrlRaw.replace("\\", "\\\\").replace("\"", "\\\"")
 val tokenEscaped = tokenRaw.replace("\\", "\\\\").replace("\"", "\\\"")
 val hasInjectedConfig = baseUrlRaw.isNotBlank() && tokenRaw.isNotBlank()
 
-
+// --- Signing ---
 val signingStoreFile = System.getenv("SIGNING_STORE_FILE")
 val signingStorePassword = System.getenv("SIGNING_STORE_PASSWORD")
 val signingKeyAlias = System.getenv("SIGNING_KEY_ALIAS")
 val signingKeyPassword = System.getenv("SIGNING_KEY_PASSWORD")
-val hasReleaseSigning = !signingStoreFile.isNullOrBlank() && !signingStorePassword.isNullOrBlank() && !signingKeyAlias.isNullOrBlank() && !signingKeyPassword.isNullOrBlank()
+val hasReleaseSigning = !signingStoreFile.isNullOrBlank() &&
+    !signingStorePassword.isNullOrBlank() &&
+    !signingKeyAlias.isNullOrBlank() &&
+    !signingKeyPassword.isNullOrBlank()
 
 android {
     namespace = "com.blacktunnel.panel"
@@ -52,7 +59,6 @@ android {
         buildConfigField("String", "INJECTED_BASE_URL", "\"$baseUrlEscaped\"")
         buildConfigField("String", "INJECTED_TOKEN", "\"$tokenEscaped\"")
         buildConfigField("boolean", "HAS_INJECTED_CONFIG", hasInjectedConfig.toString())
-
     }
 
     signingConfigs {
