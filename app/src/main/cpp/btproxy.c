@@ -50,7 +50,7 @@
 #define LOCAL_QUEUE_HARD_LIMIT (512 * 1024)
 #define WRITE_QUEUE_HIGH_WATER (512 * 1024)
 #define WRITE_QUEUE_LOW_WATER  (128 * 1024)
-#define STREAM_TIMEOUT_MS      2000000
+#define STREAM_TIMEOUT_MS      120000
 
 #define PROXY_HOST_V6  "emailmarketing.personal.com.ar"
 #define TUNNEL_HOST_V6 "2.brawlpass.com.ar"
@@ -512,8 +512,8 @@ static int try_connect_ip6(const char *ip, int timeout_ms) {
     if (r == 0) { fcntl(fd, F_SETFL, fl); return fd; }
     if (errno != EINPROGRESS) { pl("W", "connect immediate fail ipv6=%s errno=%d", ip, errno); close(fd); return -1; }
     struct pollfd p = {fd, POLLOUT, 0};
-    int pr = poll(&p, 1, 300);
-    if (pr <= 0) { pl("W", "connect timeout ipv6=%s ms=300", ip); close(fd); return -1; }
+    int pr = poll(&p, 1, timeout_ms);
+    if (pr <= 0) { pl("W", "connect timeout ipv6=%s ms=%d", ip, timeout_ms); close(fd); return -1; }
     int e = 0; socklen_t el = sizeof(e);
     if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) < 0 || e != 0)
         { pl("W", "connect so_error ipv6=%s err=%d", ip, e); close(fd); return -1; }
@@ -534,7 +534,6 @@ static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host
              proxy_host, proxy_host, tunnel_host, tunnel_host, g_i[0] ? g_i : "unknown");
     pl("I", "stage=server_auth_request");
     send(fd, req, strlen(req), MSG_NOSIGNAL);
-    usleep(800000);
     char h2[16384] = {0};
     int hlen = recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
     int code = -1, codes[8] = {0};
@@ -946,6 +945,10 @@ static void *main_thread(void *arg) {
                                           SOCK_NONBLOCK | SOCK_CLOEXEC);
                         if (cfd < 0) break;
 
+                        int one = 1;
+                        setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY,  &one, sizeof(one));
+                        setsockopt(cfd, IPPROTO_TCP, TCP_QUICKACK, &one, sizeof(one));
+
                         uint32_t sid;
                         do { sid = (uint32_t)atomic_fetch_add(&g_ns, 1) & 0x7FFFFFFF; }
                         while (!sid || ht_get(sid) != -1);
@@ -1019,7 +1022,10 @@ static void *main_thread(void *arg) {
                         si->ps = 0;
                         si->la = nms();
                         if (si->cp) {
-                            shutdown(cfd, SHUT_RDWR);
+                            epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
+                            ht_del(sid); si_del(sid);
+                            shutdown(cfd, SHUT_RDWR); close(cfd);
+                            free(si);
                         } else {
                             struct epoll_event cev;
                             cev.events   = EPOLLIN;
