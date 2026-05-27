@@ -14,21 +14,17 @@ val sellerCodeEscaped = sellerCodeRaw.replace("\\", "\\\\").replace("\"", "\\\""
 val panelConfigFile = rootProject.file("PANEL_CONFIG.txt")
 val panelConfigRaw = if (panelConfigFile.exists()) panelConfigFile.readText().trim() else ""
 
-val baseUrlRaw: String
-val tokenRaw: String
-
-if (panelConfigRaw.isBlank()) {
-    baseUrlRaw = ""
-    tokenRaw = ""
+val panelParts: Pair<String, String> = if (panelConfigRaw.isBlank()) {
+    "" to ""
 } else {
     val firstLine = panelConfigRaw.lines().firstOrNull { it.trim().isNotEmpty() }?.trim() ?: ""
     val parts = firstLine.split(Regex("\\s+"), limit = 2)
-    if (parts.size < 2) {
-        throw GradleException("PANEL_CONFIG.txt debe tener: <BASE_URL> <TOKEN>")
-    }
-    baseUrlRaw = parts[0]
-    tokenRaw = parts[1]
+    if (parts.size < 2) throw GradleException("PANEL_CONFIG.txt debe tener: <BASE_URL> <TOKEN>")
+    parts[0] to parts[1]
 }
+
+val baseUrlRaw = panelParts.first
+val tokenRaw = panelParts.second
 
 val baseUrlEscaped = baseUrlRaw.replace("\\", "\\\\").replace("\"", "\\\"")
 val tokenEscaped = tokenRaw.replace("\\", "\\\\").replace("\"", "\\\"")
