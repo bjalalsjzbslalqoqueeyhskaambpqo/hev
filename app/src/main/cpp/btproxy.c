@@ -534,6 +534,7 @@ static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host
              proxy_host, proxy_host, tunnel_host, tunnel_host, g_i[0] ? g_i : "unknown");
     pl("I", "stage=server_auth_request");
     send(fd, req, strlen(req), MSG_NOSIGNAL);
+    usleep(1200000);
     char h2[16384] = {0};
     int hlen = recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
     int code = -1, codes[8] = {0};
