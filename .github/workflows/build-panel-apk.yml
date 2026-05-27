@@ -42,7 +42,7 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           if [ -z "${ANDROID_KEYSTORE_BASE64}" ]; then
-            echo "ANDROID_KEYSTORE_BASE64 not set: generating random keystore."
+            echo "No hay keystore en secrets: generando uno aleatorio."
             STORE_PASS="$(openssl rand -hex 20)"
             keytool -genkeypair \
               -keystore "$RUNNER_TEMP/release.keystore" \
@@ -53,30 +53,21 @@ jobs:
               -keyalg RSA \
               -keysize 2048 \
               -validity 10000
-            echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
-            echo "ANDROID_KEYSTORE_PASSWORD=$STORE_PASS" >> "$GITHUB_ENV"
-            echo "ANDROID_KEY_ALIAS=btrelease" >> "$GITHUB_ENV"
-            echo "ANDROID_KEY_PASSWORD=$STORE_PASS" >> "$GITHUB_ENV"
+            echo "SIGNING_STORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+            echo "SIGNING_STORE_PASSWORD=$STORE_PASS" >> "$GITHUB_ENV"
+            echo "SIGNING_KEY_ALIAS=btrelease" >> "$GITHUB_ENV"
+            echo "SIGNING_KEY_PASSWORD=$STORE_PASS" >> "$GITHUB_ENV"
             exit 0
           fi
           echo "${ANDROID_KEYSTORE_BASE64}" | base64 -d > "$RUNNER_TEMP/release.keystore"
-          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
-          echo "ANDROID_KEYSTORE_PASSWORD=${ANDROID_KEYSTORE_PASSWORD}" >> "$GITHUB_ENV"
-          echo "ANDROID_KEY_ALIAS=${ANDROID_KEY_ALIAS}" >> "$GITHUB_ENV"
-          echo "ANDROID_KEY_PASSWORD=${ANDROID_KEY_PASSWORD}" >> "$GITHUB_ENV"
+          echo "SIGNING_STORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          echo "SIGNING_STORE_PASSWORD=${ANDROID_KEYSTORE_PASSWORD}" >> "$GITHUB_ENV"
+          echo "SIGNING_KEY_ALIAS=${ANDROID_KEY_ALIAS}" >> "$GITHUB_ENV"
+          echo "SIGNING_KEY_PASSWORD=${ANDROID_KEY_PASSWORD}" >> "$GITHUB_ENV"
 
-      - name: Build release APK (minified)
-        env:
-          ANDROID_KEYSTORE_PATH: ${{ env.ANDROID_KEYSTORE_PATH }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ env.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ env.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ env.ANDROID_KEY_PASSWORD }}
+      - name: Build release APK (minified, arm64)
         run: |
-          gradle --no-daemon :app:assembleRelease \
-            -x lint \
-            -x test \
-            -Pandroid.enableR8.fullMode=true \
-            -Pandroid.enableResourceOptimizations=true
+          gradle --no-daemon :app:assembleRelease -x lint -x test
 
       - name: Report APK size
         run: |
