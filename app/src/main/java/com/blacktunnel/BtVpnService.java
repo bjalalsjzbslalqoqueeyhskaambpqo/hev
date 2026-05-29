@@ -45,7 +45,7 @@ public class BtVpnService extends VpnService {
     private static volatile boolean sRunning = false;
     private static volatile boolean sStarting = false;
 
-    private static final long          HS_TO = 40000L;
+    private static final long          HS_TO = 70000L;
     private static final long          HEV_START_GRACE_MS = 900L;
     private static final int           HEV_PENDING = Integer.MIN_VALUE;
 

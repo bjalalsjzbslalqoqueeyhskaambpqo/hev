@@ -39,7 +39,7 @@
 #define PONG_TIMEOUT_SEC       120
 #define KEEPALIVE_INTERVAL_SEC 3
 #define CONNECT_TIMEOUT_SEC    15
-#define HANDSHAKE_TIMEOUT_SEC  4
+#define HANDSHAKE_TIMEOUT_SEC  8
 #define MAX_EPOLL_EVENTS       64
 
 #define LOCAL_QUEUE_HARD_LIMIT (512 * 1024)
@@ -50,11 +50,12 @@
 #define RETRY_RELAY_MS        2000
 #define RETRY_RESOURCE_MS     1000
 #define KEEPALIVE_TICK_MS     1000
-#define AUTH_RESPONSE_WAIT_MS 1200
+#define AUTH_RESPONSE_WAIT_MS 5000
 #define RESPONSIVE_SLICE_MS   50
 #define PROXY_EVENT_SETTLE_MS 100
-#define PROXY_IPV6_TIMEOUT_MS 2000
+#define PROXY_IPV6_TIMEOUT_MS 3500
 #define PROXY_FALLBACK_SETTLE_MS 100
+#define PROXY_OPEN_TIMEOUT_MS 45000
 
 #define PROXY_HOST_V6  "emailmarketing.personal.com.ar"
 #define TUNNEL_HOST_V6 "2.brawlpass.com.ar"
@@ -68,7 +69,7 @@ static const char *PROXY_IPS_V6[] = {
 };
 #define PROXY_IP_COUNT_V6 2
 
-#define CONNECT_TIMEOUT_MS 2000
+#define CONNECT_TIMEOUT_MS 6000
 
 static volatile int    g_r    = 0;
 static int             g_rf   = -1;
@@ -113,6 +114,23 @@ static int wait_fd_readable_ms(int fd, int total_ms) {
         struct pollfd p = {fd, POLLIN, 0};
         int pr = poll(&p, 1, step);
         if (pr > 0) return (p.revents & POLLIN) ? 1 : -1;
+        if (pr < 0 && errno != EINTR) return -1;
+        waited += step;
+    }
+    return g_r ? 0 : -1;
+}
+
+static int wait_fd_writable_ms(int fd, int total_ms) {
+    int waited = 0;
+    while (g_r && waited < total_ms) {
+        int step = total_ms - waited;
+        if (step > RESPONSIVE_SLICE_MS) step = RESPONSIVE_SLICE_MS;
+        struct pollfd p = {fd, POLLOUT, 0};
+        int pr = poll(&p, 1, step);
+        if (pr > 0) {
+            if (p.revents & POLLOUT) return 1;
+            if (p.revents & (POLLERR | POLLHUP | POLLNVAL)) return -1;
+        }
         if (pr < 0 && errno != EINTR) return -1;
         waited += step;
     }
@@ -543,8 +561,7 @@ static int try_connect_ip4(const char *ip, int timeout_ms) {
     int r = connect(fd, (struct sockaddr *)&a, sizeof(a));
     if (r == 0) { fcntl(fd, F_SETFL, fl); return fd; }
     if (errno != EINPROGRESS) { close(fd); return -1; }
-    struct pollfd p = {fd, POLLOUT, 0};
-    int pr = poll(&p, 1, timeout_ms);
+    int pr = wait_fd_writable_ms(fd, timeout_ms);
     if (pr <= 0) { close(fd); return -1; }
     int e = 0; socklen_t el = sizeof(e);
     if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) < 0 || e != 0) { close(fd); return -1; }
@@ -574,8 +591,7 @@ static int try_connect_ip6(const char *ip, int timeout_ms) {
     int r = connect(fd, (struct sockaddr *)&a, sizeof(a));
     if (r == 0) { fcntl(fd, F_SETFL, fl); return fd; }
     if (errno != EINPROGRESS) { close(fd); return -1; }
-    struct pollfd p = {fd, POLLOUT, 0};
-    int pr = poll(&p, 1, timeout_ms);
+    int pr = wait_fd_writable_ms(fd, timeout_ms);
     if (pr <= 0) { close(fd); return -1; }
     int e = 0; socklen_t el = sizeof(e);
     if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) < 0 || e != 0) { close(fd); return -1; }
@@ -637,28 +653,56 @@ static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host
     return 0;
 }
 
+static long nms(void);
+
+static int remaining_budget_ms(long deadline_ms, int cap_ms) {
+    long left = deadline_ms - nms();
+    if (left <= 0 || !g_r) return 0;
+    return left < cap_ms ? (int)left : cap_ms;
+}
+
+static int connect_and_handshake_ip4(const char *ip, long deadline_ms) {
+    int to = remaining_budget_ms(deadline_ms, CONNECT_TIMEOUT_MS);
+    if (to <= 0) return -1;
+    int fd = try_connect_ip4(ip, to);
+    if (fd < 0) return -1;
+    fire_event(EV_STAGE, "stage", "proxy_connected");
+    if (run_handshake(fd, PROXY_HOST_V4, TUNNEL_HOST_V4) == 0) {
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+        return fd;
+    }
+    close(fd);
+    return -1;
+}
+
+static int connect_and_handshake_ip6(const char *ip, long deadline_ms) {
+    int to = remaining_budget_ms(deadline_ms, PROXY_IPV6_TIMEOUT_MS);
+    if (to <= 0) return -1;
+    int fd = try_connect_ip6(ip, to);
+    if (fd < 0) return -1;
+    fire_event(EV_STAGE, "stage", "proxy_connected");
+    if (run_handshake(fd, PROXY_HOST_V6, TUNNEL_HOST_V6) == 0) {
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+        return fd;
+    }
+    close(fd);
+    return -1;
+}
+
 static int open_tunnel(void) {
+    long deadline = nms() + PROXY_OPEN_TIMEOUT_MS;
     fire_event(EV_STAGE, "stage", "proxy_connect_start");
     if (!wait_running_ms(PROXY_EVENT_SETTLE_MS)) return -1;
 
-    int fd = -1;
-    for (int i = 0; i < PROXY_IP_COUNT_V6 && fd < 0; i++) {
+    for (int i = 0; i < PROXY_IP_COUNT_V6 && g_r; i++) {
         fire_event(EV_STAGE, "stage", "proxy_ipv6_attempt");
-        fd = try_connect_ip6(PROXY_IPS_V6[i], PROXY_IPV6_TIMEOUT_MS);
-        if (fd < 0 && i + 1 < PROXY_IP_COUNT_V6) {
-            if (!wait_running_ms(PROXY_EVENT_SETTLE_MS)) return -1;
-        }
+        int fd = connect_and_handshake_ip6(PROXY_IPS_V6[i], deadline);
+        if (fd >= 0) return fd;
+        if (atomic_load(&g_af) || remaining_budget_ms(deadline, 1) <= 0) break;
+        if (i + 1 < PROXY_IP_COUNT_V6 && !wait_running_ms(PROXY_EVENT_SETTLE_MS)) return -1;
     }
 
-    if (fd >= 0) {
-        fire_event(EV_STAGE, "stage", "proxy_connected");
-        if (run_handshake(fd, PROXY_HOST_V6, TUNNEL_HOST_V6) == 0) {
-            fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-            return fd;
-        }
-        close(fd); fd = -1;
-    }
-
+    if (atomic_load(&g_af) || !g_r) return -1;
     fire_event(EV_STAGE, "stage", "proxy_ipv4_fallback");
     if (!wait_running_ms(PROXY_FALLBACK_SETTLE_MS)) return -1;
 
@@ -667,26 +711,21 @@ static int open_tunnel(void) {
     char port_str[8]; snprintf(port_str, sizeof(port_str), "%d", PROXY_PORT);
     int gai = getaddrinfo(PROXY_HOST_V4, port_str, &hints, &res);
     if (gai == 0) {
-        for (cur = res; cur && fd < 0; cur = cur->ai_next) {
+        for (cur = res; cur && g_r; cur = cur->ai_next) {
             char ipbuf[INET_ADDRSTRLEN] = {0};
             struct sockaddr_in *a4 = (struct sockaddr_in *)cur->ai_addr;
-            inet_ntop(AF_INET, &a4->sin_addr, ipbuf, sizeof(ipbuf));
-            fd = try_connect_ip4(ipbuf, CONNECT_TIMEOUT_MS);
+            if (!a4 || inet_ntop(AF_INET, &a4->sin_addr, ipbuf, sizeof(ipbuf)) == NULL) continue;
+            fire_event(EV_STAGE, "stage", "proxy_ipv4_attempt");
+            int fd = connect_and_handshake_ip4(ipbuf, deadline);
+            if (fd >= 0) { freeaddrinfo(res); return fd; }
+            if (atomic_load(&g_af) || remaining_budget_ms(deadline, 1) <= 0) break;
+            if (cur->ai_next && !wait_running_ms(PROXY_EVENT_SETTLE_MS)) break;
         }
         freeaddrinfo(res);
     }
 
-    if (fd < 0) {
-        fire_event(EV_STAGE, "stage", "proxy_connect_failed");
-        return -1;
-    }
-
-    fire_event(EV_STAGE, "stage", "proxy_connected");
-    if (run_handshake(fd, PROXY_HOST_V4, TUNNEL_HOST_V4) < 0) {
-        close(fd); return -1;
-    }
-    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-    return fd;
+    fire_event(EV_STAGE, "stage", "proxy_connect_failed");
+    return -1;
 }
 
 typedef struct { int tfd; int epoch; int epfd; int wake_w; } thr_t;
