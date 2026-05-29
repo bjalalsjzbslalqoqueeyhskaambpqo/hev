@@ -64,10 +64,35 @@ public class BtVpnService extends VpnService {
 
     public static boolean iRun() { return sRunning; }
 
+    public interface TunnelEventListener {
+        void onTunnelEvent(int type, String key, String value);
+    }
+
+    private static volatile TunnelEventListener sTunnelEventListener;
+
+    public static void setTunnelEventListener(TunnelEventListener listener) {
+        sTunnelEventListener = listener;
+    }
+
+    public static void clearTunnelEventListener(TunnelEventListener listener) {
+        if (sTunnelEventListener == listener) sTunnelEventListener = null;
+    }
+
     public void onTunnelEvent(int type, String key, String value) {
         String safeKey = key != null ? key : "";
         String safeValue = value != null ? value : "";
         updateHandshakeState(type, safeKey, safeValue);
+
+        TunnelEventListener listener = sTunnelEventListener;
+        if (listener != null) {
+            try {
+                listener.onTunnelEvent(type, safeKey, safeValue);
+                return;
+            } catch (Throwable t) {
+                log("E onTunnelEvent listener failed: " + t.getClass().getSimpleName() + ": " + t.getMessage());
+            }
+        }
+
         try {
             Intent intent = new Intent("com.blacktunnel.TUNNEL_EVENT");
             intent.setPackage(getPackageName());
@@ -184,12 +209,14 @@ public class BtVpnService extends VpnService {
         int    startResult = BtProxy.start(this, iid);
         if (startResult < 0) {
             log("E startAll: btproxy start failed");
+            onTunnelEvent(1, "stage", "proxy_connect_failed");
             stopForeground(STOP_FOREGROUND_REMOVE);
             return;
         }
 
         if (!waitForTunnelHandshake()) {
             log("E startAll: tunnel handshake timeout/failure");
+            onTunnelEvent(1, "stage", hsFailed ? "auth_rejected" : "proxy_connect_failed");
             BtProxy.stop();
             stopForeground(STOP_FOREGROUND_REMOVE);
             return;
@@ -199,6 +226,7 @@ public class BtVpnService extends VpnService {
 
         if (!startHevStack()) {
             log("E startAll: startHevStack failed, deshaciendo");
+            onTunnelEvent(1, "stage", "proxy_connect_failed");
             unregisterNet();
             BtProxy.stop();
             stopForeground(STOP_FOREGROUND_REMOVE);

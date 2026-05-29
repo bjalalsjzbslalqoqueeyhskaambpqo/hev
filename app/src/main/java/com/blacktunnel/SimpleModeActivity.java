@@ -150,6 +150,10 @@ public class SimpleModeActivity extends ComponentActivity {
     private ConnectivityManager connMgr;
     private ConnectivityManager.NetworkCallback netCb;
     private final Handler h = new Handler(Looper.getMainLooper());
+    private final BtVpnService.TunnelEventListener tunnelEventListener = (type, key, val) ->
+        h.post(() -> {
+            if (!isFinishing() && !isDestroyed()) handleTunnelEvent(type, key, val);
+        });
     private ActivityResultLauncher<Intent> vpnPermL;
 
     @Override
@@ -314,6 +318,7 @@ public class SimpleModeActivity extends ComponentActivity {
         rfGmUi();
         setupConnectivityMonitor();
         showFirstRunIfNeeded();
+        BtVpnService.setTunnelEventListener(tunnelEventListener);
         registerTunnelReceiver();
     }
 
@@ -592,6 +597,7 @@ public class SimpleModeActivity extends ComponentActivity {
 
     @Override
     protected void onDestroy() {
+        BtVpnService.clearTunnelEventListener(tunnelEventListener);
         if (tunnelReceiver != null) {
             try { unregisterReceiver(tunnelReceiver); } catch (Exception ignored) {}
         }
