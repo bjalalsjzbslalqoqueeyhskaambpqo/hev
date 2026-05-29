@@ -440,12 +440,9 @@ public class SimpleModeActivity extends ComponentActivity {
         lstConn = "failed";
         if (BtVpnService.iRun()) {
             setUiState(UiState.CONNECTING);
-        } else if (SystemClock.elapsedRealtime() - connMs >= CONNECTING_TIMEOUT_MS) {
-            setUiState(UiState.DISCONNECTED);
-        } else if (uS != UiState.CONNECTING) {
-            setUiState(UiState.CONNECTING);
         } else {
-            refreshConnectingDetail();
+            setUiState(UiState.DISCONNECTED);
+            Toast.makeText(this, "No se pudo conectar al túnel", Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -483,10 +480,31 @@ public class SimpleModeActivity extends ComponentActivity {
                         break;
 
                     case "relay_ready":
+                        lstConn = "relay_ready";
+                        hsOk = true;
+                        if (uS != UiState.CONNECTING) setUiState(UiState.CONNECTING);
+                        else refreshConnectingDetail();
+                        break;
+
+                    case "vpn_start":
+                        lstConn = "vpn_start";
+                        if (uS != UiState.CONNECTING) setUiState(UiState.CONNECTING);
+                        else refreshConnectingDetail();
+                        break;
+
+                    case "hev_started":
                         lstConn = "connected";
                         hsOk = true;
                         setUiState(UiState.CONNECTED);
                         updateHevFlowHint();
+                        break;
+
+                    case "hev_failed":
+                        lstConn = "hev_failed";
+                        apRt = false;
+                        if (BtVpnService.iRun()) stopVpn();
+                        else setUiState(UiState.DISCONNECTED);
+                        Toast.makeText(this, "No se pudo iniciar el motor VPN", Toast.LENGTH_SHORT).show();
                         break;
 
                     case "access_granted":
@@ -522,9 +540,6 @@ public class SimpleModeActivity extends ComponentActivity {
                         break;
 
                     case "proxy_connect_failed":
-                        handleConnectionFailureEvent();
-                        break;
-
                     case "proxy_no_response":
                         handleConnectionFailureEvent();
                         break;
@@ -1053,7 +1068,10 @@ public class SimpleModeActivity extends ComponentActivity {
         if      ("proxy_connect_start".equals(lstConn)) detail = "Conectando al proxy...";
         else if ("proxy_connected".equals(lstConn)) detail = "Proxy conectado";
         else if ("server_auth_request".equals(lstConn)) detail = "Solicitando acceso al servidor...";
-        else if ("access_granted".equals(lstConn)) detail = "Acceso concedido, cargando datos...";
+        else if ("access_granted".equals(lstConn)) detail = "Acceso concedido, preparando túnel...";
+        else if ("relay_ready".equals(lstConn)) detail = "Túnel listo, creando VPN...";
+        else if ("vpn_start".equals(lstConn)) detail = "Iniciando motor HEV...";
+        else if ("hev_failed".equals(lstConn)) detail = "No se pudo iniciar el motor VPN";
         else if ("auth_rejected".equals(lstConn)) {
             if ("not_registered".equals(lstDcReason)) detail = "Usuario no registrado";
             else if ("expired".equals(lstDcReason)) detail = "Usuario expirado";
@@ -1205,6 +1223,12 @@ public class SimpleModeActivity extends ComponentActivity {
                 if      ("retrying".equals(lstConn)) detail = getString(R.string.status_detail_connecting_search);
                 else if ("dropped".equals(lstConn))  detail = getString(R.string.status_detail_connecting_reconnect);
                 else if ("failed".equals(lstConn))   detail = getString(R.string.status_detail_connecting_retry);
+                else if ("proxy_connect_start".equals(lstConn)) detail = "Conectando al proxy...";
+                else if ("proxy_connected".equals(lstConn)) detail = "Proxy conectado";
+                else if ("server_auth_request".equals(lstConn)) detail = "Solicitando acceso al servidor...";
+                else if ("access_granted".equals(lstConn)) detail = "Acceso concedido, preparando túnel...";
+                else if ("relay_ready".equals(lstConn)) detail = "Túnel listo, creando VPN...";
+                else if ("vpn_start".equals(lstConn)) detail = "Iniciando motor HEV...";
                 else                                             detail = getString(R.string.status_detail_connecting_default);
                 lstDtl = detail;
                 stDtlsV.setVisibility(View.VISIBLE);

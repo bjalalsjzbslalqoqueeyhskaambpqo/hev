@@ -32,6 +32,8 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class BtVpnService extends VpnService {
 
@@ -49,6 +51,8 @@ public class BtVpnService extends VpnService {
     private static final int           L_MAX = 24000;
     private static final long          HS_TO = 12000L;
     private static final long          HS_POLL = 250L;
+    private static final long          HEV_START_GRACE_MS = 900L;
+    private static final int           HEV_PENDING = Integer.MIN_VALUE;
 
     private final ExecutorService ex = Executors.newSingleThreadExecutor();
 
@@ -206,11 +210,13 @@ public class BtVpnService extends VpnService {
         hsFailed = false;
 
         String iid  = BtProxy.gIid(this);
+        log("I startAll: iniciando túnel nativo btproxy");
         int    startResult = BtProxy.start(this, iid);
         if (startResult < 0) {
-            log("E startAll: btproxy start failed");
+            log("E startAll: btproxy start failed" +
+                (BtProxy.isNativeReady() ? "" : " (" + BtProxy.getNativeLoadError() + ")"));
             onTunnelEvent(1, "stage", "proxy_connect_failed");
-            stopForeground(STOP_FOREGROUND_REMOVE);
+            cleanupFailedStart();
             return;
         }
 
@@ -218,24 +224,36 @@ public class BtVpnService extends VpnService {
             log("E startAll: tunnel handshake timeout/failure");
             onTunnelEvent(1, "stage", hsFailed ? "auth_rejected" : "proxy_connect_failed");
             BtProxy.stop();
-            stopForeground(STOP_FOREGROUND_REMOVE);
+            cleanupFailedStart();
             return;
         }
 
         registerNet();
 
+        onTunnelEvent(1, "stage", "vpn_start");
         if (!startHevStack()) {
             log("E startAll: startHevStack failed, deshaciendo");
-            onTunnelEvent(1, "stage", "proxy_connect_failed");
+            onTunnelEvent(1, "stage", "hev_failed");
             unregisterNet();
             BtProxy.stop();
-            stopForeground(STOP_FOREGROUND_REMOVE);
+            cleanupFailedStart();
             return;
         }
 
         run  = true;
         sRunning = true;
+        onTunnelEvent(1, "stage", "hev_started");
         log("I startAll ok");
+    }
+
+    private void cleanupFailedStart() {
+        run = false;
+        sRunning = false;
+        hsReady = false;
+        stopHevStack();
+        cleanupSessionResources();
+        try { stopForeground(STOP_FOREGROUND_REMOVE); } catch (Throwable ignored) {}
+        try { stopSelf(); } catch (Throwable ignored) {}
     }
 
     private boolean waitForTunnelHandshake() {
@@ -299,7 +317,10 @@ public class BtVpnService extends VpnService {
         }
         hFd = dupFd;
 
-        startHevThread();
+        if (!startHevThread()) {
+            stopHevStack();
+            return false;
+        }
         return true;
     }
 
@@ -330,13 +351,53 @@ public class BtVpnService extends VpnService {
         }
     }
 
-    private void startHevThread() {
+    private boolean startHevThread() {
         hCfg = writeHevCfg();
+        if (hCfg == null || !hCfg.exists() || hCfg.length() == 0L) {
+            log("E startHevThread: configuración HEV inválida");
+            return false;
+        }
+
         final int  fd  = hFd;
         final File cfg = hCfg;
-        hTh = new Thread(() -> HevBridge.start(cfg.getAbsolutePath(), fd), "hev");
-        hTh.setDaemon(true);
-        hTh.start();
+        final CountDownLatch exitedEarly = new CountDownLatch(1);
+        final AtomicInteger result = new AtomicInteger(HEV_PENDING);
+
+        Thread thread = new Thread(() -> {
+            int rc = -1;
+            try {
+                log("I startHevThread: llamando HevBridge.start cfg=" + cfg.getAbsolutePath() + " fd=" + fd);
+                rc = HevBridge.start(cfg.getAbsolutePath(), fd);
+                log("W startHevThread: HevBridge.start terminó rc=" + rc);
+            } catch (Throwable t) {
+                log("E startHevThread: HevBridge.start falló: " +
+                    t.getClass().getSimpleName() + ": " + t.getMessage());
+            } finally {
+                result.set(rc);
+                exitedEarly.countDown();
+                if (!stop && hTh == Thread.currentThread()) {
+                    onTunnelEvent(1, "stage", "hev_failed");
+                }
+            }
+        }, "hev");
+        hTh = thread;
+        thread.setDaemon(true);
+        thread.start();
+
+        try {
+            if (exitedEarly.await(HEV_START_GRACE_MS, TimeUnit.MILLISECONDS)) {
+                log("E startHevThread: HEV terminó durante el arranque rc=" + result.get());
+                hTh = null;
+                return false;
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log("E startHevThread: espera interrumpida");
+            return false;
+        }
+
+        log("I startHevThread: HEV quedó ejecutándose");
+        return true;
     }
 
     private ParcelFileDescriptor buildTunInterface() {
@@ -484,7 +545,9 @@ public class BtVpnService extends VpnService {
         try (FileOutputStream o = new FileOutputStream(f, false)) {
             o.write(yml.getBytes(StandardCharsets.UTF_8));
             o.flush();
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            log("E writeHevCfg: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
         return f;
     }
 
