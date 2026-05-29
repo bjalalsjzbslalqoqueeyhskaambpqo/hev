@@ -46,6 +46,10 @@
 #define WRITE_QUEUE_HIGH_WATER (512 * 1024)
 #define WRITE_QUEUE_LOW_WATER  (128 * 1024)
 #define STREAM_TIMEOUT_MS      120000
+#define RETRY_FAST_MS          250
+#define RETRY_RESOURCE_MS      100
+#define KEEPALIVE_TICK_MS      250
+#define RESPONSIVE_SLICE_MS    50
 
 #define PROXY_HOST_V6  "emailmarketing.personal.com.ar"
 #define TUNNEL_HOST_V6 "2.brawlpass.com.ar"
@@ -84,6 +88,17 @@ static pthread_mutex_t g_m    = PTHREAD_MUTEX_INITIALIZER;
 #define EV_PING       2
 #define EV_USER_DATA  3
 #define EV_DISCONNECT 4
+
+static int wait_running_ms(int total_ms) {
+    int waited = 0;
+    while (g_r && waited < total_ms) {
+        int step = total_ms - waited;
+        if (step > RESPONSIVE_SLICE_MS) step = RESPONSIVE_SLICE_MS;
+        poll(NULL, 0, step);
+        waited += step;
+    }
+    return g_r;
+}
 
 static void fire_event(int type, const char *key, const char *val) {
     if (!g_r) return;
@@ -572,7 +587,6 @@ static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host
 
     fire_event(EV_STAGE, "stage", "server_auth_request");
     send(fd, req, strlen(req), MSG_NOSIGNAL);
-    usleep(1200000);
 
     char h2[16384] = {0};
     int hlen = recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
@@ -783,7 +797,7 @@ static void *keepalive(void *arg) {
 
     long last = time(NULL);
     while (g_r && atomic_load(&g_te) == epoch) {
-        sleep(1);
+        if (!wait_running_ms(KEEPALIVE_TICK_MS)) break;
         if (!g_r || atomic_load(&g_te) != epoch) break;
         long now = time(NULL);
         if (now - atomic_load(&g_lp) > PONG_TIMEOUT_SEC) {
@@ -853,25 +867,25 @@ static void *main_thread(void *arg) {
                 fire_event(EV_STAGE, "stage", "manual_reconnect_required");
                 break;
             }
-            sleep(3);
+            if (!wait_running_ms(RETRY_FAST_MS)) break;
             continue;
         }
 
         int rfd = make_relay_socket(port);
         if (rfd < 0) {
             fire_event(EV_STAGE, "stage", "proxy_connect_failed");
-            close(tfd); sleep(2); continue;
+            close(tfd); if (!wait_running_ms(RETRY_FAST_MS)) break; continue;
         }
 
         int wfds[2] = {-1, -1};
-        if (pipe(wfds) < 0) { close(rfd); close(tfd); sleep(1); continue; }
+        if (pipe(wfds) < 0) { close(rfd); close(tfd); if (!wait_running_ms(RETRY_RESOURCE_MS)) break; continue; }
         fcntl(wfds[0], F_SETFL, O_NONBLOCK); fcntl(wfds[1], F_SETFL, O_NONBLOCK);
         fcntl(wfds[0], F_SETFD, FD_CLOEXEC); fcntl(wfds[1], F_SETFD, FD_CLOEXEC);
 
         int epfd = epoll_create1(EPOLL_CLOEXEC);
         if (epfd < 0) {
             close(wfds[0]); close(wfds[1]); close(rfd); close(tfd);
-            sleep(1); continue;
+            if (!wait_running_ms(RETRY_RESOURCE_MS)) break; continue;
         }
 
         struct epoll_event ev;
@@ -896,7 +910,7 @@ static void *main_thread(void *arg) {
         if (!ta || !tb) {
             free(ta); free(tb);
             close(epfd); close(wfds[0]); close(wfds[1]); close(rfd); close(tfd);
-            sleep(1); continue;
+            if (!wait_running_ms(RETRY_RESOURCE_MS)) break; continue;
         }
         ta->tfd = tfd; ta->epoch = epoch; ta->epfd = epfd; ta->wake_w = wfds[1];
         tb->tfd = tfd; tb->epoch = epoch; tb->epfd = epfd; tb->wake_w = wfds[1];
@@ -1090,7 +1104,7 @@ static void *main_thread(void *arg) {
         shutdown(tfd, SHUT_RDWR); close(tfd);
         close(wfds[0]); close(wfds[1]);
 
-        if (g_r) sleep(3);
+        if (g_r && !wait_running_ms(RETRY_FAST_MS)) break;
     }
 
     return NULL;
