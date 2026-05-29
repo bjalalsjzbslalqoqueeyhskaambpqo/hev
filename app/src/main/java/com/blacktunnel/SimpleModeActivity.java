@@ -147,6 +147,14 @@ public class SimpleModeActivity extends ComponentActivity {
         pendRec = false;
         stVp();
     };
+    private final Runnable connectingTimeoutRunnable = () -> {
+        if (uS != UiState.CONNECTING) return;
+        if (SystemClock.elapsedRealtime() - connMs < CONNECTING_TIMEOUT_MS) return;
+        lstConn = "failed";
+        apRt = false;
+        if (BtVpnService.iRun()) stopVpn();
+        else setUiState(UiState.DISCONNECTED);
+    };
     private ConnectivityManager connMgr;
     private ConnectivityManager.NetworkCallback netCb;
     private final Handler h = new Handler(Looper.getMainLooper());
@@ -428,6 +436,20 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
 
+    private void handleConnectionFailureEvent() {
+        lstConn = "failed";
+        if (BtVpnService.iRun()) {
+            setUiState(UiState.CONNECTING);
+        } else if (SystemClock.elapsedRealtime() - connMs >= CONNECTING_TIMEOUT_MS) {
+            setUiState(UiState.DISCONNECTED);
+        } else if (uS != UiState.CONNECTING) {
+            setUiState(UiState.CONNECTING);
+        } else {
+            refreshConnectingDetail();
+        }
+    }
+
+
     private void registerTunnelReceiver() {
         tunnelReceiver = new BroadcastReceiver() {
             @Override
@@ -461,25 +483,24 @@ public class SimpleModeActivity extends ComponentActivity {
                         break;
 
                     case "relay_ready":
-                        if (hsOk || uS == UiState.CONNECTED) {
-                            updateHevFlowHint();
-                        } else {
-                            lstConn = val;
-                            if (uS != UiState.CONNECTING) setUiState(UiState.CONNECTING);
-                            else refreshConnectingDetail();
-                        }
-                        break;
-
-                    case "access_granted":
-                        hsOk   = true;
                         lstConn = "connected";
+                        hsOk = true;
                         setUiState(UiState.CONNECTED);
                         updateHevFlowHint();
                         break;
 
+                    case "access_granted":
+                        hsOk   = true;
+                        lstConn = "access_granted";
+                        if (uS != UiState.CONNECTING) setUiState(UiState.CONNECTING);
+                        else refreshConnectingDetail();
+                        break;
+
                     case "auth_rejected":
                         lstConn = "auth_rejected";
-                        refreshConnectingDetail();
+                        apRt = false;
+                        if (BtVpnService.iRun()) stopVpn();
+                        else setUiState(UiState.DISCONNECTED);
                         break;
 
                     case "manual_reconnect_required":
@@ -501,13 +522,11 @@ public class SimpleModeActivity extends ComponentActivity {
                         break;
 
                     case "proxy_connect_failed":
-                        lstConn = "failed";
-                        refreshConnectingDetail();
+                        handleConnectionFailureEvent();
                         break;
 
                     case "proxy_no_response":
-                        lstConn = "failed";
-                        refreshConnectingDetail();
+                        handleConnectionFailureEvent();
                         break;
                 }
                 break;
@@ -603,6 +622,7 @@ public class SimpleModeActivity extends ComponentActivity {
         }
         h.removeCallbacks(autoDisconnectRunnable);
         h.removeCallbacks(delayedReconnectRunnable);
+        h.removeCallbacks(connectingTimeoutRunnable);
         if (cBtn != null) cBtn.animate().cancel();
         if (stDtlsV != null) stDtlsV.animate().cancel();
         if (stBdV != null) stBdV.animate().cancel();
@@ -942,11 +962,14 @@ public class SimpleModeActivity extends ComponentActivity {
         if (hevRtV != null) hevRtV.setVisibility(View.GONE);
         if (thrV != null) thrV.setVisibility(View.GONE);
         setUiState(UiState.CONNECTING);
+        h.removeCallbacks(connectingTimeoutRunnable);
+        h.postDelayed(connectingTimeoutRunnable, CONNECTING_TIMEOUT_MS + 750L);
     }
 
     private void stopVpn() {
         pendRec = false;
         h.removeCallbacks(delayedReconnectRunnable);
+        h.removeCallbacks(connectingTimeoutRunnable);
         Intent i = new Intent(this, BtVpnService.class);
         i.setAction(BtVpnService.ACTION_STOP);
         startService(i);
@@ -1103,6 +1126,7 @@ public class SimpleModeActivity extends ComponentActivity {
         UiState prev         = uS;
         uS              = newState;
         boolean stateChanged = (prev != newState);
+        if (newState != UiState.CONNECTING) h.removeCallbacks(connectingTimeoutRunnable);
 
         int accentColor = resolveAccentColor();
 
