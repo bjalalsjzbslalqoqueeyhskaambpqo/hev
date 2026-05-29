@@ -4,5 +4,5 @@ project("blacktunnel")
 add_library(hev-jni SHARED hev_jni.cpp)
 add_library(btproxy SHARED btproxy.c)
 
-target_link_libraries(hev-jni android log)
-target_link_libraries(btproxy android log)
+target_link_libraries(hev-jni android)
+target_link_libraries(btproxy android)

@@ -21,10 +21,8 @@ import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -47,9 +45,6 @@ public class BtVpnService extends VpnService {
     private static volatile boolean sRunning = false;
     private static volatile boolean sStarting = false;
 
-    private static final Object        L_MU      = new Object();
-    private static final StringBuilder L_BUF          = new StringBuilder(8192);
-    private static final int           L_MAX = 24000;
     private static final long          HS_TO = 12000L;
     private static final long          HS_POLL = 250L;
     private static final long          HEV_START_GRACE_MS = 900L;
@@ -95,9 +90,7 @@ public class BtVpnService extends VpnService {
             try {
                 listener.onTunnelEvent(type, safeKey, safeValue);
                 return;
-            } catch (Throwable t) {
-                log("E onTunnelEvent listener failed: " + t.getClass().getSimpleName() + ": " + t.getMessage());
-            }
+            } catch (Throwable ignored) {}
         }
 
         try {
@@ -107,9 +100,7 @@ public class BtVpnService extends VpnService {
             intent.putExtra("key", safeKey);
             intent.putExtra("value", safeValue);
             sendBroadcast(intent);
-        } catch (Throwable t) {
-            log("E onTunnelEvent broadcast failed: " + t.getClass().getSimpleName() + ": " + t.getMessage());
-        }
+        } catch (Throwable ignored) {}
     }
 
     private void updateHandshakeState(int type, String key, String value) {
@@ -126,39 +117,15 @@ public class BtVpnService extends VpnService {
         }
     }
 
-    public static void log(String message) {
-        String line = "[" + new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date())
-                    + "] " + message + "\n";
-        synchronized (L_MU) {
-            L_BUF.append(line);
-            if (L_BUF.length() > L_MAX)
-                L_BUF.delete(0, L_BUF.length() - L_MAX);
-        }
-    }
-
-    public static String gLogs() {
-        synchronized (L_MU) {
-            return L_BUF.toString();
-        }
-    }
-
-    public static void cLogs() {
-        synchronized (L_MU) {
-            L_BUF.setLength(0);
-        }
-    }
-
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : null;
         ex.execute(() -> {
             try {
-                log("I onStartCommand action=" + (action != null ? action : "<null>"));
                 if (ACTION_STOP.equals(action)) stopAll();
                 else if (ACTION_APPLY.equals(action)) applyAll();
                 else startAll();
-            } catch (Throwable t) {
-                log("E onStartCommand task crash: " + t.getClass().getSimpleName() + ": " + t.getMessage());
+            } catch (Throwable ignored) {
                 run = false;
                 stop = false;
                 sRunning = false;
@@ -184,9 +151,7 @@ public class BtVpnService extends VpnService {
 
 
     private void applyAll() {
-        log("I applyAll: solicitada actualización de configuración");
         if (!run && !sRunning) {
-            log("I applyAll: servicio no corriendo, iniciando flujo completo");
             startAll();
             return;
         }
@@ -198,15 +163,12 @@ public class BtVpnService extends VpnService {
 
     private void startAll() {
         if (stop) {
-            log("W startAll: stop en progreso, reintentando breve");
             try { Thread.sleep(450); } catch (InterruptedException ignored) { return; }
             if (stop) {
-                log("W startAll: cancelado porque stop sigue en progreso");
                 return;
             }
         }
         if (run || sRunning || sStarting) {
-            log("I startAll: ya activo, ignorado run=" + run + " starting=" + sStarting + " running=" + sRunning);
             return;
         }
 
@@ -220,19 +182,15 @@ public class BtVpnService extends VpnService {
         hsFailed = false;
 
         String iid  = BtProxy.gIid(this);
-        log("I startAll: iniciando túnel nativo btproxy");
         onTunnelEvent(1, "stage", "native_start");
         int    startResult = BtProxy.start(this, iid);
         if (startResult < 0) {
-            log("E startAll: btproxy start failed" +
-                (BtProxy.isNativeReady() ? "" : " (" + BtProxy.getNativeLoadError() + ")"));
             cleanupFailedStart();
             onTunnelEvent(1, "stage", "proxy_connect_failed");
             return;
         }
 
         if (!waitForTunnelHandshake()) {
-            log("E startAll: tunnel handshake timeout/failure");
             String failStage = hsFailed ? "auth_rejected" : "proxy_connect_failed";
             BtProxy.stop();
             cleanupFailedStart();
@@ -244,7 +202,6 @@ public class BtVpnService extends VpnService {
 
         onTunnelEvent(1, "stage", "vpn_start");
         if (!startHevStack()) {
-            log("E startAll: startHevStack failed, deshaciendo");
             unregisterNet();
             BtProxy.stop();
             cleanupFailedStart();
@@ -256,7 +213,6 @@ public class BtVpnService extends VpnService {
         sRunning = true;
         sStarting = false;
         onTunnelEvent(1, "stage", "hev_started");
-        log("I startAll ok");
     }
 
     private void cleanupFailedStart() {
@@ -285,7 +241,6 @@ public class BtVpnService extends VpnService {
 
     private void stopAll() {
         if (!run && !sRunning && !sStarting) {
-            log("I stopAll: ya detenido, ignorado");
             return;
         }
         stop = true;
@@ -302,7 +257,6 @@ public class BtVpnService extends VpnService {
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
         stop = false;
-        log("I stopAll ok");
     }
 
     private void cleanupSessionResources() {
@@ -315,7 +269,6 @@ public class BtVpnService extends VpnService {
     private boolean startHevStack() {
         ParcelFileDescriptor pfd = buildTunInterface();
         if (pfd == null) {
-            log("E startHevStack: buildTunInterface failed");
             return false;
         }
         tun = pfd;
@@ -323,8 +276,7 @@ public class BtVpnService extends VpnService {
         int dupFd;
         try {
             dupFd = ParcelFileDescriptor.dup(tun.getFileDescriptor()).detachFd();
-        } catch (Exception e) {
-            log("E startHevStack: dup failed: " + e.getMessage());
+        } catch (Exception ignored) {
             try { tun.close(); } catch (Exception ignored) {}
             tun   = null;
             hFd = -1;
@@ -347,7 +299,6 @@ public class BtVpnService extends VpnService {
         if (old != null) {
             try { old.join(3000); } catch (InterruptedException ignored) {}
             if (old.isAlive()) {
-                log("W stopHevStack: hev thread no terminó en 3s");
                 old.interrupt();
                 try { old.join(1000); } catch (InterruptedException ignored) {}
             }
@@ -369,7 +320,6 @@ public class BtVpnService extends VpnService {
     private boolean startHevThread() {
         hCfg = writeHevCfg();
         if (hCfg == null || !hCfg.exists() || hCfg.length() == 0L) {
-            log("E startHevThread: configuración HEV inválida");
             return false;
         }
 
@@ -381,12 +331,8 @@ public class BtVpnService extends VpnService {
         Thread thread = new Thread(() -> {
             int rc = -1;
             try {
-                log("I startHevThread: llamando HevBridge.start cfg=" + cfg.getAbsolutePath() + " fd=" + fd);
                 rc = HevBridge.start(cfg.getAbsolutePath(), fd);
-                log("W startHevThread: HevBridge.start terminó rc=" + rc);
-            } catch (Throwable t) {
-                log("E startHevThread: HevBridge.start falló: " +
-                    t.getClass().getSimpleName() + ": " + t.getMessage());
+            } catch (Throwable ignored) {
             } finally {
                 result.set(rc);
                 exitedEarly.countDown();
@@ -401,17 +347,14 @@ public class BtVpnService extends VpnService {
 
         try {
             if (exitedEarly.await(HEV_START_GRACE_MS, TimeUnit.MILLISECONDS)) {
-                log("E startHevThread: HEV terminó durante el arranque rc=" + result.get());
                 hTh = null;
                 return false;
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            log("E startHevThread: espera interrumpida");
             return false;
         }
 
-        log("I startHevThread: HEV quedó ejecutándose");
         return true;
     }
 
@@ -553,16 +496,12 @@ public class BtVpnService extends VpnService {
             "  read-write-timeout: 300000\n" +
             "  tcp-read-write-timeout: 3600000\n" +
             "  max-session-count: 4096\n" +
-            "  limit-nofile: 65535\n" +
-            "  log-file: stderr\n" +
-            "  log-level: warn\n";
+            "  limit-nofile: 65535\n";
         File f = new File(getFilesDir(), "hev.yml");
         try (FileOutputStream o = new FileOutputStream(f, false)) {
             o.write(yml.getBytes(StandardCharsets.UTF_8));
             o.flush();
-        } catch (Exception e) {
-            log("E writeHevCfg: " + e.getClass().getSimpleName() + ": " + e.getMessage());
-        }
+        } catch (Exception ignored) {}
         return f;
     }
 
@@ -600,34 +539,19 @@ final class BtProxy {
     private static final String KEY_GAMING_APPS = "gaming_selected_packages";
 
     private static final boolean NATIVE_READY;
-    private static final String  NATIVE_LOAD_ERROR;
 
     static {
         boolean ready = false;
-        String  error = "";
         try {
             System.loadLibrary("btproxy");
             ready = true;
-        } catch (Throwable t) {
-            error = t.getClass().getSimpleName() + ": " + t.getMessage();
-            android.util.Log.e("BtProxy", "No se pudo cargar btproxy", t);
-        }
-        NATIVE_READY      = ready;
-        NATIVE_LOAD_ERROR = error;
+        } catch (Throwable ignored) {}
+        NATIVE_READY = ready;
     }
 
-    static boolean isNativeReady()      { return NATIVE_READY; }
-    static String  getNativeLoadError() { return NATIVE_LOAD_ERROR; }
-
     static int start(VpnService svc, String id) {
-        if (!NATIVE_READY) {
-            BtVpnService.log("E BtProxy.start: librería nativa no disponible: " + NATIVE_LOAD_ERROR);
-            return -1;
-        }
-        BtVpnService.log("I BtProxy.start: llamando nativeStart port=" + SOCKS5_PORT + " id=" + id);
-        int rc = nativeStart(SOCKS5_PORT, svc, id);
-        BtVpnService.log("I BtProxy.start: nativeStart rc=" + rc);
-        return rc;
+        if (!NATIVE_READY) return -1;
+        return nativeStart(SOCKS5_PORT, svc, id);
     }
 
     static void stop() {
@@ -684,7 +608,7 @@ final class BtProxy {
             StringBuilder sb = new StringBuilder(d.length * 2);
             for (byte b : d) sb.append(String.format("%02x", b));
             return sb.toString();
-        } catch (Exception e) {
+        } catch (Exception ignored) {
             return Long.toHexString(System.currentTimeMillis()) +
                    Long.toHexString(System.nanoTime());
         }

@@ -84,14 +84,6 @@ public class SimpleModeActivity extends ComponentActivity {
     private View          stHlV;
     private View          stHmV;
     private TextView      stDtlsV;
-    private View          lgPn;
-    private TextView      lgLtV;
-    private TextView      lgFullV;
-    private View          lgExL;
-    private Button        lgTgB;
-    private Button        lgCpB;
-    private Button        lgClB;
-    private boolean       lgEx = false;
     private TextView      devIdV;
     private TextView      usrNmWV;
     private TextView      hevRtV;
@@ -247,19 +239,12 @@ public class SimpleModeActivity extends ComponentActivity {
         );
 
         cBtn              = findViewById(R.id.btnConnect);
-        cpBtn               = findViewById(R.id.btnCopyLogs);
+        cpBtn               = findViewById(R.id.btnCopyId);
         stBdV         = findViewById(R.id.txtStatusBadge);
         stDtV           = findViewById(R.id.viewStatusDot);
         stHlV          = findViewById(R.id.viewStatusHalo);
         stHmV       = findViewById(R.id.viewStatusHaloMid);
         stDtlsV       = findViewById(R.id.txtStatusDetails);
-        lgPn              = findViewById(R.id.panelConnLog);
-        lgLtV             = findViewById(R.id.txtConnLogLatest);
-        lgFullV           = findViewById(R.id.txtConnLogFull);
-        lgExL             = findViewById(R.id.layoutConnLogExpanded);
-        lgTgB             = findViewById(R.id.btnConnLogToggle);
-        lgCpB             = findViewById(R.id.btnConnLogCopy);
-        lgClB             = findViewById(R.id.btnConnLogClear);
         devIdV            = findViewById(R.id.txtDeviceId);
         daysV           = findViewById(R.id.txtDays);
         pngV           = findViewById(R.id.txtPingValue);
@@ -320,9 +305,6 @@ public class SimpleModeActivity extends ComponentActivity {
         if (frCpB != null) frCpB.setOnClickListener(v -> copyInternalIdToClipboard());
         if (frOkB != null) frOkB.setOnClickListener(v -> dismissFirstRun());
         if (dcOvClose != null) dcOvClose.setOnClickListener(v -> hideDisconnectOverlay());
-        if (lgTgB != null) lgTgB.setOnClickListener(v -> toggleConnLog());
-        if (lgCpB != null) lgCpB.setOnClickListener(v -> copyConnLog());
-        if (lgClB != null) lgClB.setOnClickListener(v -> clearConnLogView());
 
         if (gmSw != null) {
             gmSw.setChecked(BtProxy.iGm(this));
@@ -959,8 +941,6 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void stVp() {
-        BtVpnService.cLogs();
-        clearConnLogView();
         setUiState(UiState.CONNECTING);
         aSt = ""; lstConn = "";
         Intent prepare = VpnService.prepare(this);
@@ -969,7 +949,6 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void startVpn() {
-        BtVpnService.cLogs();
         Intent i = new Intent(this, BtVpnService.class);
         i.setAction(BtVpnService.ACTION_START);
         try {
@@ -1008,11 +987,8 @@ public class SimpleModeActivity extends ComponentActivity {
         Intent i = new Intent(this, BtVpnService.class);
         i.setAction(BtVpnService.ACTION_STOP);
         startService(i);
-        BtVpnService.cLogs();
         hsOk = false; lstConn = ""; lstDtl = ""; aSt = "";
         setUiState(UiState.DISCONNECTED);
-        clearConnLogView();
-        lgPn.setVisibility(View.GONE);
         lstPing = -1;
         if (pngV != null) {
             pngV.setText("--");
@@ -1062,26 +1038,6 @@ public class SimpleModeActivity extends ComponentActivity {
             if (gmBdV != null) gmBdV.setText(done);
             h.postDelayed(this::rfGmUi, 500);
         }, 500);
-    }
-
-    private void toggleConnLog() {
-        lgEx = !lgEx;
-        if (lgExL != null) lgExL.setVisibility(lgEx ? View.VISIBLE : View.GONE);
-        if (lgTgB != null) lgTgB.setText(lgEx ? "Ocultar" : "Ver más");
-    }
-
-    private void copyConnLog() {
-        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-        String logs = BtVpnService.gLogs();
-        if (cm != null) {
-            cm.setPrimaryClip(ClipData.newPlainText("conn_logs", logs));
-            Toast.makeText(this, logs.isEmpty() ? "No hay logs para copiar" : "Logs copiados", Toast.LENGTH_SHORT).show();
-        }
-    }
-
-    private void clearConnLogView() {
-        if (lgLtV != null) lgLtV.setText("");
-        if (lgFullV != null) lgFullV.setText("");
     }
 
     private void refreshConnectingDetail() {

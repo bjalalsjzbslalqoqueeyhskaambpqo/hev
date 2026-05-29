@@ -1,5 +1,4 @@
 #include <jni.h>
-#include <android/log.h>
 #include <android/multinetwork.h>
 #include <arpa/inet.h>
 #include <errno.h>
@@ -7,7 +6,6 @@
 #include <netinet/tcp.h>
 #include <pthread.h>
 #include <stdatomic.h>
-#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,9 +24,6 @@
 #define lk pthread_mutex_lock
 #define ul pthread_mutex_unlock
 
-#define LOG_TAG "btproxy"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 #define T_OPEN    0x01
 #define T_DATA    0x02
@@ -131,7 +126,6 @@ static void fire_event(int type, const char *key, const char *val) {
         if (jkey && jval) {
             (*env)->CallVoidMethod(env, svc, m, (jint)type, jkey, jval);
             if ((*env)->ExceptionCheck(env)) {
-                (*env)->ExceptionDescribe(env);
                 (*env)->ExceptionClear(env);
             }
         } else if ((*env)->ExceptionCheck(env)) {
@@ -146,12 +140,6 @@ static void fire_event(int type, const char *key, const char *val) {
     (*env)->DeleteLocalRef(env, cls);
     (*env)->DeleteLocalRef(env, svc);
     if (att) (*jvm)->DetachCurrentThread(jvm);
-}
-
-static void log_event(const char *lvl, const char *fmt, ...) {
-    va_list ap; va_start(ap, fmt);
-    char msg[512]; vsnprintf(msg, sizeof(msg), fmt, ap); va_end(ap);
-    if (lvl[0] == 'E') LOGE("%s", msg); else LOGI("%s", msg);
 }
 
 #define HT_SIZE 4096
@@ -601,7 +589,6 @@ static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host
             fire_event(EV_STAGE, "stage", "auth_rejected");
             if (reason[0]) fire_event(EV_DISCONNECT, "reason", reason);
         }
-        log_event("E", "handshake failed code=%d", code);
         return -1;
     }
 
