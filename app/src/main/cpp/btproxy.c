@@ -69,6 +69,8 @@ static const char *PROXY_IPS_V6[] = {
 #define PROXY_IP_COUNT_V6 2
 
 #define CONNECT_TIMEOUT_MS 11000
+#define PROXY_DNS_TIMEOUT_MS 10000
+#define PROXY_DNS_RETRY_MS 250
 #define DNS_MAX_RESULTS 8
 
 static volatile int    g_r    = 0;
@@ -656,27 +658,39 @@ static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host
     return 0;
 }
 
+static long nms(void);
+
 static int collect_ipv4_addresses(char ips[][INET_ADDRSTRLEN], int max_ips) {
     if (!ips || max_ips <= 0) return 0;
 
-    struct addrinfo hints = {0}, *res = NULL, *cur;
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
+    long deadline = nms() + PROXY_DNS_TIMEOUT_MS;
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%d", PROXY_PORT);
 
-    int gai = getaddrinfo(PROXY_HOST_V4, port_str, &hints, &res);
-    if (gai != 0) return 0;
+    while (g_r) {
+        struct addrinfo hints = {0}, *res = NULL, *cur;
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
 
-    int count = 0;
-    for (cur = res; cur && count < max_ips; cur = cur->ai_next) {
-        struct sockaddr_in *a4 = (struct sockaddr_in *)cur->ai_addr;
-        if (!a4) continue;
-        inet_ntop(AF_INET, &a4->sin_addr, ips[count], INET_ADDRSTRLEN);
-        if (ips[count][0]) count++;
+        int gai = getaddrinfo(PROXY_HOST_V4, port_str, &hints, &res);
+        int count = 0;
+        if (gai == 0) {
+            for (cur = res; cur && count < max_ips; cur = cur->ai_next) {
+                struct sockaddr_in *a4 = (struct sockaddr_in *)cur->ai_addr;
+                if (!a4) continue;
+                inet_ntop(AF_INET, &a4->sin_addr, ips[count], INET_ADDRSTRLEN);
+                if (ips[count][0]) count++;
+            }
+            freeaddrinfo(res);
+            if (count > 0) return count;
+        }
+
+        long left = deadline - nms();
+        if (left <= 0) break;
+        int wait_ms = left < PROXY_DNS_RETRY_MS ? (int)left : PROXY_DNS_RETRY_MS;
+        if (!wait_running_ms(wait_ms)) break;
     }
-    freeaddrinfo(res);
-    return count;
+    return 0;
 }
 
 static int connect_and_handshake_ip4(const char *ip) {
