@@ -47,6 +47,8 @@ public class BtVpnService extends VpnService {
     private static final Object        L_MU      = new Object();
     private static final StringBuilder L_BUF          = new StringBuilder(8192);
     private static final int           L_MAX = 24000;
+    private static final long          HS_TO = 12000L;
+    private static final long          HS_POLL = 250L;
 
     private final ExecutorService ex = Executors.newSingleThreadExecutor();
 
@@ -57,15 +59,39 @@ public class BtVpnService extends VpnService {
     private volatile Thread               hTh   = null;
     private volatile File                 hCfg  = null;
     private volatile ConnectivityManager.NetworkCallback nCb = null;
+    private volatile boolean              hsReady = false;
+    private volatile boolean              hsFailed = false;
 
     public static boolean iRun() { return sRunning; }
 
     public void onTunnelEvent(int type, String key, String value) {
-        Intent intent = new Intent("com.blacktunnel.TUNNEL_EVENT");
-        intent.putExtra("type", type);
-        intent.putExtra("key", key != null ? key : "");
-        intent.putExtra("value", value != null ? value : "");
-        sendBroadcast(intent);
+        String safeKey = key != null ? key : "";
+        String safeValue = value != null ? value : "";
+        updateHandshakeState(type, safeKey, safeValue);
+        try {
+            Intent intent = new Intent("com.blacktunnel.TUNNEL_EVENT");
+            intent.setPackage(getPackageName());
+            intent.putExtra("type", type);
+            intent.putExtra("key", safeKey);
+            intent.putExtra("value", safeValue);
+            sendBroadcast(intent);
+        } catch (Throwable t) {
+            log("E onTunnelEvent broadcast failed: " + t.getClass().getSimpleName() + ": " + t.getMessage());
+        }
+    }
+
+    private void updateHandshakeState(int type, String key, String value) {
+        if (type == 1 && "stage".equals(key)) {
+            if ("relay_ready".equals(value)) {
+                hsReady = true;
+                hsFailed = false;
+            } else if ("auth_rejected".equals(value)
+                    || "manual_reconnect_required".equals(value)) {
+                hsFailed = true;
+            }
+        } else if (type == 4) {
+            hsFailed = true;
+        }
     }
 
     public static String getHotspotIp() {
@@ -151,11 +177,20 @@ public class BtVpnService extends VpnService {
 
         BtProxy.stop();
         cleanupSessionResources();
+        hsReady = false;
+        hsFailed = false;
 
         String iid  = BtProxy.gIid(this);
         int    startResult = BtProxy.start(this, iid);
         if (startResult < 0) {
             log("E startAll: btproxy start failed");
+            stopForeground(STOP_FOREGROUND_REMOVE);
+            return;
+        }
+
+        if (!waitForTunnelHandshake()) {
+            log("E startAll: tunnel handshake timeout/failure");
+            BtProxy.stop();
             stopForeground(STOP_FOREGROUND_REMOVE);
             return;
         }
@@ -173,6 +208,19 @@ public class BtVpnService extends VpnService {
         run  = true;
         sRunning = true;
         log("I startAll ok");
+    }
+
+    private boolean waitForTunnelHandshake() {
+        long deadline = System.currentTimeMillis() + HS_TO;
+        while (System.currentTimeMillis() < deadline) {
+            if (hsReady) return true;
+            if (hsFailed) return false;
+            try { Thread.sleep(HS_POLL); } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return hsReady;
     }
 
     private void stopAll() {

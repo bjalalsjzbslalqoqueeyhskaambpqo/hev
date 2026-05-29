@@ -436,10 +436,19 @@ public class SimpleModeActivity extends ComponentActivity {
                     case "proxy_connect_start":
                     case "proxy_connected":
                     case "server_auth_request":
-                    case "relay_ready":
                         lstConn = val;
                         if (uS != UiState.CONNECTING) setUiState(UiState.CONNECTING);
                         else refreshConnectingDetail();
+                        break;
+
+                    case "relay_ready":
+                        if (hsOk || uS == UiState.CONNECTED) {
+                            updateHevFlowHint();
+                        } else {
+                            lstConn = val;
+                            if (uS != UiState.CONNECTING) setUiState(UiState.CONNECTING);
+                            else refreshConnectingDetail();
+                        }
                         break;
 
                     case "access_granted":
