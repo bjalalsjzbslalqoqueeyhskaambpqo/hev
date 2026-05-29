@@ -1,1662 +1,1178 @@
-package com.blacktunnel;
+#include <jni.h>
+#include <android/log.h>
+#include <android/multinetwork.h>
+#include <arpa/inet.h>
+#include <errno.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include <sys/epoll.h>
+#include <sys/socket.h>
+#include <sys/uio.h>
+#include <time.h>
+#include <unistd.h>
+#include <poll.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <netdb.h>
 
-import android.app.AlertDialog;
-import android.animation.Animator;
-import android.animation.AnimatorInflater;
-import android.animation.ArgbEvaluator;
-import android.animation.ValueAnimator;
-import android.content.ClipData;
-import android.content.ClipboardManager;
-import android.content.Context;
-import android.content.Intent;
-import android.content.res.Configuration;
-import android.content.res.ColorStateList;
-import android.content.pm.ApplicationInfo;
-import android.content.pm.PackageManager;
-import android.graphics.drawable.Drawable;
-import android.net.ConnectivityManager;
-import android.net.Network;
-import android.net.NetworkCapabilities;
-import android.net.NetworkRequest;
-import android.net.VpnService;
-import android.os.Build;
-import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
-import android.os.SystemClock;
-import android.text.Editable;
-import android.text.SpannableString;
-import android.text.Spanned;
-import android.text.style.ForegroundColorSpan;
-import android.text.TextWatcher;
-import android.view.LayoutInflater;
-import android.view.View;
-import android.view.ViewGroup;
-import android.view.animation.AnimationUtils;
-import android.widget.BaseAdapter;
-import android.widget.Button;
-import android.widget.CheckBox;
-import android.widget.EditText;
-import android.widget.ImageView;
-import android.widget.LinearLayout;
-import android.widget.ListView;
-import android.widget.Switch;
-import android.widget.TextView;
-import android.widget.Toast;
-import androidx.activity.ComponentActivity;
-import androidx.activity.result.ActivityResultLauncher;
-import androidx.activity.result.contract.ActivityResultContracts;
+#define lk pthread_mutex_lock
+#define ul pthread_mutex_unlock
 
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Locale;
-import java.util.Set;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import android.graphics.Canvas;
-import android.graphics.Color;
-import android.graphics.LinearGradient;
-import android.graphics.Paint;
-import android.graphics.Path;
-import android.graphics.Shader;
-import android.util.AttributeSet;
-import android.view.animation.LinearInterpolator;
-import java.util.ArrayDeque;
-import java.util.Deque;
+#define LOG_TAG "btproxy"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-public class SimpleModeActivity extends ComponentActivity {
-    private static final String PREF_UI              = "ui_state";
-    private static final String KEY_HIDE_ID          = "hide_internal_id";
-    private static final String KEY_FIRST_OK         = "first_ok";
-    private static final int    HOTSPOT_PROXY_PORT   = 7071;
-    private static final long   CONNECTING_TIMEOUT_MS = 40000L;
+#define T_OPEN    0x01
+#define T_DATA    0x02
+#define T_CLOSE   0x03
+#define T_PING    0x04
+#define T_PONG    0x05
+#define T_KICK    0x06
+#define T_EXPIRED 0x07
 
-    private enum UiState { DISCONNECTED, CONNECTING, CONNECTED }
+#define FRAME_HDR              7
+#define MAX_PAYLOAD            16384
+#define RELAY_BACKLOG          512
+#define PONG_TIMEOUT_SEC       120
+#define KEEPALIVE_INTERVAL_SEC 3
+#define CONNECT_TIMEOUT_SEC    15
+#define HANDSHAKE_TIMEOUT_SEC  4
+#define MAX_EPOLL_EVENTS       64
 
-    private Button        cBtn;
-    private Button        cpBtn;
-    private TextView      stBdV;
-    private View          stDtV;
-    private View          stHlV;
-    private View          stHmV;
-    private TextView      stDtlsV;
-    private View          lgPn;
-    private TextView      lgLtV;
-    private TextView      lgFullV;
-    private View          lgExL;
-    private Button        lgTgB;
-    private Button        lgCpB;
-    private Button        lgClB;
-    private boolean       lgEx = false;
-    private TextView      devIdV;
-    private TextView      usrNmWV;
-    private TextView      hevRtV;
-    private ThroughputGraphView thrV;
-    private TextView      daysV;
-    private TextView      pngV;
-    private PingPulseView pngPlsV;
-    private Switch        gmSw;
-    private TextView      gmBdV;
-    private TextView      gmDescV;
-    private TextView      gmCntV;
-    private Button        selGmBtn;
-    private LinearLayout  gmPn;
-    private LinearLayout  gmCtlL;
-    private View          pnConnV;
-    private View          bRO;
-    private View          bRM;
-    private View          bTD;
-    private View          mainSc;
-    private View          frPn;
-    private View          dcOv;
-    private TextView      dcOvTitle;
-    private TextView      dcOvBadge;
-    private TextView      dcOvMsg;
-    private Button        dcOvClose;
-    private TextView      frIdV;
-    private Button        frCpB;
-    private Button        frOkB;
-    private Animator      stPlsA;
-    private Animator      stHlA;
+#define LOCAL_QUEUE_HARD_LIMIT (512 * 1024)
+#define WRITE_QUEUE_HIGH_WATER (512 * 1024)
+#define WRITE_QUEUE_LOW_WATER  (128 * 1024)
+#define STREAM_TIMEOUT_MS      120000
 
-    private final ExecutorService appEx    = Executors.newSingleThreadExecutor();
-    private String  iid                       = "";
-    private UiState uS                          = UiState.DISCONNECTED;
-    private long    connMs                = 0L;
-    private boolean lstRun                      = false;
-    private long    autoDcMs               = -1L;
-    private boolean pendRec           = false;
-    private String  aSt                        = "";
-    private boolean hidIid                   = false;
-    private boolean apRt           = false;
-    private int     lstPing                       = -1;
-    private boolean hsOk               = false;
-    private String  lstConn               = "";
-    private String  lstDtl                   = "";
-    private String  lstDcReason         = "";
-    private long    lgClrMs                  = 0L;
-    private long    txB = 0L, rxB = 0L, stMs = 0L;
+#define PROXY_HOST_V6  "emailmarketing.personal.com.ar"
+#define TUNNEL_HOST_V6 "2.brawlpass.com.ar"
+#define PROXY_HOST_V4  "recarga.personal.com.ar"
+#define TUNNEL_HOST_V4 "dif2pyjxd7k7p.cloudfront.net"
+#define PROXY_PORT      80
 
-    private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
-    private final Runnable delayedReconnectRunnable = () -> {
-        pendRec = false;
-        stVp();
-    };
-    private ConnectivityManager connMgr;
-    private ConnectivityManager.NetworkCallback netCb;
-    private final Handler h = new Handler(Looper.getMainLooper());
-    private ActivityResultLauncher<Intent> vpnPermL;
+static const char *PROXY_IPS_V6[] = {
+    "2606:4700::6812:16b7",
+    "2606:4700::6812:17b7",
+};
+#define PROXY_IP_COUNT_V6 2
 
-    private final Runnable stTick = new Runnable() {
-        @Override public void run() {
-            try {
-                String logs = BtVpnService.dLogs();
-                syncStateFromLogs(logs);
-                refreshFromLogs(logs);
-                updateConnLogUi(logs);
-                updateHevFlowHint();
-            } catch (Throwable ignored) {}
-            h.postDelayed(this, 3000);
-        }
-    };
+#define CONNECT_TIMEOUT_MS 2000
 
-    @Override
-    protected void attachBaseContext(Context newBase) {
-        Configuration configuration = new Configuration(newBase.getResources().getConfiguration());
-        configuration.fontScale = 1.0f;
-        super.attachBaseContext(newBase.createConfigurationContext(configuration));
+static volatile int    g_r    = 0;
+static int             g_rf   = -1;
+static int             g_tf   = -1;
+static int             g_ef   = -1;
+static int             g_wr   = -1;
+static int             g_ww   = -1;
+static atomic_int      g_ns   = 1;
+static atomic_int      g_te   = 0;
+static atomic_long     g_lp   = 0;
+static atomic_long     g_lpt  = 0;
+static atomic_int      g_af   = 0;
+static char            g_i[160] = {0};
+static JavaVM         *g_j    = NULL;
+static jobject         g_s    = NULL;
+static net_handle_t    g_n    = NETWORK_UNSPECIFIED;
+static pthread_t       g_mt   = 0;
+static pthread_mutex_t g_m    = PTHREAD_MUTEX_INITIALIZER;
+
+/* Tipos de evento enviados a la UI */
+#define EV_STAGE      1
+#define EV_PING       2
+#define EV_USER_DATA  3
+#define EV_DISCONNECT 4
+
+static void fire_event(int type, const char *key, const char *val) {
+    if (!g_r) return;
+    JavaVM *jvm; jobject svc;
+    lk(&g_m); jvm = g_j; svc = g_s; ul(&g_m);
+    if (!jvm || !svc) return;
+
+    JNIEnv *env = NULL; int att = 0;
+    if ((*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {
+        (*jvm)->AttachCurrentThread(jvm, &env, NULL);
+        att = 1;
     }
 
-    private void updateHevFlowHint() {
-        if (uS != UiState.CONNECTED) {
-            if (hevRtV != null) hevRtV.setVisibility(View.GONE);
-            if (thrV != null) thrV.setVisibility(View.GONE);
-            return;
-        }
-        try {
-            long[] s = BtVpnService.HevBridge.stats();
-            if (s == null || s.length < 4) return;
-            long now = SystemClock.elapsedRealtime();
-            long curTx = s[1], curRx = s[3];
-            if (stMs > 0 && now > stMs) {
-                long dt = now - stMs;
-                long up = Math.max(0, (curTx - txB) * 1000L / dt);
-                long dn = Math.max(0, (curRx - rxB) * 1000L / dt);
-                if (hevRtV != null) {
-                    hevRtV.setVisibility(View.VISIBLE);
-                    hevRtV.setText(buildHevRateText(up, dn));
-                }
-                if (thrV != null) {
-                    thrV.setVisibility(View.VISIBLE);
-                    thrV.push(up, dn);
-                }
-            }
-            txB = curTx; rxB = curRx; stMs = now;
-        } catch (Throwable ignored) {}
+    jclass    cls = (*env)->GetObjectClass(env, svc);
+    jmethodID m   = (*env)->GetMethodID(env, cls, "onTunnelEvent",
+                                        "(ILjava/lang/String;Ljava/lang/String;)V");
+    if (m) {
+        jstring jkey = (*env)->NewStringUTF(env, key ? key : "");
+        jstring jval = (*env)->NewStringUTF(env, val ? val : "");
+        (*env)->CallVoidMethod(env, svc, m, (jint)type, jkey, jval);
+        (*env)->DeleteLocalRef(env, jkey);
+        (*env)->DeleteLocalRef(env, jval);
     }
-
-    private CharSequence buildHevRateText(long up, long dn) {
-        String upText = "↑ " + fmtRate(up);
-        String dnText = "↓ " + fmtRate(dn);
-        String merged = upText + "  " + dnText;
-        SpannableString span = new SpannableString(merged);
-        span.setSpan(new ForegroundColorSpan(Color.parseColor("#3BEF8F")), 0, upText.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        span.setSpan(new ForegroundColorSpan(Color.parseColor("#44B7FF")), upText.length() + 2, merged.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        return span;
-    }
-
-    private String fmtRate(long bps) {
-        if (bps >= 1024L * 1024L) return String.format(Locale.US, "%.1f MB/s", bps / 1024f / 1024f);
-        if (bps >= 1024L) return String.format(Locale.US, "%.1f KB/s", bps / 1024f);
-        return bps + " B/s";
-    }
-
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_simple_mode);
-
-        vpnPermL = registerForActivityResult(
-            new ActivityResultContracts.StartActivityForResult(),
-            result -> {
-                if (result.getResultCode() == RESULT_OK) startVpn();
-                else setUiState(UiState.DISCONNECTED);
-            }
-        );
-
-        cBtn              = findViewById(R.id.btnConnect);
-        cpBtn               = findViewById(R.id.btnCopyLogs);
-        stBdV         = findViewById(R.id.txtStatusBadge);
-        stDtV           = findViewById(R.id.viewStatusDot);
-        stHlV          = findViewById(R.id.viewStatusHalo);
-        stHmV       = findViewById(R.id.viewStatusHaloMid);
-        stDtlsV       = findViewById(R.id.txtStatusDetails);
-        lgPn              = findViewById(R.id.panelConnLog);
-        lgLtV             = findViewById(R.id.txtConnLogLatest);
-        lgFullV           = findViewById(R.id.txtConnLogFull);
-        lgExL             = findViewById(R.id.layoutConnLogExpanded);
-        lgTgB             = findViewById(R.id.btnConnLogToggle);
-        lgCpB             = findViewById(R.id.btnConnLogCopy);
-        lgClB             = findViewById(R.id.btnConnLogClear);
-        devIdV            = findViewById(R.id.txtDeviceId);
-        daysV           = findViewById(R.id.txtDays);
-        pngV           = findViewById(R.id.txtPingValue);
-        pngPlsV           = findViewById(R.id.pingPulseView);
-        gmSw        = findViewById(R.id.switchGamingMode);
-        gmBdV     = findViewById(R.id.txtGamingBadge);
-        gmDescV   = findViewById(R.id.txtGamingDescription);
-        gmCntV = findViewById(R.id.txtGamingSelectedCount);
-        selGmBtn     = findViewById(R.id.btnSelectGamingApps);
-        gmPn         = findViewById(R.id.panelGamingMode);
-        gmCtlL    = findViewById(R.id.layoutGamingControls);
-        pnConnV     = findViewById(R.id.panelConnection);
-        usrNmWV        = findViewById(R.id.txtUserNameWide);
-        hevRtV         = findViewById(R.id.txtHevRate);
-        thrV           = findViewById(R.id.throughputGraphView);
-        bRO            = findViewById(R.id.btnRingOuter);
-        bRM              = findViewById(R.id.btnRingMid);
-        bTD               = findViewById(R.id.btnTopDot);
-        mainSc            = findViewById(R.id.mainScroll);
-        frPn              = findViewById(R.id.panelFirstRun);
-        dcOv              = findViewById(R.id.disconnectOverlay);
-        dcOvTitle         = findViewById(R.id.txtOverlayTitle);
-        dcOvBadge         = findViewById(R.id.txtOverlayBadge);
-        dcOvMsg           = findViewById(R.id.txtOverlayMessage);
-        dcOvClose         = findViewById(R.id.btnOverlayClose);
-        frIdV             = findViewById(R.id.txtFirstRunId);
-        frCpB             = findViewById(R.id.btnFirstRunCopy);
-        frOkB             = findViewById(R.id.btnFirstRunOk);
-
-        iid = BtProxy.gIid(this);
-        BtProxy.aGm(this);
-        hidIid = getSharedPreferences(PREF_UI, MODE_PRIVATE).getBoolean(KEY_HIDE_ID, false);
-        if (devIdV != null) devIdV.setText("ID: " + iid);
-        refreshDeviceIdVisibility();
-
-        boolean run = BtVpnService.iRun();
-        setUiState(run ? UiState.CONNECTED : UiState.DISCONNECTED);
-        lstRun = run;
-
-        cBtn.setOnClickListener(v -> {
-            if (uS == UiState.CONNECTING) return;
-            if (uS == UiState.CONNECTED) stopVpn();
-            else {
-                if (BtVpnService.iRun()) {
-                    if (!pendRec) {
-                        pendRec = true;
-                        setUiState(UiState.CONNECTING);
-                        h.removeCallbacks(delayedReconnectRunnable);
-                        h.postDelayed(delayedReconnectRunnable, 850);
-                    }
-                } else {
-                    stVp();
-                }
-            }
-        });
-        cpBtn.setOnClickListener(v -> copyInternalIdToClipboard());
-        if (frCpB != null) frCpB.setOnClickListener(v -> copyInternalIdToClipboard());
-        if (frOkB != null) frOkB.setOnClickListener(v -> dismissFirstRun());
-        if (dcOvClose != null) dcOvClose.setOnClickListener(v -> hideDisconnectOverlay());
-        if (lgTgB != null) lgTgB.setOnClickListener(v -> toggleConnLog());
-        if (lgCpB != null) lgCpB.setOnClickListener(v -> copyConnLog());
-        if (lgClB != null) lgClB.setOnClickListener(v -> clearConnLogView());
-
-        if (gmSw != null) {
-            gmSw.setChecked(BtProxy.iGm(this));
-            gmSw.setOnCheckedChangeListener((buttonView, isChecked) -> {
-                BtProxy.sGm(this, isChecked);
-                rfGmUi();
-                if (BtVpnService.iRun()) {
-                    showGamingApplyFeedback(
-                        isChecked ? "Modo aplicaciones: activando..." : "Modo normal: aplicando...",
-                        isChecked ? "Modo aplicaciones activo" : "Modo normal activo",
-                        isChecked ? R.color.color_gaming : R.color.color_text_secondary
-                    );
-                    apGmIfRun();
-                }
-            });
-        }
-        if (selGmBtn != null)
-            selGmBtn.setOnClickListener(v -> openGamingAppsDialog());
-
-        rfGmUi();
-        setupConnectivityMonitor();
-        showFirstRunIfNeeded();
-        h.post(stTick);
-    }
-
-    private void showFirstRunIfNeeded() {
-        boolean ok = getSharedPreferences(PREF_UI, MODE_PRIVATE).getBoolean(KEY_FIRST_OK, false);
-        if (ok) return;
-        if (frIdV != null) frIdV.setText(iid);
-        if (frPn != null) frPn.setVisibility(View.VISIBLE);
-        if (mainSc != null) mainSc.setVisibility(View.GONE);
-    }
-
-    private void dismissFirstRun() {
-        getSharedPreferences(PREF_UI, MODE_PRIVATE).edit().putBoolean(KEY_FIRST_OK, true).apply();
-        if (frPn != null) frPn.setVisibility(View.GONE);
-        if (mainSc != null) mainSc.setVisibility(View.VISIBLE);
-    }
-
-    private void showDisconnectOverlay(String title, String message, int titleColor) {
-        if (dcOv == null || dcOvTitle == null || dcOvMsg == null) return;
-        if (dcOvBadge != null) {
-            String badge = "BLOQUEO DE CONEXIÓN";
-            if (title.contains("EXPIRADO")) badge = "ACCESO EXPIRADO";
-            else if (title.contains("NO REGISTRADO")) badge = "USUARIO NO HABILITADO";
-            else if (title.contains("SESIÓN")) badge = "SESIÓN FINALIZADA";
-            dcOvBadge.setText(badge);
-        }
-        dcOvTitle.setText(title);
-        dcOvTitle.setTextColor(titleColor);
-        dcOvMsg.setText(message);
-        dcOv.setVisibility(View.VISIBLE);
-    }
-
-    private void hideDisconnectOverlay() {
-        if (dcOv != null) dcOv.setVisibility(View.GONE);
-    }
-
-    private void applyHudTheme(int accentColor) {
-        float dp = getResources().getDisplayMetrics().density;
-
-        if (bRO  != null) bRO.setBackground(VisualDrawables.bRO(accentColor));
-        if (bRM    != null) bRM.setBackground(VisualDrawables.bRM(accentColor));
-        if (bTD     != null) bTD.setBackgroundTintList(ColorStateList.valueOf(accentColor));
-
-        if (pnConnV != null)
-            pnConnV.setBackground(VisualDrawables.statusBadge(accentColor));
-
-        View metricsStrip = findViewById(R.id.layoutDataStrip);
-        if (metricsStrip != null) metricsStrip.setBackground(VisualDrawables.panelMetrics(accentColor));
-
-        if (pngPlsV != null) pngPlsV.setLineColor(accentColor);
-
-        if (cBtn != null)
-            cBtn.setBackground(VisualDrawables.btnConnect(accentColor, uS == UiState.CONNECTED));
-    }
-
-    private int resolveAccentColor() {
-        return uS == UiState.CONNECTED  ? c(R.color.color_connected)
-             : uS == UiState.CONNECTING ? c(R.color.color_connecting)
-             : c(R.color.color_disconnected);
-    }
-
-    private void setupConnectivityMonitor() {
-        connMgr = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-        if (connMgr == null) return;
-        netCb = new ConnectivityManager.NetworkCallback() {
-            @Override public void onLost(Network network) {
-                if (BtVpnService.iRun()) stopVpn();
-                setUiState(UiState.DISCONNECTED);
-            }
-            @Override public void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
-                if (caps == null) return;
-                if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                        && uS == UiState.CONNECTING)
-                    setUiState(UiState.DISCONNECTED);
-            }
-        };
-        try {
-            connMgr.registerNetworkCallback(
-                new NetworkRequest.Builder()
-                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(),
-                netCb);
-        } catch (Throwable ignored) {}
-    }
-
-    private void copyInternalIdToClipboard() {
-        ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-        if (cm != null) {
-            cm.setPrimaryClip(ClipData.newPlainText("internal_id", iid));
-            Toast.makeText(this, "ID copiado", Toast.LENGTH_SHORT).show();
-        } else {
-            Toast.makeText(this, "Error copiando ID", Toast.LENGTH_SHORT).show();
-        }
-    }
-
-    @Override
-    protected void onDestroy() {
-        h.removeCallbacks(stTick);
-        h.removeCallbacks(autoDisconnectRunnable);
-        h.removeCallbacks(delayedReconnectRunnable);
-        if (cBtn != null) cBtn.animate().cancel();
-        if (stDtlsV != null) stDtlsV.animate().cancel();
-        if (stBdV != null) stBdV.animate().cancel();
-        stopStatusPulse();
-        stopStatusHaloWave();
-        stopHudRingRotation();
-        if (connMgr != null && netCb != null) {
-            try { connMgr.unregisterNetworkCallback(netCb); } catch (Throwable ignored) {}
-        }
-        BtVpnService.stopLocalProxy();
-        appEx.shutdownNow();
-        super.onDestroy();
-    }
-
-    private int c(int colorRes) { return getColor(colorRes); }
-    private boolean canAnimate() { return ValueAnimator.areAnimatorsEnabled(); }
-
-    private void startStatusPulse() {
-        if (stDtV == null || !canAnimate()) return;
-        if (stPlsA == null)
-            stPlsA = AnimatorInflater.loadAnimator(this, R.animator.pulse);
-        stPlsA.setTarget(stDtV);
-        if (!stPlsA.isStarted()) stPlsA.start();
-    }
-
-    private void stopStatusPulse() {
-        if (stPlsA != null) stPlsA.cancel();
-        if (stDtV != null) {
-            stDtV.setScaleX(1f); stDtV.setScaleY(1f); stDtV.setAlpha(1f);
-        }
-    }
-
-    private void startStatusHaloWave() {
-        if (stHlV == null || !canAnimate()) return;
-        if (stHlA == null)
-            stHlA = AnimatorInflater.loadAnimator(this, R.animator.status_halo_wave);
-        stHlA.setTarget(stHlV);
-        if (!stHlA.isStarted()) stHlA.start();
-    }
-
-    private void stopStatusHaloWave() {
-        if (stHlA != null) stHlA.cancel();
-        if (stHlV != null) {
-            stHlV.setScaleX(1f); stHlV.setScaleY(1f); stHlV.setAlpha(0.20f);
-        }
-    }
-
-    private void startHudRingRotation() {
-        if (!canAnimate() || bRO == null) return;
-        bRO.animate().cancel();
-        bRO.animate()
-            .rotationBy(360f)
-            .setDuration(9000)
-            .setInterpolator(new android.view.animation.LinearInterpolator())
-            .withEndAction(() -> {
-                if (uS == UiState.CONNECTED && bRO != null && bRO.isAttachedToWindow())
-                    startHudRingRotation();
-            })
-            .start();
-    }
-
-    private void stopHudRingRotation() {
-        if (bRO != null) bRO.animate().cancel();
-    }
-
-
-    private void animateBadgeColor(TextView tv, int toColor, long durationMs) {
-        if (tv == null || !canAnimate()) { if (tv != null) tv.setTextColor(toColor); return; }
-        int from = tv.getCurrentTextColor();
-        ValueAnimator va = ValueAnimator.ofObject(new ArgbEvaluator(), from, toColor);
-        va.setDuration(durationMs);
-        va.addUpdateListener(a -> tv.setTextColor((Integer) a.getAnimatedValue()));
-        va.start();
-    }
-
-    private void animateDotColor(View dot, View halo, int toColor, long durationMs) {
-        if (dot == null) return;
-        if (!canAnimate()) {
-            dot.setBackgroundTintList(ColorStateList.valueOf(toColor));
-            if (halo != null) halo.setBackgroundTintList(ColorStateList.valueOf(toColor));
-            return;
-        }
-        int fromDot = dot.getBackgroundTintList() != null
-            ? dot.getBackgroundTintList().getDefaultColor() : toColor;
-        ValueAnimator va = ValueAnimator.ofObject(new ArgbEvaluator(), fromDot, toColor);
-        va.setDuration(durationMs);
-        va.addUpdateListener(a -> {
-            int col = (Integer) a.getAnimatedValue();
-            dot.setBackgroundTintList(ColorStateList.valueOf(col));
-            if (halo != null) halo.setBackgroundTintList(ColorStateList.valueOf(col));
-        });
-        va.start();
-    }
-
-    private static final class AppOption {
-        final String packageName; final String appName; final Drawable icon;
-        AppOption(String p, String n, Drawable i) { packageName = p; appName = n; icon = i; }
-    }
-
-    private void rfGmUi() {
-        boolean enabled = BtProxy.iGm(this);
-        List<String> selected = BtProxy.gGmPk(this);
-
-        if (gmBdV != null) {
-            if (enabled) {
-                gmBdV.setText(R.string.gaming_mode_on_compact);
-                gmBdV.setTextColor(c(R.color.color_gaming));
-                gmBdV.setBackgroundResource(R.drawable.strike_chip_left);
-                gmBdV.setLetterSpacing(0.14f);
-            } else {
-                gmBdV.setText(R.string.gaming_mode_off_compact);
-                gmBdV.setTextColor(c(R.color.color_btn_disabled));
-            }
-        }
-        if (gmDescV != null)
-            gmDescV.setVisibility(enabled ? View.VISIBLE : View.GONE);
-        if (gmCntV != null) {
-            if (selected.isEmpty()) {
-                gmCntV.setText("Ninguna app seleccionada");
-                gmCntV.setTextColor(c(R.color.color_text_disabled));
-            } else {
-                String first   = selected.get(0);
-                String summary = selected.size() > 1 ? first + " +" + (selected.size() - 1) + " más" : first;
-                gmCntV.setText(summary);
-                gmCntV.setTextColor(c(R.color.color_gaming));
-            }
-        }
-        if (selGmBtn != null) {
-            selGmBtn.setEnabled(enabled);
-            selGmBtn.setAlpha(enabled ? 1f : 0.55f);
-        }
-        if (gmCtlL != null) {
-            if (enabled) {
-                gmCtlL.setVisibility(View.VISIBLE);
-                gmCtlL.setAlpha(0f);
-                gmCtlL.animate().alpha(1f).setDuration(180).start();
-            } else {
-                gmCtlL.animate().cancel();
-                gmCtlL.setVisibility(View.GONE);
-            }
-        }
-        if (gmPn != null) gmPn.setActivated(enabled);
-        if (cBtn != null && uS != UiState.CONNECTED && uS != UiState.CONNECTING)
-            cBtn.setText(enabled ? getString(R.string.connect_gaming) : getString(R.string.connect));
-    }
-
-    private void openGamingAppsDialog() {
-        View dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_gaming_apps, null, false);
-        EditText     searchView     = dialogView.findViewById(R.id.editSearchApps);
-        TextView     counterView    = dialogView.findViewById(R.id.txtPickerCounter);
-        LinearLayout selectedLayout = dialogView.findViewById(R.id.layoutSelectedApps);
-        ListView     listView       = dialogView.findViewById(R.id.listGamingApps);
-
-        counterView.setText(getString(R.string.gaming_loading_apps));
-        Set<String> selectedPackages = new HashSet<>(BtProxy.gGmPk(this));
-        listView.setEnabled(false);
-
-        AlertDialog dialog = new AlertDialog.Builder(this)
-            .setView(dialogView)
-            .setNegativeButton("Cancelar", null)
-            .setPositiveButton("Guardar", (d, which) -> {
-                BtProxy.sGmPk(this, new ArrayList<>(selectedPackages));
-                rfGmUi();
-                showGamingApplyFeedback("Aplicando selección de apps...", "Selección aplicada", R.color.color_accent);
-                apGmIfRun();
-            })
-            .create();
-
-        appEx.execute(() -> {
-            List<AppOption> allApps = loadInstalledUserApps();
-            runOnUiThread(() -> bindGamingDialogContent(searchView, counterView, selectedLayout, listView, selectedPackages, allApps));
-        });
-        dialog.show();
-    }
-
-    private void bindGamingDialogContent(EditText searchView, TextView counterView,
-            LinearLayout selectedLayout, ListView listView,
-            Set<String> selectedPackages, List<AppOption> allApps) {
-        GamingAppsAdapter adapter = new GamingAppsAdapter(allApps, selectedPackages);
-        listView.setAdapter(adapter);
-        listView.setEnabled(true);
-
-        final Runnable[] refreshPinned = new Runnable[1];
-        refreshPinned[0] = () -> {
-            selectedLayout.removeAllViews();
-            counterView.setText(getString(R.string.gaming_selected_count, selectedPackages.size()));
-            for (AppOption app : allApps) {
-                if (!selectedPackages.contains(app.packageName)) continue;
-                Button chip = new Button(this);
-                chip.setText(app.appName + " ✕");
-                chip.setAllCaps(false);
-                chip.setTextSize(12f);
-                chip.setPadding(20, 10, 20, 10);
-                chip.setBackgroundResource(R.drawable.strike_chip_left);
-                chip.setTextColor(c(R.color.color_text_primary));
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                lp.setMargins(0, 0, 12, 0);
-                chip.setLayoutParams(lp);
-                chip.setOnClickListener(v -> {
-                    selectedPackages.remove(app.packageName);
-                    adapter.notifyDataSetChanged();
-                    refreshPinned[0].run();
-                });
-                selectedLayout.addView(chip);
-            }
-        };
-
-        adapter.setSelectionListener((app, checked) -> {
-            if (checked && selectedPackages.size() >= 3 && !selectedPackages.contains(app.packageName)) {
-                Toast.makeText(this, "Máximo 3 aplicaciones en modo seleccionado", Toast.LENGTH_SHORT).show();
-                adapter.notifyDataSetChanged(); return;
-            }
-            if (checked) selectedPackages.add(app.packageName);
-            else         selectedPackages.remove(app.packageName);
-            adapter.notifyDataSetChanged();
-            refreshPinned[0].run();
-        });
-
-        listView.setOnItemClickListener((parent, view, position, id) -> {
-            AppOption app    = adapter.getItem(position);
-            boolean   checked = !selectedPackages.contains(app.packageName);
-            if (checked && selectedPackages.size() >= 3 && !selectedPackages.contains(app.packageName)) {
-                Toast.makeText(this, "Máximo 3 aplicaciones en modo seleccionado", Toast.LENGTH_SHORT).show(); return;
-            }
-            if (checked) selectedPackages.add(app.packageName);
-            else         selectedPackages.remove(app.packageName);
-            adapter.notifyDataSetChanged();
-            refreshPinned[0].run();
-        });
-
-        searchView.addTextChangedListener(new TextWatcher() {
-            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
-            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
-                adapter.filter(s == null ? "" : s.toString());
-            }
-            @Override public void afterTextChanged(Editable s) {}
-        });
-
-        refreshPinned[0].run();
-    }
-
-    private List<AppOption> loadInstalledUserApps() {
-        PackageManager pm  = getPackageManager();
-        List<ApplicationInfo> all = pm.getInstalledApplications(PackageManager.GET_META_DATA);
-        List<AppOption> out = new ArrayList<>();
-        for (ApplicationInfo app : all) {
-            boolean isSystem        = (app.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
-            boolean isUpdatedSystem = (app.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0;
-            boolean isInData        = app.sourceDir != null && app.sourceDir.startsWith("/data/app/");
-            if (!isSystem || isUpdatedSystem || isInData) {
-                String pkg = app.packageName;
-                if (pkg == null || pkg.equals(getPackageName())) continue;
-                CharSequence label = app.loadLabel(pm);
-                out.add(new AppOption(pkg, label == null ? pkg : label.toString(), app.loadIcon(pm)));
-            }
-        }
-        out.sort(Comparator.comparing(o -> o.appName.toLowerCase(Locale.ROOT)));
-        return out;
-    }
-
-    private final class GamingAppsAdapter extends BaseAdapter {
-        interface OnSelectionChanged { void onChange(AppOption app, boolean checked); }
-        private final List<AppOption> allApps, filteredApps;
-        private final Set<String>     selectedPackages;
-        private OnSelectionChanged    selectionListener;
-        GamingAppsAdapter(List<AppOption> apps, Set<String> sel) {
-            allApps = new ArrayList<>(apps); filteredApps = new ArrayList<>(apps); selectedPackages = sel;
-        }
-        void setSelectionListener(OnSelectionChanged l) { selectionListener = l; }
-        void filter(String query) {
-            filteredApps.clear();
-            String q = query.trim().toLowerCase(Locale.ROOT);
-            for (AppOption app : allApps)
-                if (q.isEmpty() || app.appName.toLowerCase(Locale.ROOT).contains(q)
-                        || app.packageName.toLowerCase(Locale.ROOT).contains(q))
-                    filteredApps.add(app);
-            notifyDataSetChanged();
-        }
-        @Override public int       getCount()            { return filteredApps.size(); }
-        @Override public AppOption getItem(int p)        { return filteredApps.get(p); }
-        @Override public long      getItemId(int p)      { return p; }
-        @Override public View getView(int position, View convertView, ViewGroup parent) {
-            View view = convertView;
-            if (view == null)
-                view = LayoutInflater.from(SimpleModeActivity.this)
-                    .inflate(R.layout.item_gaming_app, parent, false);
-            AppOption app = getItem(position);
-            ((ImageView) view.findViewById(R.id.imgAppIcon)).setImageDrawable(app.icon);
-            ((TextView)  view.findViewById(R.id.txtAppName)).setText(app.appName);
-            ((TextView)  view.findViewById(R.id.txtPackageName)).setText(app.packageName);
-            CheckBox check = view.findViewById(R.id.checkSelected);
-            check.setOnCheckedChangeListener(null);
-            check.setChecked(selectedPackages.contains(app.packageName));
-            check.setOnCheckedChangeListener((buttonView, isChecked) -> {
-                if (selectionListener != null) selectionListener.onChange(app, isChecked);
-            });
-            return view;
-        }
-    }
-
-    private void stVp() {
-        BtVpnService.cLogs();
-        clearConnLogView();
-        setUiState(UiState.CONNECTING);
-        aSt = ""; lstConn = "";
-        Intent prepare = VpnService.prepare(this);
-        if (prepare != null) vpnPermL.launch(prepare);
-        else startVpn();
-    }
-
-    private void startVpn() {
-        BtVpnService.cLogs();
-        Intent i = new Intent(this, BtVpnService.class);
-        i.setAction(BtVpnService.ACTION_START);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
-        else startService(i);
-        connMs = SystemClock.elapsedRealtime();
-        hsOk = false; lstConn = ""; lstDtl = ""; aSt = "";
-        lstPing = -1;
-        if (pngV != null) {
-            pngV.setText("--");
-            pngV.setTextColor(c(R.color.color_text_disabled));
-        }
-        if (usrNmWV != null) usrNmWV.setText("Usuario: --");
-        if (daysV != null) {
-            daysV.setText("--");
-            daysV.setTextColor(c(R.color.color_text_disabled));
-        }
-        if (hevRtV != null) hevRtV.setVisibility(View.GONE);
-        if (thrV != null) thrV.setVisibility(View.GONE);
-        setUiState(UiState.CONNECTING);
-    }
-
-    private void stopVpn() {
-        pendRec = false;
-        h.removeCallbacks(delayedReconnectRunnable);
-        Intent i = new Intent(this, BtVpnService.class);
-        i.setAction(BtVpnService.ACTION_STOP);
-        startService(i);
-        BtVpnService.cLogs();
-        hsOk = false; lstConn = ""; lstDtl = ""; aSt = "";
-        setUiState(UiState.DISCONNECTED);
-        clearConnLogView();
-        lgPn.setVisibility(View.GONE);
-        lstPing = -1;
-        if (pngV != null) {
-            pngV.setText("--");
-            pngV.setTextColor(c(R.color.color_text_disabled));
-        }
-        if (usrNmWV != null) usrNmWV.setText("Usuario: --");
-        if (daysV != null) {
-            daysV.setText("--");
-            daysV.setTextColor(c(R.color.color_text_disabled));
-        }
-        if (hevRtV != null) hevRtV.setVisibility(View.GONE);
-        if (thrV != null) thrV.setVisibility(View.GONE);
-        h.removeCallbacks(autoDisconnectRunnable);
-        autoDcMs = -1L;
-    }
-
-    private void apGmIfRun() {
-        if (!BtVpnService.iRun()) return;
-        apRt = true;
-        connMs      = SystemClock.elapsedRealtime();
-        lstConn     = "";
-        setUiState(UiState.CONNECTING);
-        Intent i = new Intent(this, BtVpnService.class);
-        i.setAction(BtVpnService.ACTION_APPLY);
-        startService(i);
-    }
-
-    private void setHideInternalId(boolean hide) {
-        if (hidIid == hide) return;
-        hidIid = hide;
-        getSharedPreferences(PREF_UI, MODE_PRIVATE).edit().putBoolean(KEY_HIDE_ID, hide).apply();
-        refreshDeviceIdVisibility();
-    }
-
-    private void refreshDeviceIdVisibility() {
-        if (devIdV != null) devIdV.setVisibility(hidIid ? View.GONE : View.VISIBLE);
-        if (cpBtn   != null) cpBtn.setVisibility(hidIid ? View.GONE : View.VISIBLE);
-    }
-
-    private void showGamingApplyFeedback(String start, String done, int colorRes) {
-        if (gmBdV == null) return;
-        gmBdV.setText(start);
-        gmBdV.setTextColor(c(colorRes));
-        gmBdV.animate().cancel();
-        gmBdV.setAlpha(0.55f);
-        gmBdV.animate().alpha(1f).setDuration(220).start();
-        h.postDelayed(() -> {
-            if (gmBdV != null) gmBdV.setText(done);
-            h.postDelayed(this::rfGmUi, 500);
-        }, 500);
-    }
-
-    private void toggleConnLog() {
-        lgEx = !lgEx;
-        if (lgExL != null) lgExL.setVisibility(lgEx ? View.VISIBLE : View.GONE);
-        if (lgTgB != null) lgTgB.setText(lgEx ? "Ocultar" : "Ver más");
-    }
-
-    private void copyConnLog() {
-        String logs = BtVpnService.dLogs();
-        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-        if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("conn_logs", logs == null ? "" : logs));
-        Toast.makeText(this, "Logs copiados", Toast.LENGTH_SHORT).show();
-    }
-
-    private void clearConnLogView() {
-        lgClrMs = System.currentTimeMillis();
-        if (lgLtV != null) lgLtV.setText("");
-        if (lgFullV != null) lgFullV.setText("");
-    }
-
-    private void updateConnLogUi(String logs) {
-        if (lgPn == null || lgLtV == null || lgFullV == null) return;
-        if (logs == null || logs.isEmpty()) {
-            lgPn.setVisibility(View.GONE);
-            return;
-        }
-        String[] ls = logs.split("\n");
-        StringBuilder sb = new StringBuilder();
-        String last = "";
-        for (int i = ls.length - 1; i >= 0; i--) {
-            String t = ls[i] == null ? "" : ls[i].trim();
-            if (t.isEmpty()) continue;
-            if (t.contains("ping_ms=")) continue;
-            if (!isLineAfterClear(t)) continue;
-            String fx = prettifyConnLine(t);
-            if (fx.isEmpty()) continue;
-            if (last.isEmpty()) last = fx;
-            if (sb.length() < 3500) sb.insert(0, fx + "\n");
-        }
-        if (last.isEmpty()) {
-            lgPn.setVisibility(View.GONE);
-            return;
-        }
-        lgPn.setVisibility(View.VISIBLE);
-        lgLtV.setText(last);
-        if (lgEx) lgFullV.setText(sb.toString().trim());
-    }
-
-    private boolean isLineAfterClear(String line) {
-        if (lgClrMs <= 0L) return true;
-        int a = line.indexOf('['), b = line.indexOf(']');
-        if (a != 0 || b <= 1) return true;
-        try {
-            String hhmmss = line.substring(1, b);
-            String[] p = hhmmss.split(":");
-            if (p.length != 3) return true;
-            java.util.Calendar c = java.util.Calendar.getInstance();
-            c.set(java.util.Calendar.HOUR_OF_DAY, Integer.parseInt(p[0]));
-            c.set(java.util.Calendar.MINUTE, Integer.parseInt(p[1]));
-            c.set(java.util.Calendar.SECOND, Integer.parseInt(p[2]));
-            c.set(java.util.Calendar.MILLISECOND, 0);
-            return c.getTimeInMillis() >= lgClrMs - 1000;
-        } catch (Throwable ignored) { return true; }
-    }
-
-    private String prettifyConnLine(String t) {
-        String l = t.toLowerCase(Locale.ROOT);
-        if (l.contains("proxy intento=proxy_1")) return "Intentando Proxy 1";
-        if (l.contains("proxy intento=proxy_2")) return "Intentando Proxy 2";
-        if (l.contains("proxy intento=dns_")) return "Intentando proxy por resolución dinámica";
-        if (l.contains("stage=proxy_connect_start")) return "Iniciando conexión de proxy";
-        if (l.contains("stage=proxy_connected")) return "Proxy conectado";
-        if (l.contains("stage=server_auth_request")) return "Solicitando acceso al servidor";
-        if (l.contains("stage=access_granted")) return "Acceso concedido";
-        if (l.contains("stage=proxy_no_response")) return "Proxy no responde";
-        if (l.contains("stage=proxy_connect_failed")) return "Conexión al proxy fallida";
-        if (l.contains("stage=auth_rejected")) return "Acceso denegado por servidor";
-        if (l.contains("stage=manual_reconnect_required")) return "Requiere reconexión manual";
-        if (l.contains("not_registered")) return "Usuario no registrado";
-        if (l.contains("expired")) return "Usuario expirado";
-        if (l.contains("tunnel ok")) return "Túnel activo";
-        if (l.contains("relay listo")) return "Relay listo";
-        if (l.contains("pong timeout")) return "Tiempo de espera agotado";
-        if (l.contains("tunnel caido")) return "Túnel caído";
-        return "";
-    }
-
-    private void syncStateFromLogs(String logs) {
-        boolean run   = BtVpnService.iRun();
-        String  connState = findLatestConnectionState(logs);
-        if (!connState.isEmpty() && !connState.equals(lstConn)) lstConn = connState;
-        if ("connected".equals(connState)) hsOk = true;
-        if (run && hasHsEvidence(logs)) hsOk = true;
-
-        if ("manual_reconnect_required".equals(lstConn) || "auth_rejected".equals(lstConn)) {
-            apRt = false;
-            if (BtVpnService.iRun()) stopVpn();
-            setUiState(UiState.DISCONNECTED);
-        } else if (run && !lstRun) {
-            aSt = ""; apRt = false;
-            setUiState(hsOk ? UiState.CONNECTED : UiState.CONNECTING);
-        } else if (!run && lstRun) {
-            apRt = false; hsOk = false;
-            setUiState(UiState.DISCONNECTED);
-        } else if (run && hsOk) {
-            apRt = false;
-            if (uS != UiState.CONNECTED) setUiState(UiState.CONNECTED);
-        } else if (run && !hsOk) {
-            if ("failed".equals(lstConn)) {
-                if (SystemClock.elapsedRealtime() - connMs > CONNECTING_TIMEOUT_MS) {
-                    apRt = false; stopVpn(); setUiState(UiState.DISCONNECTED);
-                }
-            } else if (uS != UiState.CONNECTING) setUiState(UiState.CONNECTING);
-            else refreshConnectingDetail();
-        } else if (!run && uS == UiState.CONNECTING) {
-            if ("dropped".equals(lstConn) || "failed".equals(lstConn)) {
-                apRt = false;
-                setUiState(UiState.DISCONNECTED);
-            } else if (SystemClock.elapsedRealtime() - connMs > CONNECTING_TIMEOUT_MS) {
-                apRt = false; setUiState(UiState.DISCONNECTED);
-            } else refreshConnectingDetail();
-        }
-        lstRun = run;
-    }
-
-    private boolean hasHsEvidence(String logs) {
-        if (logs == null || logs.isEmpty()) return false;
-        String[] lines = logs.split("\n");
-        int from = Math.max(0, lines.length - 120);
-        for (int i = lines.length - 1; i >= from; i--) {
-            String line = lines[i];
-            if (line == null) continue;
-            String l = line.toLowerCase(Locale.ROOT);
-            if (l.contains("tunnel ok") || l.contains("stage=access_granted") ||
-                l.contains("user_name=") || l.contains("user_days=") || l.contains("ping_ms="))
-                return true;
-        }
-        return false;
-    }
-
-    private void refreshConnectingDetail() {
-        if (stDtlsV == null) return;
-        String detail;
-        if      ("proxy_connect_start".equals(lstConn)) detail = "Conectando al proxy...";
-        else if ("proxy_connected".equals(lstConn)) detail = "Proxy conectado";
-        else if ("server_auth_request".equals(lstConn)) detail = "Solicitando acceso al servidor...";
-        else if ("access_granted".equals(lstConn)) detail = "Acceso concedido, cargando datos...";
-        else if ("auth_rejected".equals(lstConn)) {
-            if ("not_registered".equals(lstDcReason)) detail = "Usuario no registrado";
-            else if ("expired".equals(lstDcReason)) detail = "Usuario expirado";
-            else if ("kick".equals(lstDcReason)) detail = "Sesión cerrada por el administrador";
-            else detail = "Acceso denegado por el servidor";
-        }
-        else if ("manual_reconnect_required".equals(lstConn)) detail = "Requiere reconexión manual";
-        else if ("retrying".equals(lstConn)) detail = getString(R.string.status_detail_connecting_search);
-        else if ("dropped".equals(lstConn))  detail = getString(R.string.status_detail_connecting_reconnect);
-        else if ("failed".equals(lstConn))   detail = getString(R.string.status_detail_connecting_retry);
-        else                                             detail = getString(R.string.status_detail_connecting_default);
-        if (!detail.equals(lstDtl)) {
-            lstDtl = detail;
-            stDtlsV.setVisibility(View.VISIBLE);
-            if (canAnimate()) {
-                stDtlsV.animate().cancel();
-                stDtlsV.setAlpha(0.4f);
-                stDtlsV.setText(detail);
-                stDtlsV.animate().alpha(1f).setDuration(300).start();
-            } else stDtlsV.setText(detail);
-        }
-    }
-
-    private void refreshFromLogs(String logs) {
-        lstDcReason = findLatestDisconnectReason(logs);
-        updateServerAuthStatus(logs);
-        updateUserMetadata(logs);
-    }
-
-    private void updateServerAuthStatus(String logs) {
-        if (logs == null || stDtlsV == null) return;
-        String latestAuth = findLatestAuthState(logs);
-        if ("not_registered".equals(latestAuth)) {
-            if ("not_registered".equals(aSt)) return;
-            aSt = "not_registered"; setHideInternalId(false);
-            if (BtVpnService.iRun()) stopVpn();
-            setUiState(UiState.DISCONNECTED);
-            stDtlsV.setVisibility(View.VISIBLE);
-            stDtlsV.setText("✖ Usuario no registrado\nComparte tu ID interno para habilitación\nID: " + iid);
-            stDtlsV.setTextColor(c(R.color.color_disconnected));
-            showDisconnectOverlay(
-                "USUARIO NO REGISTRADO",
-                "Tu identificador no está registrado o fue eliminado.\nNo intentes reconectar.\n\nComparte este ID con soporte:\n" + iid,
-                c(R.color.color_disconnected)
-            );
-            if (cBtn != null) cBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
-        } else if ("expired".equals(latestAuth)) {
-            if ("expired".equals(aSt)) return;
-            aSt = "expired"; setHideInternalId(false);
-            if (BtVpnService.iRun()) stopVpn();
-            setUiState(UiState.DISCONNECTED);
-            stDtlsV.setVisibility(View.VISIBLE);
-            stDtlsV.setText("✖ Usuario expirado\nRenueva tu acceso con soporte\nID: " + iid);
-            stDtlsV.setTextColor(c(R.color.color_connecting));
-            showDisconnectOverlay(
-                "USUARIO EXPIRADO",
-                "Tu acceso venció y el servidor bloqueó la conexión.\nNo intentes reconectar.\n\nRenueva con soporte.\nID: " + iid,
-                c(R.color.color_connecting)
-            );
-            if (cBtn != null) cBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
-        } else if ("kick".equals(latestAuth)) {
-            if ("kick".equals(aSt)) return;
-            aSt = "kick"; setHideInternalId(false);
-            if (BtVpnService.iRun()) stopVpn();
-            setUiState(UiState.DISCONNECTED);
-            showDisconnectOverlay(
-                "SESIÓN CERRADA",
-                "La sesión fue cerrada por el administrador o por otro inicio del mismo ID.\nNo intentes reconectar hasta validar con soporte.",
-                c(R.color.color_disconnected)
-            );
-        } else if ("ok".equals(latestAuth)) { aSt = ""; setHideInternalId(true); hideDisconnectOverlay(); }
-    }
-
-    private String findLatestAuthState(String logs) {
-        String[] lines = logs.split("\n");
-        for (int i = lines.length - 1; i >= 0; i--) {
-            String line = lines[i]; if (line == null) continue;
-            String lower = line.trim().toLowerCase(Locale.ROOT); if (lower.isEmpty()) continue;
-            if (lower.contains("disconnect_reason=not_registered")) return "not_registered";
-            if (lower.contains("disconnect_reason=expired")) return "expired";
-            if (lower.contains("usuario no registrado") || lower.contains("not_registered")) return "not_registered";
-            if (lower.contains("disconnect_reason=kick")) return "kick";
-            if (lower.contains("usuario expirado")      || lower.contains("expired"))        return "expired";
-            if (lower.contains("user_name=") || lower.contains("user_days=") || lower.contains("ping_ms=")) return "ok";
-        }
-        return "";
-    }
-
-    private String findLatestDisconnectReason(String logs) {
-        if (logs == null || logs.isEmpty()) return "";
-        String[] lines = logs.split("\n");
-        for (int i = lines.length - 1; i >= 0; i--) {
-            String line = lines[i];
-            if (line == null) continue;
-            String lower = line.trim().toLowerCase(Locale.ROOT);
-            if (lower.contains("disconnect_reason=not_registered")) return "not_registered";
-            if (lower.contains("disconnect_reason=expired")) return "expired";
-            if (lower.contains("disconnect_reason=kick")) return "kick";
-        }
-        return "";
-    }
-
-    private String findLatestConnectionState(String logs) {
-        if (logs == null || logs.isEmpty()) return "";
-        String[] lines = logs.split("\n");
-        for (int i = lines.length - 1; i >= 0; i--) {
-            String line = lines[i]; if (line == null) continue;
-            String lower = line.trim().toLowerCase(Locale.ROOT); if (lower.isEmpty()) continue;
-            if (lower.contains("tunnel ok")  || lower.contains("user_name=") ||
-                lower.contains("user_days=") || lower.contains("ping_ms=") ||
-                lower.contains("stage=access_granted"))                         return "connected";
-            if (lower.contains("stage=auth_rejected")) return "auth_rejected";
-            if (lower.contains("stage=manual_reconnect_required")) return "manual_reconnect_required";
-            if (lower.contains("handshake failed") || lower.contains("proxy no responde") ||
-                lower.contains("getaddrinfo fallo") || lower.contains("connect failed") ||
-                lower.contains("stage=proxy_connect_failed") || lower.contains("stage=proxy_no_response")) return "failed";
-            if (lower.contains("tunnel caido")       || lower.contains("pong timeout") ||
-                lower.contains("tunnel read failed")  || lower.contains("payload too large") ||
-                lower.contains("payload read failed"))                          return "dropped";
-        }
-        for (int i = lines.length - 1; i >= 0; i--) {
-            String line = lines[i]; if (line == null) continue;
-            String lower = line.trim().toLowerCase(Locale.ROOT); if (lower.isEmpty()) continue;
-            if (lower.contains("stage=proxy_connect_start")) return "proxy_connect_start";
-            if (lower.contains("stage=proxy_connected")) return "proxy_connected";
-            if (lower.contains("stage=server_auth_request")) return "server_auth_request";
-            if (lower.contains("stage=access_granted")) return "access_granted";
-            if (lower.contains("conectando...") || lower.contains("probando ") ||
-                lower.contains("ips estaticas fallaron") || lower.contains("dns ") ||
-                lower.contains("relay listo"))                                  return "retrying";
-        }
-        return "";
-    }
-
-    private void updateUserMetadata(String logs) {
-        if (logs == null) return;
-        String[] lines = logs.split("\n");
-        for (int i = lines.length - 1; i >= 0; i--) {
-            String line = lines[i].trim(); int idx = line.indexOf("user_name=");
-            if (idx >= 0) {
-                String v = line.substring(idx + "user_name=".length()).trim();
-                if (!v.isEmpty()) {
-                    if (usrNmWV != null) usrNmWV.setText("Usuario: " + v);
-                }
-                break;
-            }
-        }
-        for (int i = lines.length - 1; i >= 0; i--) {
-            String line = lines[i].trim(); int idx = line.indexOf("user_days=");
-            if (idx >= 0 && daysV != null) {
-                String v = line.substring(idx + "user_days=".length()).trim();
-                if (!v.isEmpty()) {
-                    daysV.setText(v + " días");
-                    try {
-                        int days = Integer.parseInt(v.replaceAll("[^0-9]", ""));
-                        daysV.setTextColor(days < 7 ? c(R.color.color_connecting) : c(R.color.color_connected));
-                        scheduleAutoDisconnectFromDays(days);
-                    } catch (Exception ignored) {}
-                }
-                break;
-            }
-        }
-        for (int i = lines.length - 1; i >= 0; i--) {
-            String line = lines[i].trim(); int idx = line.indexOf("ping_ms=");
-            if (idx >= 0) {
-                String v = line.substring(idx + "ping_ms=".length()).trim();
-                if (!v.isEmpty()) {
-                    try {
-                        int ping = Integer.parseInt(v.replaceAll("[^0-9]", ""));
-                        animatePingTo(ping);
-                        if (pngPlsV != null) {
-                            pngPlsV.setLineColor(resolvePingColor(ping));
-                            pngPlsV.pushPing(ping);
-                        }
-                    } catch (Exception ignored) {
-                        if (pngV != null) {
-                            pngV.setText("--");
-                            pngV.setTextColor(c(R.color.color_text_disabled));
-                        }
-                    }
-                }
-                break;
-            }
-        }
-    }
-
-    private void animatePingTo(int targetPing) {
-        if (pngV == null) return;
-        int start = lstPing >= 0 ? lstPing : targetPing;
-        if (!canAnimate() || lstPing < 0) {
-            pngV.setText(String.valueOf(targetPing));
-            pngV.setTextColor(resolvePingColor(targetPing));
-            lstPing = targetPing; return;
-        }
-        ValueAnimator counter = ValueAnimator.ofInt(start, targetPing);
-        counter.setDuration(400);
-        counter.addUpdateListener(a -> pngV.setText(String.valueOf((int) a.getAnimatedValue())));
-        counter.start();
-        ValueAnimator colorAnim = ValueAnimator.ofObject(
-            new ArgbEvaluator(), pngV.getCurrentTextColor(), resolvePingColor(targetPing));
-        colorAnim.setDuration(600);
-        colorAnim.addUpdateListener(a -> pngV.setTextColor((Integer) a.getAnimatedValue()));
-        colorAnim.start();
-        lstPing = targetPing;
-    }
-
-    private int resolvePingColor(int ping) {
-        if (ping < 80)   return c(R.color.color_connected);
-        if (ping <= 150) return c(R.color.color_accent);
-        return c(R.color.color_connecting);
-    }
-
-    private void scheduleAutoDisconnectFromDays(int days) {
-        h.removeCallbacks(autoDisconnectRunnable);
-        if (days <= 0) { runAutoDisconnect(); return; }
-        long delay = days * 24L * 60L * 60L * 1000L;
-        autoDcMs = SystemClock.elapsedRealtime() + delay;
-        h.postDelayed(autoDisconnectRunnable, delay);
-    }
-
-    private void runAutoDisconnect() {
-        if (!BtVpnService.iRun()) return;
-        stopVpn(); setHideInternalId(false);
-        if (stDtlsV != null) {
-            stDtlsV.setVisibility(View.VISIBLE);
-            stDtlsV.setText("✖ Usuario expirado\nDesconexión automática local\nID: " + iid);
-            stDtlsV.setTextColor(c(R.color.color_connecting));
-        }
-    }
-
-    private void setUiState(UiState newState) {
-        UiState prev         = uS;
-        uS              = newState;
-        boolean stateChanged = (prev != newState);
-
-        int accentColor = resolveAccentColor();
-
-        if (stateChanged) {
-            applyHudTheme(accentColor);
-            animateDotColor(stDtV, stHlV, accentColor, 400);
-            if (stHmV != null)
-                stHmV.setBackgroundTintList(ColorStateList.valueOf(accentColor));
-        }
-
-        if (cBtn != null) {
-            if (newState == UiState.CONNECTING) {
-                cBtn.setEnabled(false); cBtn.setActivated(false);
-                cBtn.setText(R.string.status_connecting);
-                cBtn.setTextColor(c(R.color.color_connecting));
-                if (stateChanged && canAnimate()) {
-                    cBtn.setAlpha(0.7f);
-                    cBtn.animate().alpha(1f).setDuration(300).start();
-                }
-            } else if (newState == UiState.CONNECTED) {
-                cBtn.setEnabled(true); cBtn.setActivated(true);
-                cBtn.setText(R.string.disconnect);
-                cBtn.setTextColor(c(R.color.color_connected));
-                if (stateChanged && canAnimate()) {
-                    cBtn.setScaleX(0.92f); cBtn.setScaleY(0.92f);
-                    cBtn.animate().scaleX(1f).scaleY(1f).setDuration(250).start();
-                }
-            } else {
-                cBtn.setEnabled(true); cBtn.setActivated(false);
-                cBtn.setText(BtProxy.iGm(this) ? getString(R.string.connect_gaming) : getString(R.string.connect));
-                cBtn.setTextColor(c(R.color.color_text_primary));
-                if (stateChanged && prev == UiState.CONNECTED && canAnimate()) {
-                    cBtn.setAlpha(0.6f);
-                    cBtn.animate().alpha(1f).setDuration(400).start();
-                }
-            }
-        }
-
-        if (stBdV != null) {
-            String badgeText;
-            int    badgeColor;
-            if (newState == UiState.CONNECTING) {
-                badgeText = getString(R.string.status_connecting); badgeColor = c(R.color.color_connecting);
-                startStatusPulse(); startStatusHaloWave();
-                startHudRingRotation();
-            } else if (newState == UiState.CONNECTED) {
-                badgeText  = getString(R.string.status_connected);
-                badgeColor = BtProxy.iGm(this) ? c(R.color.color_gaming) : c(R.color.color_connected);
-                stopStatusPulse(); stopStatusHaloWave();
-                startHudRingRotation();
-                if (stHlV != null) stHlV.setAlpha(0.15f);
-            } else {
-                badgeText  = getString(R.string.status_disconnected); badgeColor = c(R.color.color_disconnected);
-                stopStatusPulse(); stopStatusHaloWave();
-                stopHudRingRotation();
-                if (stHlV != null) stHlV.setAlpha(0.20f);
-                if (pngPlsV  != null) pngPlsV.setIdle();
-            }
-            if (stateChanged) {
-                animateBadgeColor(stBdV, badgeColor, 350);
-                if (!stBdV.getText().toString().equals(badgeText)) {
-                    if (canAnimate()) {
-                        stBdV.animate().cancel();
-                        stBdV.setAlpha(0f);
-                        stBdV.setText(badgeText);
-                        stBdV.animate().alpha(1f).setDuration(250).start();
-                    } else { stBdV.setText(badgeText); stBdV.setTextColor(badgeColor); }
-                }
-            } else { stBdV.setText(badgeText); stBdV.setTextColor(badgeColor); }
-            stBdV.setShadowLayer(0f, 0f, 0f, 0);
-        }
-
-        if (stDtlsV != null) {
-            if (newState == UiState.CONNECTING) {
-                String detail;
-                if      ("retrying".equals(lstConn)) detail = getString(R.string.status_detail_connecting_search);
-                else if ("dropped".equals(lstConn))  detail = getString(R.string.status_detail_connecting_reconnect);
-                else if ("failed".equals(lstConn))   detail = getString(R.string.status_detail_connecting_retry);
-                else                                             detail = getString(R.string.status_detail_connecting_default);
-                lstDtl = detail;
-                stDtlsV.setVisibility(View.VISIBLE);
-                stDtlsV.setTextColor(c(R.color.color_connecting));
-                if (stateChanged && canAnimate()) {
-                    stDtlsV.setAlpha(0f);
-                    stDtlsV.setText(detail);
-                    stDtlsV.animate().alpha(1f).setDuration(300).start();
-                } else stDtlsV.setText(detail);
-            } else if (newState == UiState.CONNECTED) {
-                String full = getString(R.string.status_detail_connected);
-                lstDtl = full;
-                stDtlsV.setVisibility(View.VISIBLE);
-                stDtlsV.setTextColor(c(R.color.color_connected));
-                if (stateChanged && canAnimate())
-                    stDtlsV.startAnimation(AnimationUtils.loadAnimation(this, R.anim.fade_slide_in));
-                stDtlsV.setText(full);
-            } else {
-                lstDtl = "";
-                stDtlsV.setVisibility(View.GONE);
-                if (pngV != null) {
-                    pngV.setText("--");
-                    if (canAnimate()) {
-                        ValueAnimator va = ValueAnimator.ofObject(new ArgbEvaluator(),
-                            pngV.getCurrentTextColor(), c(R.color.color_text_disabled));
-                        va.setDuration(300);
-                        va.addUpdateListener(a -> pngV.setTextColor((Integer) a.getAnimatedValue()));
-                        va.start();
-                    } else pngV.setTextColor(c(R.color.color_text_disabled));
-                    lstPing = -1;
-                }
-            }
-        }
-
-        rfGmUi();
-    }
-
-    private static final class VisualDrawables {
-
-        private VisualDrawables() {}
-
-        public static android.graphics.drawable.Drawable cornerTL(int color) { return new CornerDrawable(color, 0); }
-        public static android.graphics.drawable.Drawable cornerTR(int color) { return new CornerDrawable(color, 1); }
-        public static android.graphics.drawable.Drawable cornerBL(int color) { return new CornerDrawable(color, 2); }
-        public static android.graphics.drawable.Drawable cornerBR(int color) { return new CornerDrawable(color, 3); }
-
-        public static android.graphics.drawable.Drawable ringOuter(int color) { return new RingDrawable(color, 6f, true,  20f); }
-        public static android.graphics.drawable.Drawable ringMid  (int color) { return new RingDrawable(color, 2f, true,  12f); }
-        public static android.graphics.drawable.Drawable ringInner(int color) { return new RingDrawable(color, 3f, false,  0f); }
-        public static android.graphics.drawable.Drawable glowRing (int color) { return new GlowRingDrawable(color); }
-
-        public static android.graphics.drawable.Drawable bRO(int color) { return new RingDrawable(color, 4f, true, 18f); }
-        public static android.graphics.drawable.Drawable bRM  (int color) { return new RingDrawable(color, 2f, true, 10f); }
-        public static android.graphics.drawable.Drawable btnConnect  (int color, boolean connected) { return new BtnCircleDrawable(color, connected); }
-
-        public static android.graphics.drawable.Drawable statusBadge (int color) { return new StatusBadgeDrawable(color); }
-        public static android.graphics.drawable.Drawable panelMetrics(int color) { return new PanelDrawable(color, true);  }
-        public static android.graphics.drawable.Drawable panelData   (int color) { return new PanelDrawable(color, false); }
-        public static android.graphics.drawable.Drawable panelId     (int color) { return new PanelDrawable(color, false); }
-        public static android.graphics.drawable.Drawable crossLine   (int color) { return new CrossLineDrawable(color); }
-
-        static final class CornerDrawable extends android.graphics.drawable.Drawable {
-            private final android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-            private final int variant;
-            CornerDrawable(int color, int variant) { this.variant = variant; p.setColor(color); p.setStyle(android.graphics.Paint.Style.STROKE); p.setStrokeWidth(2.5f); p.setStrokeCap(android.graphics.Paint.Cap.SQUARE); }
-            @Override public void draw(android.graphics.Canvas c) { float w=getBounds().width(), h=getBounds().height(), arm=w*0.55f; android.graphics.Path path=new android.graphics.Path(); switch (variant) { case 0: path.moveTo(0,arm); path.lineTo(0,0); path.lineTo(arm,0); break; case 1: path.moveTo(w-arm,0); path.lineTo(w,0); path.lineTo(w,arm); break; case 2: path.moveTo(0,h-arm); path.lineTo(0,h); path.lineTo(arm,h); break; case 3: path.moveTo(w-arm,h); path.lineTo(w,h); path.lineTo(w,h-arm); break; } c.drawPath(path,p); }
-            @Override public void setAlpha(int a) { p.setAlpha(a); }
-            @Override public void setColorFilter(android.graphics.ColorFilter cf) { p.setColorFilter(cf); }
-            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
-        }
-        static final class RingDrawable extends android.graphics.drawable.Drawable {
-            private final android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-            RingDrawable(int color, float strokeW, boolean dash, float dashLen) { p.setColor(color); p.setStyle(android.graphics.Paint.Style.STROKE); p.setStrokeWidth(strokeW); if (dash && dashLen > 0) p.setPathEffect(new android.graphics.DashPathEffect(new float[]{dashLen, dashLen * 0.5f}, 0)); }
-            @Override public void draw(android.graphics.Canvas c) { float sw=p.getStrokeWidth(); android.graphics.RectF r=new android.graphics.RectF(sw,sw,getBounds().width()-sw,getBounds().height()-sw); c.drawOval(r,p); }
-            @Override public void setAlpha(int a) { p.setAlpha(a); }
-            @Override public void setColorFilter(android.graphics.ColorFilter cf) { p.setColorFilter(cf); }
-            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
-        }
-        static final class GlowRingDrawable extends android.graphics.drawable.Drawable {
-            private final android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-            private final int baseColor;
-            GlowRingDrawable(int color) { baseColor=color; p.setStyle(android.graphics.Paint.Style.STROKE); p.setStrokeWidth(14f); }
-            @Override public void draw(android.graphics.Canvas c) { float cx=getBounds().width()/2f, cy=getBounds().height()/2f, r=Math.min(cx,cy)-8f; p.setShader(new android.graphics.RadialGradient(cx, cy, r, new int[]{ android.graphics.Color.argb(0, android.graphics.Color.red(baseColor), android.graphics.Color.green(baseColor), android.graphics.Color.blue(baseColor)), android.graphics.Color.argb(120, android.graphics.Color.red(baseColor), android.graphics.Color.green(baseColor), android.graphics.Color.blue(baseColor)), android.graphics.Color.argb(0, android.graphics.Color.red(baseColor), android.graphics.Color.green(baseColor), android.graphics.Color.blue(baseColor)) }, new float[]{0.7f,0.9f,1f}, android.graphics.Shader.TileMode.CLAMP)); c.drawCircle(cx,cy,r,p); }
-            @Override public void setAlpha(int a) {}
-            @Override public void setColorFilter(android.graphics.ColorFilter cf) {}
-            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
-        }
-        static final class BtnCircleDrawable extends android.graphics.drawable.Drawable {
-            private final android.graphics.Paint fillP=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG), strokeP=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-            private final int color; private final boolean connected;
-            BtnCircleDrawable(int color, boolean connected) { this.color=color; this.connected=connected; fillP.setStyle(android.graphics.Paint.Style.FILL); strokeP.setStyle(android.graphics.Paint.Style.STROKE); strokeP.setStrokeWidth(2f); }
-            @Override public void draw(android.graphics.Canvas c) { float cx=getBounds().width()/2f, cy=getBounds().height()/2f, r=Math.min(cx,cy)-3f; fillP.setColor(android.graphics.Color.argb(200,8,12,18)); c.drawCircle(cx,cy,r,fillP); strokeP.setColor(color); c.drawCircle(cx,cy,r,strokeP); if (connected) { android.graphics.Paint glow=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG); glow.setStyle(android.graphics.Paint.Style.STROKE); glow.setStrokeWidth(8f); glow.setColor(android.graphics.Color.argb(60, android.graphics.Color.red(color), android.graphics.Color.green(color), android.graphics.Color.blue(color))); c.drawCircle(cx,cy,r-2f,glow);} }
-            @Override public void setAlpha(int a) {}
-            @Override public void setColorFilter(android.graphics.ColorFilter cf) {}
-            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
-        }
-        static final class StatusBadgeDrawable extends android.graphics.drawable.Drawable {
-            private final android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-            private final int color;
-            StatusBadgeDrawable(int color) { this.color=color; p.setStyle(android.graphics.Paint.Style.STROKE); p.setStrokeWidth(1.5f); }
-            @Override public void draw(android.graphics.Canvas c) { float w=getBounds().width(), h=getBounds().height(); p.setColor(color); android.graphics.RectF r=new android.graphics.RectF(1,1,w-1,h-1); c.drawRoundRect(r,h/2f,h/2f,p); p.setStyle(android.graphics.Paint.Style.FILL); p.setColor(android.graphics.Color.argb(40, android.graphics.Color.red(color), android.graphics.Color.green(color), android.graphics.Color.blue(color))); c.drawRoundRect(r,h/2f,h/2f,p); p.setStyle(android.graphics.Paint.Style.STROKE);}
-            @Override public void setAlpha(int a) {}
-            @Override public void setColorFilter(android.graphics.ColorFilter cf) {}
-            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
-        }
-        static final class PanelDrawable extends android.graphics.drawable.Drawable {
-            private final android.graphics.Paint strokeP=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG), fillP=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG), cornerP=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-            private final int color; private final boolean metric;
-            PanelDrawable(int color, boolean metric) { this.color=color; this.metric=metric; strokeP.setStyle(android.graphics.Paint.Style.STROKE); strokeP.setStrokeWidth(1.2f); fillP.setStyle(android.graphics.Paint.Style.FILL); cornerP.setStyle(android.graphics.Paint.Style.STROKE); cornerP.setStrokeWidth(2f); cornerP.setStrokeCap(android.graphics.Paint.Cap.SQUARE); }
-            @Override public void draw(android.graphics.Canvas c) { float w=getBounds().width(), h=getBounds().height(), radius=10f; android.graphics.RectF r=new android.graphics.RectF(1,1,w-1,h-1); fillP.setColor(android.graphics.Color.argb(metric?25:18, android.graphics.Color.red(color), android.graphics.Color.green(color), android.graphics.Color.blue(color))); c.drawRoundRect(r,radius,radius,fillP); strokeP.setColor(android.graphics.Color.argb(70, android.graphics.Color.red(color), android.graphics.Color.green(color), android.graphics.Color.blue(color))); c.drawRoundRect(r,radius,radius,strokeP); float arm=18f; cornerP.setColor(color); c.drawLine(2,arm,2,2,cornerP); c.drawLine(2,2,arm,2,cornerP); c.drawLine(w-arm,2,w-2,2,cornerP); c.drawLine(w-2,2,w-2,arm,cornerP); c.drawLine(2,h-arm,2,h-2,cornerP); c.drawLine(2,h-2,arm,h-2,cornerP); c.drawLine(w-arm,h-2,w-2,h-2,cornerP); c.drawLine(w-2,h-2,w-2,h-arm,cornerP);}
-            @Override public void setAlpha(int a) {}
-            @Override public void setColorFilter(android.graphics.ColorFilter cf) {}
-            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
-        }
-        static final class CrossLineDrawable extends android.graphics.drawable.Drawable {
-            private final android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-            CrossLineDrawable(int color) { p.setColor(color); p.setStyle(android.graphics.Paint.Style.FILL); }
-            @Override public void draw(android.graphics.Canvas c) { c.drawRect(getBounds(), p); }
-            @Override public void setAlpha(int a) { p.setAlpha(a); }
-            @Override public void setColorFilter(android.graphics.ColorFilter cf) { p.setColorFilter(cf); }
-            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
-        }
-    }
-
+    (*env)->DeleteLocalRef(env, cls);
+    if (att) (*jvm)->DetachCurrentThread(jvm);
 }
 
-class PingPulseView extends View {
+static void log_event(const char *lvl, const char *fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    char msg[512]; vsnprintf(msg, sizeof(msg), fmt, ap); va_end(ap);
+    if (lvl[0] == 'E') LOGE("%s", msg); else LOGI("%s", msg);
+}
 
-    private static final int   MAX_POINTS     = 30;
-    private static final long  SCROLL_DURATION = 2000L;
-    private static final float IDLE_AMPLITUDE  = 4f;
+#define HT_SIZE 4096
+#define HT_MASK (HT_SIZE - 1)
 
-    private final Deque<Float> pingHistory = new ArrayDeque<>();
+typedef struct hn_s { struct hn_s *next; uint32_t sid; int cfd; } hn_t;
+static hn_t           *g_h[HT_SIZE];
+static pthread_mutex_t g_hm[HT_SIZE];
+static int             g_hi = 0;
 
-    private final Paint linePaint  = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint glowPaint  = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint dotPaint   = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint gridPaint  = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Path  linePath   = new Path();
-
-    private int   currentPingColor = Color.parseColor("#444444");
-    private float scrollOffset     = 0f;
-    private float blinkAlpha       = 1f;
-    private boolean isActive       = false;
-
-    private ValueAnimator scrollAnimator;
-    private ValueAnimator blinkAnimator;
-
-    public PingPulseView(Context context) {
-        super(context);
-        init();
+static void ht_init(void) {
+    for (int i = 0; i < HT_SIZE; i++) {
+        g_h[i] = NULL;
+        if (!g_hi) pthread_mutex_init(&g_hm[i], NULL);
     }
+    g_hi = 1;
+}
 
-    public PingPulseView(Context context, AttributeSet attrs) {
-        super(context, attrs);
-        init();
-    }
+static int ht_get(uint32_t sid) {
+    int slot = sid & HT_MASK;
+    lk(&g_hm[slot]);
+    hn_t *n = g_h[slot];
+    while (n && n->sid != sid) n = n->next;
+    int cfd = n ? n->cfd : -1;
+    ul(&g_hm[slot]);
+    return cfd;
+}
 
-    public PingPulseView(Context context, AttributeSet attrs, int defStyleAttr) {
-        super(context, attrs, defStyleAttr);
-        init();
-    }
+static void ht_put(uint32_t sid, int cfd) {
+    hn_t *n = malloc(sizeof(*n));
+    if (!n) return;
+    n->sid = sid; n->cfd = cfd;
+    int slot = sid & HT_MASK;
+    lk(&g_hm[slot]);
+    n->next = g_h[slot]; g_h[slot] = n;
+    ul(&g_hm[slot]);
+}
 
-    private void init() {
-        linePaint.setStyle(Paint.Style.STROKE);
-        linePaint.setStrokeWidth(2.5f);
-        linePaint.setStrokeCap(Paint.Cap.ROUND);
-        linePaint.setStrokeJoin(Paint.Join.ROUND);
-
-        glowPaint.setStyle(Paint.Style.STROKE);
-        glowPaint.setStrokeWidth(6f);
-        glowPaint.setStrokeCap(Paint.Cap.ROUND);
-        glowPaint.setStrokeJoin(Paint.Join.ROUND);
-
-        dotPaint.setStyle(Paint.Style.FILL);
-
-        gridPaint.setStyle(Paint.Style.STROKE);
-        gridPaint.setStrokeWidth(0.7f);
-        gridPaint.setColor(Color.argb(20, 255, 255, 255));
-
-        for (int i = 0; i < MAX_POINTS; i++) pingHistory.addLast(0f);
-
-        startScrollAnimation();
-        startBlinkAnimation();
-    }
-
-    private void startScrollAnimation() {
-        if (scrollAnimator != null) scrollAnimator.cancel();
-        scrollAnimator = ValueAnimator.ofFloat(0f, 1f);
-        scrollAnimator.setDuration(SCROLL_DURATION);
-        scrollAnimator.setRepeatCount(ValueAnimator.INFINITE);
-        scrollAnimator.setInterpolator(new LinearInterpolator());
-        scrollAnimator.addUpdateListener(a -> {
-            scrollOffset = (float) a.getAnimatedValue();
-            invalidate();
-        });
-        scrollAnimator.start();
-    }
-
-    private void startBlinkAnimation() {
-        if (blinkAnimator != null) blinkAnimator.cancel();
-        blinkAnimator = ValueAnimator.ofFloat(1f, 0.2f, 1f);
-        blinkAnimator.setDuration(1200);
-        blinkAnimator.setRepeatCount(ValueAnimator.INFINITE);
-        blinkAnimator.setInterpolator(new LinearInterpolator());
-        blinkAnimator.addUpdateListener(a -> {
-            blinkAlpha = (float) a.getAnimatedValue();
-            invalidate();
-        });
-        blinkAnimator.start();
-    }
-
-    public void pushPing(int pingMs) {
-        if (pingHistory.size() >= MAX_POINTS) pingHistory.pollFirst();
-        pingHistory.addLast((float) pingMs);
-        isActive = pingMs > 0;
-        invalidate();
-    }
-
-    public void setLineColor(int color) {
-        currentPingColor = color;
-        invalidate();
-    }
-
-    public void setIdle() {
-        isActive = false;
-        pingHistory.clear();
-        for (int i = 0; i < MAX_POINTS; i++) pingHistory.addLast(0f);
-        currentPingColor = Color.parseColor("#444444");
-        invalidate();
-    }
-
-    @Override
-    protected void onDraw(Canvas canvas) {
-        super.onDraw(canvas);
-        int w = getWidth();
-        int h = getHeight();
-        if (w == 0 || h == 0) return;
-
-        drawGrid(canvas, w, h);
-
-        Float[] arr = pingHistory.toArray(new Float[0]);
-        float maxVal = 1f;
-        for (Float v : arr) if (v > maxVal) maxVal = v;
-        maxVal = Math.max(maxVal, 200f);
-
-        float stepX = (float) w / (MAX_POINTS - 1);
-        float shiftX = scrollOffset * stepX;
-
-        linePath.reset();
-        boolean first = true;
-        int totalPadV = (int)(h * 0.15f);
-        float drawH = h - totalPadV * 2f;
-
-        for (int i = 0; i < arr.length; i++) {
-            float rawVal = arr[i];
-            float normalised;
-            if (!isActive || rawVal <= 0f) {
-                float idlePhase = (float)(i + scrollOffset * MAX_POINTS) / MAX_POINTS;
-                normalised = 0.5f + (float)(Math.sin(idlePhase * Math.PI * 2) * IDLE_AMPLITUDE / drawH);
-            } else {
-                normalised = 1f - (rawVal / maxVal);
-                normalised = Math.max(0.05f, Math.min(0.95f, normalised));
-            }
-            float x = i * stepX - shiftX + stepX;
-            float y = totalPadV + normalised * drawH;
-            if (first) { linePath.moveTo(x, y); first = false; }
-            else        linePath.lineTo(x, y);
+static void ht_del(uint32_t sid) {
+    int slot = sid & HT_MASK;
+    lk(&g_hm[slot]);
+    hn_t **pp = &g_h[slot];
+    while (*pp) {
+        if ((*pp)->sid == sid) {
+            hn_t *n = *pp; *pp = n->next; free(n); break;
         }
-
-        int glowColor = Color.argb(
-            (int)(80 * (isActive ? blinkAlpha : 0.3f)),
-            Color.red(currentPingColor),
-            Color.green(currentPingColor),
-            Color.blue(currentPingColor));
-
-        glowPaint.setColor(glowColor);
-        canvas.drawPath(linePath, glowPaint);
-
-        int lineAlpha = isActive ? (int)(230 * blinkAlpha) : 60;
-        linePaint.setColor(Color.argb(lineAlpha,
-            Color.red(currentPingColor),
-            Color.green(currentPingColor),
-            Color.blue(currentPingColor)));
-
-        LinearGradient grad = new LinearGradient(0, 0, w, 0,
-            Color.argb(lineAlpha / 3, Color.red(currentPingColor), Color.green(currentPingColor), Color.blue(currentPingColor)),
-            Color.argb(lineAlpha, Color.red(currentPingColor), Color.green(currentPingColor), Color.blue(currentPingColor)),
-            Shader.TileMode.CLAMP);
-        linePaint.setShader(grad);
-        canvas.drawPath(linePath, linePaint);
-        linePaint.setShader(null);
-
-        if (isActive && arr.length > 0) {
-            Float lastVal = arr[arr.length - 1];
-            float normalised;
-            if (lastVal <= 0f) {
-                normalised = 0.5f;
-            } else {
-                normalised = 1f - (lastVal / maxVal);
-                normalised = Math.max(0.05f, Math.min(0.95f, normalised));
-            }
-            float dotX = w - shiftX + stepX * 0.5f;
-            float dotY = totalPadV + normalised * drawH;
-            dotX = Math.min(dotX, w - 4f);
-
-            dotPaint.setColor(Color.argb((int)(255 * blinkAlpha),
-                Color.red(currentPingColor),
-                Color.green(currentPingColor),
-                Color.blue(currentPingColor)));
-            dotPaint.setShadowLayer(8f, 0f, 0f, currentPingColor);
-            canvas.drawCircle(dotX, dotY, 3.5f, dotPaint);
-            dotPaint.setShadowLayer(0f, 0f, 0f, 0);
-        }
+        pp = &(*pp)->next;
     }
+    ul(&g_hm[slot]);
+}
 
-    private void drawGrid(Canvas canvas, int w, int h) {
-        int rows = 3;
-        for (int i = 1; i < rows; i++) {
-            float y = (float) h / rows * i;
-            canvas.drawLine(0, y, w, y, gridPaint);
+static void ht_close_all(int epfd) {
+    for (int i = 0; i < HT_SIZE; i++) {
+        lk(&g_hm[i]);
+        hn_t *n = g_h[i];
+        while (n) {
+            hn_t *nx = n->next;
+            if (epfd >= 0) epoll_ctl(epfd, EPOLL_CTL_DEL, n->cfd, NULL);
+            close(n->cfd);
+            free(n);
+            n = nx;
         }
-    }
-
-    @Override
-    protected void onDetachedFromWindow() {
-        super.onDetachedFromWindow();
-        if (scrollAnimator != null) scrollAnimator.cancel();
-        if (blinkAnimator  != null) blinkAnimator.cancel();
+        g_h[i] = NULL;
+        ul(&g_hm[i]);
     }
 }
 
-class ThroughputGraphView extends View {
-    private static final int MAX = 36;
-    private final Deque<Float> upH = new ArrayDeque<>();
-    private final Deque<Float> dnH = new ArrayDeque<>();
-    private final Paint upP = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint dnP = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint gridP = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Path upPath = new Path();
-    private final Path dnPath = new Path();
+typedef struct chunk_s {
+    struct chunk_s *next;
+    size_t          len;
+    size_t          offset;
+    uint8_t         data[];
+} chunk_t;
 
-    public ThroughputGraphView(Context c, AttributeSet a) {
-        super(c, a);
-        upP.setStyle(Paint.Style.STROKE); upP.setStrokeWidth(2.2f); upP.setColor(Color.parseColor("#3BEF8F"));
-        dnP.setStyle(Paint.Style.STROKE); dnP.setStrokeWidth(2.2f); dnP.setColor(Color.parseColor("#44B7FF"));
-        gridP.setStyle(Paint.Style.STROKE); gridP.setStrokeWidth(1f); gridP.setColor(Color.parseColor("#22FFFFFF"));
+typedef struct { chunk_t *head; chunk_t *tail; size_t bytes; } chunkq_t;
+
+static void cq_push(chunkq_t *q, const uint8_t *data, size_t len) {
+    chunk_t *c = malloc(sizeof(chunk_t) + len);
+    if (!c) return;
+    c->next = NULL; c->len = len; c->offset = 0;
+    memcpy(c->data, data, len);
+    if (q->tail) q->tail->next = c; else q->head = c;
+    q->tail = c; q->bytes += len;
+}
+
+static void cq_flush(chunkq_t *q) {
+    chunk_t *c = q->head;
+    while (c) { chunk_t *nx = c->next; free(c); c = nx; }
+    q->head = q->tail = NULL; q->bytes = 0;
+}
+
+typedef struct sinfo_s {
+    uint32_t  sid;
+    int       cfd;
+    chunkq_t  lq;
+    int       ps;
+    int       cp;
+    int       pr;
+    long      la;
+} sinfo_t;
+
+#define SI_SIZE 4096
+#define SI_MASK (SI_SIZE - 1)
+
+typedef struct si_hn_s { struct si_hn_s *next; uint32_t sid; sinfo_t *si; } si_hn_t;
+static si_hn_t        *g_x[SI_SIZE];
+static pthread_mutex_t g_xm[SI_SIZE];
+static int             g_xi = 0;
+
+static void si_init(void) {
+    for (int i = 0; i < SI_SIZE; i++) {
+        g_x[i] = NULL;
+        if (!g_xi) pthread_mutex_init(&g_xm[i], NULL);
     }
+    g_xi = 1;
+}
 
-    public void push(long up, long dn) {
-        if (upH.size() >= MAX) upH.removeFirst();
-        if (dnH.size() >= MAX) dnH.removeFirst();
-        upH.addLast((float) up);
-        dnH.addLast((float) dn);
-        postInvalidateOnAnimation();
-    }
+static sinfo_t *si_get(uint32_t sid) {
+    int slot = sid & SI_MASK;
+    lk(&g_xm[slot]);
+    si_hn_t *n = g_x[slot];
+    while (n && n->sid != sid) n = n->next;
+    sinfo_t *si = n ? n->si : NULL;
+    ul(&g_xm[slot]);
+    return si;
+}
 
-    @Override protected void onDraw(Canvas c) {
-        super.onDraw(c);
-        float w = getWidth(), h = getHeight(), m = 6f;
-        c.drawLine(m, h * 0.33f, w - m, h * 0.33f, gridP);
-        c.drawLine(m, h * 0.66f, w - m, h * 0.66f, gridP);
-        if (upH.isEmpty() || dnH.isEmpty()) return;
-        float max = 1f;
-        for (Float v : upH) max = Math.max(max, v);
-        for (Float v : dnH) max = Math.max(max, v);
-        drawSeries(c, upH, upPath, upP, m, w, h, max);
-        drawSeries(c, dnH, dnPath, dnP, m, w, h, max);
-    }
+static void si_put(uint32_t sid, sinfo_t *si) {
+    si_hn_t *n = malloc(sizeof(*n));
+    if (!n) return;
+    n->sid = sid; n->si = si;
+    int slot = sid & SI_MASK;
+    lk(&g_xm[slot]);
+    n->next = g_x[slot]; g_x[slot] = n;
+    ul(&g_xm[slot]);
+}
 
-    private void drawSeries(Canvas c, Deque<Float> hs, Path p, Paint paint, float m, float w, float h, float max) {
-        p.reset();
-        int i = 0, n = hs.size();
-        for (Float v : hs) {
-            float x = m + ((w - 2f * m) * i / Math.max(1, n - 1));
-            float y = h - m - ((h - 2f * m) * (v / max));
-            if (i == 0) p.moveTo(x, y); else p.lineTo(x, y);
-            i++;
+static void si_del(uint32_t sid) {
+    int slot = sid & SI_MASK;
+    lk(&g_xm[slot]);
+    si_hn_t **pp = &g_x[slot];
+    while (*pp) {
+        if ((*pp)->sid == sid) {
+            si_hn_t *n = *pp; *pp = n->next; free(n); break;
         }
-        c.drawPath(p, paint);
+        pp = &(*pp)->next;
     }
+    ul(&g_xm[slot]);
+}
+
+static void si_close_all(int epfd) {
+    for (int i = 0; i < SI_SIZE; i++) {
+        lk(&g_xm[i]);
+        si_hn_t *n = g_x[i];
+        while (n) {
+            si_hn_t *nx = n->next;
+            sinfo_t *si = n->si;
+            if (epfd >= 0) epoll_ctl(epfd, EPOLL_CTL_DEL, si->cfd, NULL);
+            shutdown(si->cfd, SHUT_RDWR);
+            close(si->cfd);
+            cq_flush(&si->lq);
+            free(si); free(n);
+            n = nx;
+        }
+        g_x[i] = NULL;
+        ul(&g_xm[i]);
+    }
+}
+
+typedef struct frame_s {
+    struct frame_s *next;
+    size_t          total;
+    size_t          offset;
+    uint8_t         data[];
+} frame_t;
+
+typedef struct { frame_t *head; frame_t *tail; size_t bytes; } frameq_t;
+
+static frameq_t        g_wq;
+static frame_t        *g_wp    = NULL;
+static pthread_mutex_t g_wq_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static void wq_init(void) { g_wq.head = g_wq.tail = NULL; g_wq.bytes = 0; g_wp = NULL; }
+
+static void wq_flush_locked(void) {
+    if (g_wp) { free(g_wp); g_wp = NULL; }
+    frame_t *f = g_wq.head;
+    while (f) { frame_t *nx = f->next; free(f); f = nx; }
+    g_wq.head = g_wq.tail = NULL; g_wq.bytes = 0;
+}
+
+static frame_t *frame_build(uint8_t type, uint32_t sid,
+                             const uint8_t *data, uint16_t dlen) {
+    size_t total = FRAME_HDR + dlen;
+    frame_t *f = malloc(sizeof(frame_t) + total);
+    if (!f) return NULL;
+    f->next = NULL; f->total = total; f->offset = 0;
+    f->data[0] = type;
+    f->data[1] = (sid >> 24) & 0xFF; f->data[2] = (sid >> 16) & 0xFF;
+    f->data[3] = (sid >>  8) & 0xFF; f->data[4] =  sid        & 0xFF;
+    f->data[5] = (dlen >> 8) & 0xFF; f->data[6] =  dlen       & 0xFF;
+    if (dlen && data) memcpy(f->data + FRAME_HDR, data, dlen);
+    return f;
+}
+
+static int try_flush_wq(int tfd, int epfd) {
+    if (g_wp) {
+        while (g_wp->offset < g_wp->total) {
+            ssize_t n = send(tfd, g_wp->data + g_wp->offset,
+                             g_wp->total - g_wp->offset, MSG_NOSIGNAL);
+            if (n > 0) { g_wp->offset += (size_t)n; }
+            else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                struct epoll_event ev = { EPOLLIN | EPOLLOUT, {.fd = tfd} };
+                epoll_ctl(epfd, EPOLL_CTL_MOD, tfd, &ev);
+                return 0;
+            }
+            else if (errno == EINTR) continue;
+            else return -1;
+        }
+        free(g_wp); g_wp = NULL;
+    }
+
+    while (g_wq.head) {
+        frame_t *f = g_wq.head;
+        g_wq.bytes -= (f->total - f->offset);
+        g_wq.head   = f->next;
+        if (!g_wq.head) g_wq.tail = NULL;
+
+        while (f->offset < f->total) {
+            ssize_t n = send(tfd, f->data + f->offset,
+                             f->total - f->offset, MSG_NOSIGNAL);
+            if (n > 0) { f->offset += (size_t)n; }
+            else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                g_wp = f;
+                struct epoll_event ev = { EPOLLIN | EPOLLOUT, {.fd = tfd} };
+                epoll_ctl(epfd, EPOLL_CTL_MOD, tfd, &ev);
+                return 0;
+            }
+            else if (errno == EINTR) continue;
+            else { free(f); return -1; }
+        }
+        free(f);
+    }
+
+    struct epoll_event ev = { EPOLLIN, {.fd = tfd} };
+    epoll_ctl(epfd, EPOLL_CTL_MOD, tfd, &ev);
+    return 0;
+}
+
+static int tun_enqueue(int tfd, int epfd, uint8_t type, uint32_t sid,
+                        const uint8_t *data, uint16_t dlen) {
+    frame_t *f = frame_build(type, sid, data, dlen);
+    if (!f) return -1;
+    lk(&g_wq_mu);
+    if (g_wq.tail) g_wq.tail->next = f; else g_wq.head = f;
+    g_wq.tail = f; g_wq.bytes += f->total;
+    int r = try_flush_wq(tfd, epfd);
+    ul(&g_wq_mu);
+    return r;
+}
+
+static void protect_fd(int fd) {
+    lk(&g_m);
+    net_handle_t net = g_n;
+    JavaVM *jvm = g_j; jobject svc = g_s;
+    ul(&g_m);
+    if (net != NETWORK_UNSPECIFIED) android_setsocknetwork(net, fd);
+    if (!jvm || !svc) return;
+    JNIEnv *env = NULL; int att = 0;
+    if ((*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK)
+        { (*jvm)->AttachCurrentThread(jvm, &env, NULL); att = 1; }
+    jclass cls = (*env)->GetObjectClass(env, svc);
+    jmethodID m = (*env)->GetMethodID(env, cls, "protect", "(I)Z");
+    if (m) (*env)->CallBooleanMethod(env, svc, m, fd);
+    (*env)->DeleteLocalRef(env, cls);
+    if (att) (*jvm)->DetachCurrentThread(jvm);
+}
+
+static int tun_recv_full(int fd, uint8_t *buf, int len, int ms) {
+    int off = 0;
+    while (off < len) {
+        struct pollfd p = {fd, POLLIN, 0};
+        int pr = poll(&p, 1, ms);
+        if (pr < 0) { if (errno == EINTR) continue; return -1; }
+        if (pr == 0) return -2;
+        ssize_t n = recv(fd, buf + off, len - off, 0);
+        if (n > 0) { off += n; }
+        else if (n == 0) return -1;
+        else if (errno == EINTR || errno == EAGAIN) continue;
+        else return -1;
+    }
+    return 0;
+}
+
+static int recv_eoh(int fd, char *buf, int cap, int sec) {
+    struct timeval tv = {sec, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    int used = 0, ok = 0;
+    while (used < cap - 1) {
+        ssize_t n = recv(fd, buf + used, cap - 1 - used, 0);
+        if (n <= 0) break;
+        used += n; buf[used] = 0;
+        if (strstr(buf, "\r\n\r\n")) { ok = 1; break; }
+    }
+    tv.tv_sec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    return ok ? used : -1;
+}
+
+static int parse_http_codes(const char *data, int len, int *codes, int max_codes) {
+    if (!data || len <= 0 || !codes || max_codes <= 0) return 0;
+    int n = 0;
+    const char *p = data, *end = data + len;
+    while (p < end) {
+        const char *h = strstr(p, "HTTP/");
+        if (!h || h >= end) break;
+        int code = -1;
+        if (sscanf(h, "HTTP/%*d.%*d %d", &code) == 1 && code > 0) {
+            if (n < max_codes) codes[n] = code;
+            n++;
+        }
+        p = h + 5;
+    }
+    return n;
+}
+
+static void parse_hdr(const char *hdrs, const char *key, char *out, size_t out_cap) {
+    if (!hdrs || !key || !out || out_cap == 0) return;
+    out[0] = 0;
+    size_t klen = strlen(key);
+    const char *p = hdrs;
+    while (*p) {
+        const char *eol = strstr(p, "\r\n");
+        size_t len = eol ? (size_t)(eol - p) : strlen(p);
+        if (len >= klen && strncasecmp(p, key, klen) == 0) {
+            const char *v = p + klen;
+            while (*v == ' ' || *v == '\t') v++;
+            size_t vlen = len - (size_t)(v - p);
+            if (vlen >= out_cap) vlen = out_cap - 1;
+            memcpy(out, v, vlen); out[vlen] = 0;
+            return;
+        }
+        if (!eol) break;
+        p = eol + 2;
+    }
+}
+
+static int try_connect_ip4(const char *ip, int timeout_ms) {
+    struct sockaddr_in a = {0};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(PROXY_PORT);
+    if (inet_pton(AF_INET, ip, &a.sin_addr) != 1) return -1;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    protect_fd(fd);
+    int one = 1, v;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &one, sizeof(one));
+    setsockopt(fd, SOL_SOCKET,  SO_KEEPALIVE, &one, sizeof(one));
+    v = 30; setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,  &v, sizeof(v));
+    v = 10; setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &v, sizeof(v));
+    v = 3;  setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,   &v, sizeof(v));
+    v = 524288; setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &v, sizeof(v));
+    v = 524288; setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &v, sizeof(v));
+    int fl = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    int r = connect(fd, (struct sockaddr *)&a, sizeof(a));
+    if (r == 0) { fcntl(fd, F_SETFL, fl); return fd; }
+    if (errno != EINPROGRESS) { close(fd); return -1; }
+    struct pollfd p = {fd, POLLOUT, 0};
+    int pr = poll(&p, 1, timeout_ms);
+    if (pr <= 0) { close(fd); return -1; }
+    int e = 0; socklen_t el = sizeof(e);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) < 0 || e != 0) { close(fd); return -1; }
+    fcntl(fd, F_SETFL, fl);
+    return fd;
+}
+
+static int try_connect_ip6(const char *ip, int timeout_ms) {
+    struct sockaddr_in6 a = {0};
+    a.sin6_family = AF_INET6;
+    a.sin6_port = htons(PROXY_PORT);
+    if (inet_pton(AF_INET6, ip, &a.sin6_addr) != 1) return -1;
+    int fd = socket(AF_INET6, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    protect_fd(fd);
+    int one = 1, v;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,  &one, sizeof(one));
+    setsockopt(fd, SOL_SOCKET,  SO_KEEPALIVE, &one, sizeof(one));
+    v = 30; setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,  &v, sizeof(v));
+    v = 10; setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &v, sizeof(v));
+    v = 3;  setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,   &v, sizeof(v));
+    v = 524288; setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &v, sizeof(v));
+    v = 524288; setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &v, sizeof(v));
+    int fl = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    int r = connect(fd, (struct sockaddr *)&a, sizeof(a));
+    if (r == 0) { fcntl(fd, F_SETFL, fl); return fd; }
+    if (errno != EINPROGRESS) { close(fd); return -1; }
+    struct pollfd p = {fd, POLLOUT, 0};
+    int pr = poll(&p, 1, timeout_ms);
+    if (pr <= 0) { close(fd); return -1; }
+    int e = 0; socklen_t el = sizeof(e);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) < 0 || e != 0) { close(fd); return -1; }
+    fcntl(fd, F_SETFL, fl);
+    return fd;
+}
+
+static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host) {
+    char buf[8192];
+    snprintf(buf, sizeof(buf),
+             "HEAD http://%s HTTP/1.1\r\nHost: %s\r\n\r\n", proxy_host, proxy_host);
+    send(fd, buf, strlen(buf), MSG_NOSIGNAL);
+
+    if (recv_eoh(fd, buf, sizeof(buf), HANDSHAKE_TIMEOUT_SEC) < 0) {
+        fire_event(EV_STAGE, "stage", "proxy_no_response");
+        return -1;
+    }
+
+    char req[2048];
+    snprintf(req, sizeof(req),
+             "PACHTS http://%s HTTP/1.1\r\nHost: %s\r\n\r\n"
+             "GET htt://%s HTTP/1.1\r\nHost: %s\r\n"
+             "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+             "Action: tunnel\r\nX-Internal-ID: %s\r\n\r\n",
+             proxy_host, proxy_host,
+             tunnel_host, tunnel_host,
+             g_i[0] ? g_i : "unknown");
+
+    fire_event(EV_STAGE, "stage", "server_auth_request");
+    send(fd, req, strlen(req), MSG_NOSIGNAL);
+    usleep(1200000);
+
+    char h2[16384] = {0};
+    int hlen = recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
+    int code = -1, codes[8] = {0};
+    int code_count = parse_http_codes(h2, hlen > 0 ? hlen : 0, codes, 8);
+    if (code_count >= 3) code = codes[2];
+    else if (code_count > 0) code = codes[code_count - 1];
+
+    if (hlen < 0 || code != 101) {
+        if (code == 403 || code == 401 || code == 410) {
+            char reason[64] = {0};
+            parse_hdr(h2, "X-Disconnect-Reason:", reason, sizeof(reason));
+            atomic_store(&g_af, 1);
+            fire_event(EV_STAGE, "stage", "auth_rejected");
+            if (reason[0]) fire_event(EV_DISCONNECT, "reason", reason);
+        }
+        log_event("E", "handshake failed code=%d", code);
+        return -1;
+    }
+
+    char uname[128] = {0}, udays[32] = {0};
+    parse_hdr(h2, "X-User-Name:", uname, sizeof(uname));
+    parse_hdr(h2, "X-User-Days:", udays, sizeof(udays));
+    if (uname[0]) fire_event(EV_USER_DATA, "user_name", uname);
+    if (udays[0]) fire_event(EV_USER_DATA, "user_days", udays);
+
+    fire_event(EV_STAGE, "stage", "access_granted");
+    atomic_store(&g_lp, (long)time(NULL));
+    return 0;
+}
+
+static int open_tunnel(void) {
+    fire_event(EV_STAGE, "stage", "proxy_connect_start");
+
+    int fd = -1;
+    for (int i = 0; i < PROXY_IP_COUNT_V6 && fd < 0; i++)
+        fd = try_connect_ip6(PROXY_IPS_V6[i], 300);
+
+    if (fd >= 0) {
+        fire_event(EV_STAGE, "stage", "proxy_connected");
+        if (run_handshake(fd, PROXY_HOST_V6, TUNNEL_HOST_V6) == 0) {
+            fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+            return fd;
+        }
+        close(fd); fd = -1;
+    }
+
+    struct addrinfo hints = {0}, *res = NULL, *cur;
+    hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
+    char port_str[8]; snprintf(port_str, sizeof(port_str), "%d", PROXY_PORT);
+    int gai = getaddrinfo(PROXY_HOST_V4, port_str, &hints, &res);
+    if (gai == 0) {
+        for (cur = res; cur && fd < 0; cur = cur->ai_next) {
+            char ipbuf[INET_ADDRSTRLEN] = {0};
+            struct sockaddr_in *a4 = (struct sockaddr_in *)cur->ai_addr;
+            inet_ntop(AF_INET, &a4->sin_addr, ipbuf, sizeof(ipbuf));
+            fd = try_connect_ip4(ipbuf, CONNECT_TIMEOUT_MS);
+        }
+        freeaddrinfo(res);
+    }
+
+    if (fd < 0) {
+        fire_event(EV_STAGE, "stage", "proxy_connect_failed");
+        return -1;
+    }
+
+    fire_event(EV_STAGE, "stage", "proxy_connected");
+    if (run_handshake(fd, PROXY_HOST_V4, TUNNEL_HOST_V4) < 0) {
+        close(fd); return -1;
+    }
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    return fd;
+}
+
+typedef struct { int tfd; int epoch; int epfd; int wake_w; } thr_t;
+
+static long nms(void) {
+    struct timespec ts = {0};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long)(ts.tv_sec * 1000L + ts.tv_nsec / 1000000L);
+}
+
+static void *tunnel_reader(void *arg) {
+    thr_t *ta = (thr_t *)arg;
+    int tfd = ta->tfd, epoch = ta->epoch, epfd = ta->epfd, wake_w = ta->wake_w;
+    free(ta);
+
+    uint8_t hdr[FRAME_HDR], payload[MAX_PAYLOAD];
+
+    while (g_r && atomic_load(&g_te) == epoch) {
+        int rc = tun_recv_full(tfd, hdr, FRAME_HDR, 60000);
+        if (!g_r || atomic_load(&g_te) != epoch) break;
+
+        if (rc == -2) {
+            if ((long)time(NULL) - atomic_load(&g_lp) > PONG_TIMEOUT_SEC) {
+                fire_event(EV_STAGE, "stage", "tunnel_down");
+                if (atomic_load(&g_te) == epoch) { uint8_t b = 1; write(wake_w, &b, 1); }
+            }
+            continue;
+        }
+        if (rc < 0) {
+            fire_event(EV_STAGE, "stage", "tunnel_down");
+            if (atomic_load(&g_te) == epoch) { uint8_t b = 1; write(wake_w, &b, 1); }
+            break;
+        }
+
+        uint8_t  ft  = hdr[0];
+        uint32_t sid = ((uint32_t)hdr[1] << 24) | ((uint32_t)hdr[2] << 16) |
+                       ((uint32_t)hdr[3] <<  8) |  (uint32_t)hdr[4];
+        uint16_t len = ((uint16_t)hdr[5] << 8) | hdr[6];
+
+        if (len > MAX_PAYLOAD) {
+            fire_event(EV_STAGE, "stage", "tunnel_down");
+            if (atomic_load(&g_te) == epoch) { uint8_t b = 1; write(wake_w, &b, 1); }
+            break;
+        }
+        if (len > 0 && tun_recv_full(tfd, payload, len, 30000) < 0) {
+            fire_event(EV_STAGE, "stage", "tunnel_down");
+            if (atomic_load(&g_te) == epoch) { uint8_t b = 1; write(wake_w, &b, 1); }
+            break;
+        }
+
+        switch (ft) {
+        case T_DATA: {
+            if (len == 0) break;
+            sinfo_t *si = si_get(sid);
+            if (!si) break;
+            si->la = nms();
+            if (si->lq.bytes + len > LOCAL_QUEUE_HARD_LIMIT) {
+                tun_enqueue(tfd, epfd, T_CLOSE, sid, NULL, 0);
+                epoll_ctl(epfd, EPOLL_CTL_DEL, si->cfd, NULL);
+                ht_del(sid); si_del(sid);
+                close(si->cfd); cq_flush(&si->lq); free(si);
+                break;
+            }
+            if (si->ps) { cq_push(&si->lq, payload, len); break; }
+            size_t off = 0; int stream_dead = 0;
+            while (off < len && !stream_dead) {
+                ssize_t n = send(si->cfd, payload + off, len - off, MSG_NOSIGNAL);
+                if (n > 0) { off += (size_t)n; continue; }
+                if (errno == EINTR) continue;
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    cq_push(&si->lq, payload + off, len - off);
+                    si->ps = 1;
+                    struct epoll_event cev;
+                    cev.events   = EPOLLIN | EPOLLOUT;
+                    cev.data.u64 = ((uint64_t)sid << 32) | (uint32_t)si->cfd;
+                    epoll_ctl(epfd, EPOLL_CTL_MOD, si->cfd, &cev);
+                    break;
+                }
+                tun_enqueue(tfd, epfd, T_CLOSE, sid, NULL, 0);
+                epoll_ctl(epfd, EPOLL_CTL_DEL, si->cfd, NULL);
+                ht_del(sid); si_del(sid);
+                close(si->cfd); cq_flush(&si->lq); free(si);
+                stream_dead = 1;
+            }
+            break;
+        }
+        case T_CLOSE: {
+            sinfo_t *si = si_get(sid);
+            if (si) {
+                if (si->lq.head) si->cp = 1;
+                else shutdown(si->cfd, SHUT_RDWR);
+            } else {
+                int cfd = ht_get(sid);
+                if (cfd >= 0) shutdown(cfd, SHUT_RDWR);
+            }
+            break;
+        }
+        case T_PING:
+            tun_enqueue(tfd, epfd, T_PONG, 0, NULL, 0);
+            break;
+        case T_PONG: {
+            atomic_store(&g_lp, (long)time(NULL));
+            long sent = atomic_load(&g_lpt);
+            if (sent > 0) {
+                long rtt = nms() - sent;
+                if (rtt >= 0 && rtt < 10000) {
+                    char rtt_str[16];
+                    snprintf(rtt_str, sizeof(rtt_str), "%ld", rtt);
+                    fire_event(EV_PING, "ping_ms", rtt_str);
+                }
+            }
+            break;
+        }
+        case T_KICK:
+            if (sid == 0) {
+                fire_event(EV_DISCONNECT, "reason", "kick");
+                fire_event(EV_STAGE, "stage", "manual_reconnect_required");
+                if (atomic_load(&g_te) == epoch) { uint8_t b = 1; write(wake_w, &b, 1); }
+            }
+            break;
+        case T_EXPIRED:
+            if (sid == 0) {
+                fire_event(EV_DISCONNECT, "reason", "expired");
+                fire_event(EV_STAGE, "stage", "auth_rejected");
+                if (atomic_load(&g_te) == epoch) { uint8_t b = 1; write(wake_w, &b, 1); }
+            }
+            break;
+        }
+    }
+    return NULL;
+}
+
+static void *keepalive(void *arg) {
+    thr_t *ta = (thr_t *)arg;
+    int tfd = ta->tfd, epoch = ta->epoch, epfd = ta->epfd, wake_w = ta->wake_w;
+    free(ta);
+
+    long last = time(NULL);
+    while (g_r && atomic_load(&g_te) == epoch) {
+        sleep(1);
+        if (!g_r || atomic_load(&g_te) != epoch) break;
+        long now = time(NULL);
+        if (now - atomic_load(&g_lp) > PONG_TIMEOUT_SEC) {
+            fire_event(EV_STAGE, "stage", "tunnel_down");
+            if (atomic_load(&g_te) == epoch) { uint8_t b = 1; write(wake_w, &b, 1); }
+            break;
+        }
+        if (now - last < KEEPALIVE_INTERVAL_SEC) continue;
+        last = now;
+        atomic_store(&g_lpt, nms());
+        if (tun_enqueue(tfd, epfd, T_PING, 0, NULL, 0) < 0) {
+            if (atomic_load(&g_te) == epoch) { uint8_t b = 1; write(wake_w, &b, 1); }
+            break;
+        }
+    }
+    return NULL;
+}
+
+static int make_relay_socket(int port) {
+    int rfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (rfd < 0) return -1;
+    int one = 1;
+    setsockopt(rfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    setsockopt(rfd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one));
+    fcntl(rfd, F_SETFD, FD_CLOEXEC);
+    struct sockaddr_in la = {0};
+    la.sin_family      = AF_INET;
+    la.sin_port        = htons((uint16_t)port);
+    la.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(rfd, (struct sockaddr *)&la, sizeof(la)) < 0 ||
+        listen(rfd, RELAY_BACKLOG) < 0) {
+        close(rfd); return -1;
+    }
+    fcntl(rfd, F_SETFL, fcntl(rfd, F_GETFL, 0) | O_NONBLOCK);
+    return rfd;
+}
+
+static void resume_prs(int epfd) {
+    for (int i = 0; i < SI_SIZE; i++) {
+        lk(&g_xm[i]);
+        si_hn_t *n = g_x[i];
+        while (n) {
+            sinfo_t *si = n->si;
+            if (si->pr) {
+                si->pr = 0;
+                struct epoll_event cev;
+                cev.events   = EPOLLIN;
+                cev.data.u64 = ((uint64_t)si->sid << 32) | (uint32_t)si->cfd;
+                epoll_ctl(epfd, EPOLL_CTL_MOD, si->cfd, &cev);
+            }
+            n = n->next;
+        }
+        ul(&g_xm[i]);
+    }
+}
+
+static void *main_thread(void *arg) {
+    int port = (int)(intptr_t)arg;
+    signal(SIGPIPE, SIG_IGN);
+
+    while (g_r) {
+        atomic_store(&g_af, 0);
+        int tfd = open_tunnel();
+        if (tfd < 0) {
+            if (!g_r) break;
+            if (atomic_load(&g_af)) {
+                fire_event(EV_STAGE, "stage", "manual_reconnect_required");
+                break;
+            }
+            sleep(3);
+            continue;
+        }
+
+        int rfd = make_relay_socket(port);
+        if (rfd < 0) {
+            fire_event(EV_STAGE, "stage", "proxy_connect_failed");
+            close(tfd); sleep(2); continue;
+        }
+
+        int wfds[2] = {-1, -1};
+        if (pipe(wfds) < 0) { close(rfd); close(tfd); sleep(1); continue; }
+        fcntl(wfds[0], F_SETFL, O_NONBLOCK); fcntl(wfds[1], F_SETFL, O_NONBLOCK);
+        fcntl(wfds[0], F_SETFD, FD_CLOEXEC); fcntl(wfds[1], F_SETFD, FD_CLOEXEC);
+
+        int epfd = epoll_create1(EPOLL_CLOEXEC);
+        if (epfd < 0) {
+            close(wfds[0]); close(wfds[1]); close(rfd); close(tfd);
+            sleep(1); continue;
+        }
+
+        struct epoll_event ev;
+        ev.events = EPOLLIN; ev.data.fd = rfd;
+        epoll_ctl(epfd, EPOLL_CTL_ADD, rfd, &ev);
+        ev.events = EPOLLIN; ev.data.fd = wfds[0];
+        epoll_ctl(epfd, EPOLL_CTL_ADD, wfds[0], &ev);
+        ev.events = EPOLLIN; ev.data.fd = tfd;
+        epoll_ctl(epfd, EPOLL_CTL_ADD, tfd, &ev);
+
+        int epoch = atomic_fetch_add(&g_te, 1) + 1;
+
+        lk(&g_m);
+        g_tf = tfd; g_rf = rfd;
+        g_ef = epfd; g_wr = wfds[0]; g_ww = wfds[1];
+        ul(&g_m);
+
+        wq_init();
+
+        thr_t *ta = malloc(sizeof(*ta));
+        thr_t *tb = malloc(sizeof(*tb));
+        if (!ta || !tb) {
+            free(ta); free(tb);
+            close(epfd); close(wfds[0]); close(wfds[1]); close(rfd); close(tfd);
+            sleep(1); continue;
+        }
+        ta->tfd = tfd; ta->epoch = epoch; ta->epfd = epfd; ta->wake_w = wfds[1];
+        tb->tfd = tfd; tb->epoch = epoch; tb->epfd = epfd; tb->wake_w = wfds[1];
+
+        pthread_t tr, tk;
+        pthread_create(&tr, NULL, tunnel_reader, ta); pthread_detach(tr);
+        pthread_create(&tk, NULL, keepalive,      tb); pthread_detach(tk);
+
+        fire_event(EV_STAGE, "stage", "relay_ready");
+
+        struct epoll_event events[MAX_EPOLL_EVENTS];
+        int dead = 0;
+        long last_to_check = nms();
+
+        while (g_r && !dead) {
+            int n = epoll_wait(epfd, events, MAX_EPOLL_EVENTS, 5000);
+            if (n < 0) { if (errno == EINTR) continue; break; }
+
+            long now = nms();
+            if (now - last_to_check > 15000) {
+                last_to_check = now;
+                for (int i = 0; i < SI_SIZE; i++) {
+                    lk(&g_xm[i]);
+                    si_hn_t **pp = &g_x[i];
+                    while (*pp) {
+                        sinfo_t *si = (*pp)->si;
+                        if (now - si->la > STREAM_TIMEOUT_MS) {
+                            si_hn_t *dead_n = *pp;
+                            *pp = dead_n->next;
+                            epoll_ctl(epfd, EPOLL_CTL_DEL, si->cfd, NULL);
+                            ht_del(si->sid);
+                            tun_enqueue(tfd, epfd, T_CLOSE, si->sid, NULL, 0);
+                            close(si->cfd); cq_flush(&si->lq); free(si); free(dead_n);
+                        } else {
+                            pp = &(*pp)->next;
+                        }
+                    }
+                    ul(&g_xm[i]);
+                }
+            }
+
+            for (int i = 0; i < n && !dead; i++) {
+                int      efd = events[i].data.fd;
+                uint32_t evs = events[i].events;
+
+                if (efd == wfds[0]) { dead = 1; break; }
+
+                if (efd == tfd) {
+                    if (evs & EPOLLOUT) {
+                        lk(&g_wq_mu);
+                        int r = try_flush_wq(tfd, epfd);
+                        size_t wq_bytes = g_wq.bytes;
+                        ul(&g_wq_mu);
+                        if (r < 0) { dead = 1; break; }
+                        if (wq_bytes < WRITE_QUEUE_LOW_WATER) resume_prs(epfd);
+                    }
+                    if (evs & (EPOLLHUP | EPOLLERR)) { dead = 1; break; }
+                    continue;
+                }
+
+                if (efd == rfd) {
+                    while (1) {
+                        struct sockaddr_in ca; socklen_t cl = sizeof(ca);
+                        int cfd = accept4(rfd, (struct sockaddr *)&ca, &cl,
+                                          SOCK_NONBLOCK | SOCK_CLOEXEC);
+                        if (cfd < 0) break;
+                        int one = 1;
+                        setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY,  &one, sizeof(one));
+                        setsockopt(cfd, IPPROTO_TCP, TCP_QUICKACK, &one, sizeof(one));
+                        uint32_t sid;
+                        do { sid = (uint32_t)atomic_fetch_add(&g_ns, 1) & 0x7FFFFFFF; }
+                        while (!sid || ht_get(sid) != -1);
+                        sinfo_t *si = calloc(1, sizeof(sinfo_t));
+                        if (!si) { close(cfd); continue; }
+                        si->sid = sid; si->cfd = cfd; si->la = nms();
+                        ht_put(sid, cfd);
+                        si_put(sid, si);
+                        if (tun_enqueue(tfd, epfd, T_OPEN, sid, NULL, 0) < 0) {
+                            ht_del(sid); si_del(sid); close(cfd); free(si);
+                            dead = 1; break;
+                        }
+                        struct epoll_event cev;
+                        cev.events   = EPOLLIN;
+                        cev.data.u64 = ((uint64_t)sid << 32) | (uint32_t)cfd;
+                        if (epoll_ctl(epfd, EPOLL_CTL_ADD, cfd, &cev) < 0) {
+                            ht_del(sid); si_del(sid); close(cfd); free(si);
+                        }
+                    }
+                    continue;
+                }
+
+                uint32_t sid = (uint32_t)(events[i].data.u64 >> 32);
+                int      cfd = (int)(uint32_t)events[i].data.u64;
+                sinfo_t *si  = si_get(sid);
+
+                if (evs & (EPOLLERR | EPOLLHUP)) {
+                    epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
+                    ht_del(sid);
+                    if (si) { cq_flush(&si->lq); si_del(sid); free(si); }
+                    close(cfd);
+                    tun_enqueue(tfd, epfd, T_CLOSE, sid, NULL, 0);
+                    continue;
+                }
+
+                if ((evs & EPOLLOUT) && si && si->ps) {
+                    int drain_done = 0;
+                    while (si->lq.head) {
+                        chunk_t *c = si->lq.head;
+                        ssize_t ns = send(cfd, c->data + c->offset,
+                                          c->len - c->offset, MSG_NOSIGNAL);
+                        if (ns > 0) {
+                            c->offset += (size_t)ns; si->lq.bytes -= (size_t)ns;
+                            if (c->offset >= c->len) {
+                                si->lq.head = c->next;
+                                if (!si->lq.head) si->lq.tail = NULL;
+                                free(c);
+                            }
+                        } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            break;
+                        } else if (errno == EINTR) {
+                            continue;
+                        } else {
+                            epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
+                            ht_del(sid); cq_flush(&si->lq); si_del(sid); free(si);
+                            close(cfd);
+                            tun_enqueue(tfd, epfd, T_CLOSE, sid, NULL, 0);
+                            drain_done = -1; break;
+                        }
+                    }
+                    if (drain_done < 0) continue;
+                    if (!si->lq.head) {
+                        si->lq.bytes = 0; si->lq.tail = NULL;
+                        si->ps = 0; si->la = nms();
+                        if (si->cp) {
+                            epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
+                            ht_del(sid); si_del(sid);
+                            shutdown(cfd, SHUT_RDWR); close(cfd); free(si);
+                        } else {
+                            struct epoll_event cev;
+                            cev.events   = EPOLLIN;
+                            cev.data.u64 = ((uint64_t)sid << 32) | (uint32_t)cfd;
+                            epoll_ctl(epfd, EPOLL_CTL_MOD, cfd, &cev);
+                        }
+                    }
+                }
+
+                if (evs & EPOLLIN) {
+                    uint8_t buf[MAX_PAYLOAD];
+                    ssize_t nr = recv(cfd, buf, sizeof(buf), 0);
+                    if (nr > 0) {
+                        if (si) si->la = nms();
+                        lk(&g_wq_mu);
+                        size_t wq_total = g_wq.bytes + (g_wp ? g_wp->total - g_wp->offset : 0);
+                        ul(&g_wq_mu);
+                        if (wq_total > WRITE_QUEUE_HIGH_WATER && si) {
+                            si->pr = 1;
+                            struct epoll_event cev;
+                            cev.events   = 0;
+                            cev.data.u64 = ((uint64_t)sid << 32) | (uint32_t)cfd;
+                            epoll_ctl(epfd, EPOLL_CTL_MOD, cfd, &cev);
+                        } else {
+                            if (tun_enqueue(tfd, epfd, T_DATA, sid, buf, (uint16_t)nr) < 0)
+                                dead = 1;
+                        }
+                    } else if (nr == 0) {
+                        epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
+                        ht_del(sid);
+                        if (si) { cq_flush(&si->lq); si_del(sid); free(si); }
+                        close(cfd);
+                        tun_enqueue(tfd, epfd, T_CLOSE, sid, NULL, 0);
+                    }
+                }
+            }
+        }
+
+        fire_event(EV_STAGE, "stage", "tunnel_down");
+        atomic_fetch_add(&g_te, 1);
+        si_close_all(epfd);
+        ht_close_all(-1);
+
+        lk(&g_wq_mu);
+        wq_flush_locked();
+        ul(&g_wq_mu);
+
+        lk(&g_m);
+        g_tf = -1; g_rf = -1; g_ef = -1; g_wr = -1; g_ww = -1;
+        ul(&g_m);
+
+        close(epfd);
+        close(rfd);
+        shutdown(tfd, SHUT_RDWR); close(tfd);
+        close(wfds[0]); close(wfds[1]);
+
+        if (g_r) sleep(3);
+    }
+
+    return NULL;
+}
+
+JNIEXPORT void JNICALL n_stop(JNIEnv *, jclass);
+
+JNIEXPORT jint JNICALL
+n_start(JNIEnv *env, jclass clazz,
+        jint port, jobject svc, jstring iid) {
+    (void)clazz;
+    lk(&g_m);
+    if (g_r) { ul(&g_m); return 0; }
+    pthread_t old = g_mt;
+    ul(&g_m);
+
+    if (old != 0) {
+        pthread_join(old, NULL);
+        lk(&g_m); g_mt = 0; ul(&g_m);
+    }
+
+    lk(&g_m);
+    (*env)->GetJavaVM(env, &g_j);
+    g_s = (*env)->NewGlobalRef(env, svc);
+    g_i[0] = 0;
+    if (iid) {
+        const char *s = (*env)->GetStringUTFChars(env, iid, NULL);
+        if (s) { snprintf(g_i, sizeof(g_i), "%s", s);
+                 (*env)->ReleaseStringUTFChars(env, iid, s); }
+    }
+    ht_init();
+    si_init();
+    g_r = 1;
+    atomic_store(&g_ns, 1);
+    ul(&g_m);
+
+    pthread_t thr;
+    if (pthread_create(&thr, NULL, main_thread, (void *)(intptr_t)port) != 0) {
+        lk(&g_m); g_r = 0;
+        (*env)->DeleteGlobalRef(env, g_s); g_s = NULL; g_j = NULL;
+        ul(&g_m); return -1;
+    }
+    lk(&g_m); g_mt = thr; ul(&g_m);
+    return 0;
+}
+
+JNIEXPORT void JNICALL
+n_stop(JNIEnv *env, jclass clazz) {
+    (void)clazz;
+    lk(&g_m);
+    if (!g_r && g_mt == 0) { ul(&g_m); return; }
+    pthread_t th = g_mt;
+    g_mt = 0; g_r = 0; g_i[0] = 0;
+    jobject svc = g_s; g_s = NULL; g_j = NULL;
+    int rfd  = g_rf; g_rf = -1;
+    int tfd  = g_tf; g_tf = -1;
+    int epfd = g_ef; g_ef = -1;
+    int wr   = g_wr; g_wr = -1;
+    int ww   = g_ww; g_ww = -1;
+    ul(&g_m);
+
+    atomic_fetch_add(&g_te, 1);
+
+    if (ww   >= 0) { uint8_t b = 1; write(ww, &b, 1); }
+    if (epfd >= 0) close(epfd);
+    if (rfd  >= 0) { shutdown(rfd, SHUT_RDWR); close(rfd); }
+    if (tfd  >= 0) { shutdown(tfd, SHUT_RDWR); close(tfd); }
+    if (wr   >= 0) close(wr);
+    if (ww   >= 0) close(ww);
+
+    si_close_all(-1);
+    ht_close_all(-1);
+
+    lk(&g_wq_mu);
+    wq_flush_locked();
+    ul(&g_wq_mu);
+
+    if (th) pthread_join(th, NULL);
+    if (svc) (*env)->DeleteGlobalRef(env, svc);
+}
+
+JNIEXPORT void JNICALL
+n_net(JNIEnv *e, jclass c, jlong net) {
+    (void)e; (void)c;
+    lk(&g_m); g_n = (net_handle_t)net; ul(&g_m);
+}
+
+static JNINativeMethod g_methods[] = {
+    {"nativeStart",      "(ILandroid/net/VpnService;Ljava/lang/String;)I", (void *)n_start},
+    {"nativeStop",       "()V",                                             (void *)n_stop},
+    {"nativeSetNetwork", "(J)V",                                            (void *)n_net},
+};
+
+JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *r) {
+    (void)r;
+    JNIEnv *env = NULL;
+    if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) return JNI_ERR;
+    jclass cls = (*env)->FindClass(env, "com/blacktunnel/BtProxy");
+    if (!cls) return JNI_ERR;
+    if ((*env)->RegisterNatives(env, cls, g_methods,
+            sizeof(g_methods) / sizeof(g_methods[0])) < 0) return JNI_ERR;
+    (*env)->DeleteLocalRef(env, cls);
+    return JNI_VERSION_1_6;
 }
