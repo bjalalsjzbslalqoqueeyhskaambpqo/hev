@@ -46,10 +46,12 @@
 #define WRITE_QUEUE_HIGH_WATER (512 * 1024)
 #define WRITE_QUEUE_LOW_WATER  (128 * 1024)
 #define STREAM_TIMEOUT_MS      120000
-#define RETRY_FAST_MS          250
-#define RETRY_RESOURCE_MS      100
-#define KEEPALIVE_TICK_MS      250
-#define RESPONSIVE_SLICE_MS    50
+#define RETRY_TUNNEL_MS       3000
+#define RETRY_RELAY_MS        2000
+#define RETRY_RESOURCE_MS     1000
+#define KEEPALIVE_TICK_MS     1000
+#define AUTH_RESPONSE_WAIT_MS 1200
+#define RESPONSIVE_SLICE_MS   50
 
 #define PROXY_HOST_V6  "emailmarketing.personal.com.ar"
 #define TUNNEL_HOST_V6 "2.brawlpass.com.ar"
@@ -98,6 +100,20 @@ static int wait_running_ms(int total_ms) {
         waited += step;
     }
     return g_r;
+}
+
+static int wait_fd_readable_ms(int fd, int total_ms) {
+    int waited = 0;
+    while (g_r && waited < total_ms) {
+        int step = total_ms - waited;
+        if (step > RESPONSIVE_SLICE_MS) step = RESPONSIVE_SLICE_MS;
+        struct pollfd p = {fd, POLLIN, 0};
+        int pr = poll(&p, 1, step);
+        if (pr > 0) return (p.revents & POLLIN) ? 1 : -1;
+        if (pr < 0 && errno != EINTR) return -1;
+        waited += step;
+    }
+    return g_r ? 0 : -1;
 }
 
 static void fire_event(int type, const char *key, const char *val) {
@@ -587,6 +603,7 @@ static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host
 
     fire_event(EV_STAGE, "stage", "server_auth_request");
     send(fd, req, strlen(req), MSG_NOSIGNAL);
+    if (wait_fd_readable_ms(fd, AUTH_RESPONSE_WAIT_MS) < 0) return -1;
 
     char h2[16384] = {0};
     int hlen = recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
@@ -867,14 +884,14 @@ static void *main_thread(void *arg) {
                 fire_event(EV_STAGE, "stage", "manual_reconnect_required");
                 break;
             }
-            if (!wait_running_ms(RETRY_FAST_MS)) break;
+            if (!wait_running_ms(RETRY_TUNNEL_MS)) break;
             continue;
         }
 
         int rfd = make_relay_socket(port);
         if (rfd < 0) {
             fire_event(EV_STAGE, "stage", "proxy_connect_failed");
-            close(tfd); if (!wait_running_ms(RETRY_FAST_MS)) break; continue;
+            close(tfd); if (!wait_running_ms(RETRY_RELAY_MS)) break; continue;
         }
 
         int wfds[2] = {-1, -1};
@@ -1104,7 +1121,7 @@ static void *main_thread(void *arg) {
         shutdown(tfd, SHUT_RDWR); close(tfd);
         close(wfds[0]); close(wfds[1]);
 
-        if (g_r && !wait_running_ms(RETRY_FAST_MS)) break;
+        if (g_r && !wait_running_ms(RETRY_TUNNEL_MS)) break;
     }
 
     return NULL;
