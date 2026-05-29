@@ -380,14 +380,28 @@ public class SimpleModeActivity extends ComponentActivity {
         if (connMgr == null) return;
         netCb = new ConnectivityManager.NetworkCallback() {
             @Override public void onLost(Network network) {
-                if (BtVpnService.iRun()) stopVpn();
-                setUiState(UiState.DISCONNECTED);
+                h.post(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    if (uS == UiState.CONNECTED || BtVpnService.iRun()) {
+                        lstConn = "dropped";
+                        setUiState(UiState.CONNECTING);
+                    } else if (uS == UiState.CONNECTING) {
+                        lstConn = "retrying";
+                        refreshConnectingDetail();
+                    }
+                });
             }
+
             @Override public void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
                 if (caps == null) return;
-                if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                        && uS == UiState.CONNECTING)
-                    setUiState(UiState.DISCONNECTED);
+                h.post(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    if (uS == UiState.CONNECTING
+                            && !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+                        lstConn = "retrying";
+                        refreshConnectingDetail();
+                    }
+                });
             }
         };
         try {
