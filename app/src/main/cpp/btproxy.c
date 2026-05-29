@@ -55,7 +55,6 @@
 #define PROXY_EVENT_SETTLE_MS 100
 #define PROXY_IPV6_TIMEOUT_MS 200
 #define PROXY_FALLBACK_SETTLE_MS 100
-#define PROXY_OPEN_TIMEOUT_MS 50000
 
 #define PROXY_HOST_V6  "emailmarketing.personal.com.ar"
 #define TUNNEL_HOST_V6 "2.brawlpass.com.ar"
@@ -70,7 +69,6 @@ static const char *PROXY_IPS_V6[] = {
 #define PROXY_IP_COUNT_V6 2
 
 #define CONNECT_TIMEOUT_MS 11000
-#define PROXY_DNS_TIMEOUT_MS 10000
 #define DNS_MAX_RESULTS 8
 
 static volatile int    g_r    = 0;
@@ -658,110 +656,31 @@ static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host
     return 0;
 }
 
-static long nms(void);
+static int collect_ipv4_addresses(char ips[][INET_ADDRSTRLEN], int max_ips) {
+    if (!ips || max_ips <= 0) return 0;
 
-typedef struct {
-    pthread_mutex_t mu;
-    pthread_cond_t  cv;
-    int done;
-    int abandoned;
-    int count;
-    char host[256];
-    char port[8];
-    char ips[DNS_MAX_RESULTS][INET_ADDRSTRLEN];
-} dns4_req_t;
-
-static void dns4_req_destroy(dns4_req_t *req) {
-    pthread_cond_destroy(&req->cv);
-    pthread_mutex_destroy(&req->mu);
-    free(req);
-}
-
-static void *resolve_ipv4_thread(void *arg) {
-    dns4_req_t *req = (dns4_req_t *)arg;
     struct addrinfo hints = {0}, *res = NULL, *cur;
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
-    int gai = getaddrinfo(req->host, req->port, &hints, &res);
+    char port_str[8];
+    snprintf(port_str, sizeof(port_str), "%d", PROXY_PORT);
 
-    pthread_mutex_lock(&req->mu);
-    if (gai == 0) {
-        for (cur = res; cur && req->count < DNS_MAX_RESULTS; cur = cur->ai_next) {
-            struct sockaddr_in *a4 = (struct sockaddr_in *)cur->ai_addr;
-            if (!a4) continue;
-            inet_ntop(AF_INET, &a4->sin_addr, req->ips[req->count], INET_ADDRSTRLEN);
-            if (req->ips[req->count][0]) req->count++;
-        }
+    int gai = getaddrinfo(PROXY_HOST_V4, port_str, &hints, &res);
+    if (gai != 0) return 0;
+
+    int count = 0;
+    for (cur = res; cur && count < max_ips; cur = cur->ai_next) {
+        struct sockaddr_in *a4 = (struct sockaddr_in *)cur->ai_addr;
+        if (!a4) continue;
+        inet_ntop(AF_INET, &a4->sin_addr, ips[count], INET_ADDRSTRLEN);
+        if (ips[count][0]) count++;
     }
-    req->done = 1;
-    if (req->abandoned) {
-        pthread_mutex_unlock(&req->mu);
-        if (res) freeaddrinfo(res);
-        dns4_req_destroy(req);
-        return NULL;
-    }
-    pthread_cond_signal(&req->cv);
-    pthread_mutex_unlock(&req->mu);
-    if (res) freeaddrinfo(res);
-    return NULL;
-}
-
-static int resolve_ipv4_addresses(char ips[][INET_ADDRSTRLEN], int max_ips, int timeout_ms) {
-    if (!ips || max_ips <= 0) return 0;
-    dns4_req_t *req = calloc(1, sizeof(*req));
-    if (!req) return 0;
-    pthread_mutex_init(&req->mu, NULL);
-    pthread_cond_init(&req->cv, NULL);
-    snprintf(req->host, sizeof(req->host), "%s", PROXY_HOST_V4);
-    snprintf(req->port, sizeof(req->port), "%d", PROXY_PORT);
-
-    pthread_t thr;
-    if (pthread_create(&thr, NULL, resolve_ipv4_thread, req) != 0) {
-        dns4_req_destroy(req);
-        return 0;
-    }
-
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    ts.tv_sec += timeout_ms / 1000;
-    ts.tv_nsec += (long)(timeout_ms % 1000) * 1000000L;
-    if (ts.tv_nsec >= 1000000000L) {
-        ts.tv_sec++;
-        ts.tv_nsec -= 1000000000L;
-    }
-
-    pthread_mutex_lock(&req->mu);
-    int timed_out = 0;
-    while (!req->done && g_r && !timed_out) {
-        int rc = pthread_cond_timedwait(&req->cv, &req->mu, &ts);
-        if (rc == ETIMEDOUT) timed_out = 1;
-    }
-
-    if (!req->done) {
-        req->abandoned = 1;
-        pthread_mutex_unlock(&req->mu);
-        pthread_detach(thr);
-        return 0;
-    }
-
-    int count = req->count < max_ips ? req->count : max_ips;
-    for (int i = 0; i < count; i++) snprintf(ips[i], INET_ADDRSTRLEN, "%s", req->ips[i]);
-    pthread_mutex_unlock(&req->mu);
-    pthread_join(thr, NULL);
-    dns4_req_destroy(req);
+    freeaddrinfo(res);
     return count;
 }
 
-static int remaining_budget_ms(long deadline_ms, int cap_ms) {
-    long left = deadline_ms - nms();
-    if (left <= 0 || !g_r) return 0;
-    return left < cap_ms ? (int)left : cap_ms;
-}
-
-static int connect_and_handshake_ip4(const char *ip, long deadline_ms) {
-    int to = remaining_budget_ms(deadline_ms, CONNECT_TIMEOUT_MS);
-    if (to <= 0) return -1;
-    int fd = try_connect_ip4(ip, to);
+static int connect_and_handshake_ip4(const char *ip) {
+    int fd = try_connect_ip4(ip, CONNECT_TIMEOUT_MS);
     if (fd < 0) return -1;
     fire_event(EV_STAGE, "stage", "proxy_connected");
     if (run_handshake(fd, PROXY_HOST_V4, TUNNEL_HOST_V4) == 0) {
@@ -772,10 +691,8 @@ static int connect_and_handshake_ip4(const char *ip, long deadline_ms) {
     return -1;
 }
 
-static int connect_and_handshake_ip6(const char *ip, long deadline_ms) {
-    int to = remaining_budget_ms(deadline_ms, PROXY_IPV6_TIMEOUT_MS);
-    if (to <= 0) return -1;
-    int fd = try_connect_ip6(ip, to);
+static int connect_and_handshake_ip6(const char *ip) {
+    int fd = try_connect_ip6(ip, PROXY_IPV6_TIMEOUT_MS);
     if (fd < 0) return -1;
     fire_event(EV_STAGE, "stage", "proxy_connected");
     if (run_handshake(fd, PROXY_HOST_V6, TUNNEL_HOST_V6) == 0) {
@@ -787,15 +704,14 @@ static int connect_and_handshake_ip6(const char *ip, long deadline_ms) {
 }
 
 static int open_tunnel(void) {
-    long deadline = nms() + PROXY_OPEN_TIMEOUT_MS;
     fire_event(EV_STAGE, "stage", "proxy_connect_start");
     if (!wait_running_ms(PROXY_EVENT_SETTLE_MS)) return -1;
 
     for (int i = 0; i < PROXY_IP_COUNT_V6 && g_r; i++) {
         fire_event(EV_STAGE, "stage", "proxy_ipv6_attempt");
-        int fd = connect_and_handshake_ip6(PROXY_IPS_V6[i], deadline);
+        int fd = connect_and_handshake_ip6(PROXY_IPS_V6[i]);
         if (fd >= 0) return fd;
-        if (atomic_load(&g_af) || remaining_budget_ms(deadline, 1) <= 0) break;
+        if (atomic_load(&g_af)) break;
         if (i + 1 < PROXY_IP_COUNT_V6 && !wait_running_ms(PROXY_EVENT_SETTLE_MS)) return -1;
     }
 
@@ -805,12 +721,12 @@ static int open_tunnel(void) {
 
     fire_event(EV_STAGE, "stage", "proxy_ipv4_resolve");
     char ips[DNS_MAX_RESULTS][INET_ADDRSTRLEN] = {{0}};
-    int ip_count = resolve_ipv4_addresses(ips, DNS_MAX_RESULTS, PROXY_DNS_TIMEOUT_MS);
+    int ip_count = collect_ipv4_addresses(ips, DNS_MAX_RESULTS);
     for (int i = 0; i < ip_count && g_r; i++) {
         fire_event(EV_STAGE, "stage", "proxy_ipv4_attempt");
-        int fd = connect_and_handshake_ip4(ips[i], deadline);
+        int fd = connect_and_handshake_ip4(ips[i]);
         if (fd >= 0) return fd;
-        if (atomic_load(&g_af) || remaining_budget_ms(deadline, 1) <= 0) break;
+        if (atomic_load(&g_af)) break;
         if (i + 1 < ip_count && !wait_running_ms(PROXY_EVENT_SETTLE_MS)) break;
     }
 
