@@ -47,8 +47,6 @@ public class BtVpnService extends VpnService {
     private static final Object        L_MU      = new Object();
     private static final StringBuilder L_BUF          = new StringBuilder(8192);
     private static final int           L_MAX = 24000;
-    private static final long          HS_TO = 12000L;
-    private static final long          HS_POLL = 250L;
 
     private final ExecutorService ex = Executors.newSingleThreadExecutor();
 
@@ -61,6 +59,14 @@ public class BtVpnService extends VpnService {
     private volatile ConnectivityManager.NetworkCallback nCb = null;
 
     public static boolean iRun() { return sRunning; }
+
+    public void onTunnelEvent(int type, String key, String value) {
+        Intent intent = new Intent("com.blacktunnel.TUNNEL_EVENT");
+        intent.putExtra("type", type);
+        intent.putExtra("key", key != null ? key : "");
+        intent.putExtra("value", value != null ? value : "");
+        sendBroadcast(intent);
+    }
 
     public static String getHotspotIp() {
         try {
@@ -89,22 +95,9 @@ public class BtVpnService extends VpnService {
         }
     }
 
-    public static String dLogs() {
-        synchronized (L_MU) {
-            String native_ = BtProxy.drainLogs();
-            if (native_ != null && !native_.isBlank()) {
-                L_BUF.append(native_);
-                if (L_BUF.length() > L_MAX)
-                    L_BUF.delete(0, L_BUF.length() - L_MAX);
-            }
-            return L_BUF.toString();
-        }
-    }
-
     public static void cLogs() {
         synchronized (L_MU) {
             L_BUF.setLength(0);
-            try { BtProxy.drainLogs(); } catch (Throwable ignored) {}
         }
     }
 
@@ -167,13 +160,6 @@ public class BtVpnService extends VpnService {
             return;
         }
 
-        if (!waitForTunnelHandshake()) {
-            log("E startAll: tunnel handshake timeout/failure");
-            BtProxy.stop();
-            stopForeground(STOP_FOREGROUND_REMOVE);
-            return;
-        }
-
         registerNet();
 
         if (!startHevStack()) {
@@ -187,35 +173,6 @@ public class BtVpnService extends VpnService {
         run  = true;
         sRunning = true;
         log("I startAll ok");
-    }
-
-    private boolean waitForTunnelHandshake() {
-        long deadline = System.currentTimeMillis() + HS_TO;
-        while (System.currentTimeMillis() < deadline) {
-            String nativeLogs = BtProxy.drainLogs();
-            if (nativeLogs != null && !nativeLogs.isBlank()) {
-                synchronized (L_MU) {
-                    L_BUF.append(nativeLogs);
-                    if (L_BUF.length() > L_MAX)
-                        L_BUF.delete(0, L_BUF.length() - L_MAX);
-                }
-                for (String line : nativeLogs.split("\n")) {
-                    if (line == null) continue;
-                    String lower = line.trim().toLowerCase(Locale.ROOT);
-                    if (lower.isEmpty()) continue;
-                    if (lower.contains("tunnel ok") ||
-                        lower.contains("user_name=") ||
-                        lower.contains("user_days=")) return true;
-                    if (lower.contains("handshake failed") ||
-                        lower.contains("proxy no responde") ||
-                        lower.contains("connect failed") ||
-                        lower.contains("not_registered") ||
-                        lower.contains("expired")) return false;
-                }
-            }
-            try { Thread.sleep(HS_POLL); } catch (InterruptedException ignored) { return false; }
-        }
-        return false;
     }
 
     private void stopAll() {
@@ -518,10 +475,6 @@ final class BtProxy {
         nativeStop();
     }
 
-    static String drainLogs() {
-        if (!NATIVE_READY) return "";
-        return nativeDrainLogs();
-    }
 
     static String gIid(Context ctx) {
         SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
@@ -579,6 +532,5 @@ final class BtProxy {
 
     private static native int    nativeStart(int port, VpnService svc, String id);
     private static native void   nativeStop();
-    private static native String nativeDrainLogs();
     public  static native void   nativeSetNetwork(long networkHandle);
 }

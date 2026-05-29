@@ -8,7 +8,9 @@ import android.animation.ValueAnimator;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.BroadcastReceiver;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.res.Configuration;
 import android.content.res.ColorStateList;
 import android.content.pm.ApplicationInfo;
@@ -120,6 +122,8 @@ public class SimpleModeActivity extends ComponentActivity {
     private Button        frOkB;
     private Animator      stPlsA;
     private Animator      stHlA;
+    private BroadcastReceiver tunnelReceiver;
+    private static final String TUNNEL_EVENT = "com.blacktunnel.TUNNEL_EVENT";
 
     private final ExecutorService appEx    = Executors.newSingleThreadExecutor();
     private String  iid                       = "";
@@ -136,7 +140,6 @@ public class SimpleModeActivity extends ComponentActivity {
     private String  lstConn               = "";
     private String  lstDtl                   = "";
     private String  lstDcReason         = "";
-    private long    lgClrMs                  = 0L;
     private long    txB = 0L, rxB = 0L, stMs = 0L;
 
     private final Runnable autoDisconnectRunnable = this::runAutoDisconnect;
@@ -148,19 +151,6 @@ public class SimpleModeActivity extends ComponentActivity {
     private ConnectivityManager.NetworkCallback netCb;
     private final Handler h = new Handler(Looper.getMainLooper());
     private ActivityResultLauncher<Intent> vpnPermL;
-
-    private final Runnable stTick = new Runnable() {
-        @Override public void run() {
-            try {
-                String logs = BtVpnService.dLogs();
-                syncStateFromLogs(logs);
-                refreshFromLogs(logs);
-                updateConnLogUi(logs);
-                updateHevFlowHint();
-            } catch (Throwable ignored) {}
-            h.postDelayed(this, 3000);
-        }
-    };
 
     @Override
     protected void attachBaseContext(Context newBase) {
@@ -324,7 +314,7 @@ public class SimpleModeActivity extends ComponentActivity {
         rfGmUi();
         setupConnectivityMonitor();
         showFirstRunIfNeeded();
-        h.post(stTick);
+        registerTunnelReceiver();
     }
 
     private void showFirstRunIfNeeded() {
@@ -418,9 +408,170 @@ public class SimpleModeActivity extends ComponentActivity {
         }
     }
 
+
+    private void registerTunnelReceiver() {
+        tunnelReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                int    type = intent.getIntExtra("type", 0);
+                String key  = intent.getStringExtra("key");
+                String val  = intent.getStringExtra("value");
+                handleTunnelEvent(type, key, val);
+            }
+        };
+        IntentFilter filter = new IntentFilter(TUNNEL_EVENT);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(tunnelReceiver, filter, RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(tunnelReceiver, filter);
+        }
+    }
+
+    private void handleTunnelEvent(int type, String key, String val) {
+        if (val == null) val = "";
+        switch (type) {
+
+            case 1: // EV_STAGE
+                switch (val) {
+                    case "proxy_connect_start":
+                    case "proxy_connected":
+                    case "server_auth_request":
+                    case "relay_ready":
+                        lstConn = val;
+                        if (uS != UiState.CONNECTING) setUiState(UiState.CONNECTING);
+                        else refreshConnectingDetail();
+                        break;
+
+                    case "access_granted":
+                        hsOk   = true;
+                        lstConn = "connected";
+                        setUiState(UiState.CONNECTED);
+                        updateHevFlowHint();
+                        break;
+
+                    case "auth_rejected":
+                        lstConn = "auth_rejected";
+                        refreshConnectingDetail();
+                        break;
+
+                    case "manual_reconnect_required":
+                        lstConn = "manual_reconnect_required";
+                        apRt    = false;
+                        if (BtVpnService.iRun()) stopVpn();
+                        setUiState(UiState.DISCONNECTED);
+                        break;
+
+                    case "tunnel_down":
+                        apRt = false;
+                        hsOk  = false;
+                        lstConn = "dropped";
+                        if (BtVpnService.iRun()) {
+                            setUiState(UiState.CONNECTING);
+                        } else {
+                            setUiState(UiState.DISCONNECTED);
+                        }
+                        break;
+
+                    case "proxy_connect_failed":
+                        lstConn = "failed";
+                        refreshConnectingDetail();
+                        break;
+
+                    case "proxy_no_response":
+                        lstConn = "failed";
+                        refreshConnectingDetail();
+                        break;
+                }
+                break;
+
+            case 2: // EV_PING
+                try {
+                    int ping = Integer.parseInt(val.replaceAll("[^0-9]", ""));
+                    animatePingTo(ping);
+                    if (pngPlsV != null) {
+                        pngPlsV.setLineColor(resolvePingColor(ping));
+                        pngPlsV.pushPing(ping);
+                    }
+                } catch (Exception ignored) {}
+                break;
+
+            case 3: // EV_USER_DATA
+                if ("user_name".equals(key)) {
+                    if (usrNmWV != null) usrNmWV.setText("Usuario: " + val);
+                } else if ("user_days".equals(key)) {
+                    if (daysV != null) {
+                        daysV.setText(val + " días");
+                        try {
+                            int days = Integer.parseInt(val.replaceAll("[^0-9]", ""));
+                            daysV.setTextColor(days < 7
+                                ? c(R.color.color_connecting)
+                                : c(R.color.color_connected));
+                            scheduleAutoDisconnectFromDays(days);
+                        } catch (Exception ignored) {}
+                    }
+                    setHideInternalId(true);
+                    hideDisconnectOverlay();
+                }
+                break;
+
+            case 4: // EV_DISCONNECT
+                lstDcReason = val;
+                switch (val) {
+                    case "not_registered":
+                        if ("not_registered".equals(aSt)) break;
+                        aSt = "not_registered";
+                        setHideInternalId(false);
+                        if (BtVpnService.iRun()) stopVpn();
+                        setUiState(UiState.DISCONNECTED);
+                        if (stDtlsV != null) {
+                            stDtlsV.setVisibility(View.VISIBLE);
+                            stDtlsV.setText("✖ Usuario no registrado\nComparte tu ID interno\nID: " + iid);
+                            stDtlsV.setTextColor(c(R.color.color_disconnected));
+                        }
+                        showDisconnectOverlay("USUARIO NO REGISTRADO",
+                            "Tu identificador no está registrado.\nID: " + iid,
+                            c(R.color.color_disconnected));
+                        if (cBtn != null)
+                            cBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
+                        break;
+
+                    case "expired":
+                        if ("expired".equals(aSt)) break;
+                        aSt = "expired";
+                        setHideInternalId(false);
+                        if (BtVpnService.iRun()) stopVpn();
+                        setUiState(UiState.DISCONNECTED);
+                        if (stDtlsV != null) {
+                            stDtlsV.setVisibility(View.VISIBLE);
+                            stDtlsV.setText("✖ Usuario expirado\nRenueva tu acceso\nID: " + iid);
+                            stDtlsV.setTextColor(c(R.color.color_connecting));
+                        }
+                        showDisconnectOverlay("USUARIO EXPIRADO",
+                            "Tu acceso venció.\nRenueva con soporte.\nID: " + iid,
+                            c(R.color.color_connecting));
+                        if (cBtn != null)
+                            cBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
+                        break;
+
+                    case "kick":
+                        if ("kick".equals(aSt)) break;
+                        aSt = "kick";
+                        if (BtVpnService.iRun()) stopVpn();
+                        setUiState(UiState.DISCONNECTED);
+                        showDisconnectOverlay("SESIÓN CERRADA",
+                            "La sesión fue cerrada por el administrador.",
+                            c(R.color.color_disconnected));
+                        break;
+                }
+                break;
+        }
+    }
+
     @Override
     protected void onDestroy() {
-        h.removeCallbacks(stTick);
+        if (tunnelReceiver != null) {
+            try { unregisterReceiver(tunnelReceiver); } catch (Exception ignored) {}
+        }
         h.removeCallbacks(autoDisconnectRunnable);
         h.removeCallbacks(delayedReconnectRunnable);
         if (cBtn != null) cBtn.animate().cancel();
@@ -827,136 +978,14 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void copyConnLog() {
-        String logs = BtVpnService.dLogs();
         ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-        if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("conn_logs", logs == null ? "" : logs));
-        Toast.makeText(this, "Logs copiados", Toast.LENGTH_SHORT).show();
+        if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("conn_logs", ""));
+        Toast.makeText(this, "No hay logs para copiar", Toast.LENGTH_SHORT).show();
     }
 
     private void clearConnLogView() {
-        lgClrMs = System.currentTimeMillis();
         if (lgLtV != null) lgLtV.setText("");
         if (lgFullV != null) lgFullV.setText("");
-    }
-
-    private void updateConnLogUi(String logs) {
-        if (lgPn == null || lgLtV == null || lgFullV == null) return;
-        if (logs == null || logs.isEmpty()) {
-            lgPn.setVisibility(View.GONE);
-            return;
-        }
-        String[] ls = logs.split("\n");
-        StringBuilder sb = new StringBuilder();
-        String last = "";
-        for (int i = ls.length - 1; i >= 0; i--) {
-            String t = ls[i] == null ? "" : ls[i].trim();
-            if (t.isEmpty()) continue;
-            if (t.contains("ping_ms=")) continue;
-            if (!isLineAfterClear(t)) continue;
-            String fx = prettifyConnLine(t);
-            if (fx.isEmpty()) continue;
-            if (last.isEmpty()) last = fx;
-            if (sb.length() < 3500) sb.insert(0, fx + "\n");
-        }
-        if (last.isEmpty()) {
-            lgPn.setVisibility(View.GONE);
-            return;
-        }
-        lgPn.setVisibility(View.VISIBLE);
-        lgLtV.setText(last);
-        if (lgEx) lgFullV.setText(sb.toString().trim());
-    }
-
-    private boolean isLineAfterClear(String line) {
-        if (lgClrMs <= 0L) return true;
-        int a = line.indexOf('['), b = line.indexOf(']');
-        if (a != 0 || b <= 1) return true;
-        try {
-            String hhmmss = line.substring(1, b);
-            String[] p = hhmmss.split(":");
-            if (p.length != 3) return true;
-            java.util.Calendar c = java.util.Calendar.getInstance();
-            c.set(java.util.Calendar.HOUR_OF_DAY, Integer.parseInt(p[0]));
-            c.set(java.util.Calendar.MINUTE, Integer.parseInt(p[1]));
-            c.set(java.util.Calendar.SECOND, Integer.parseInt(p[2]));
-            c.set(java.util.Calendar.MILLISECOND, 0);
-            return c.getTimeInMillis() >= lgClrMs - 1000;
-        } catch (Throwable ignored) { return true; }
-    }
-
-    private String prettifyConnLine(String t) {
-        String l = t.toLowerCase(Locale.ROOT);
-        if (l.contains("proxy intento=proxy_1")) return "Intentando Proxy 1";
-        if (l.contains("proxy intento=proxy_2")) return "Intentando Proxy 2";
-        if (l.contains("proxy intento=dns_")) return "Intentando proxy por resolución dinámica";
-        if (l.contains("stage=proxy_connect_start")) return "Iniciando conexión de proxy";
-        if (l.contains("stage=proxy_connected")) return "Proxy conectado";
-        if (l.contains("stage=server_auth_request")) return "Solicitando acceso al servidor";
-        if (l.contains("stage=access_granted")) return "Acceso concedido";
-        if (l.contains("stage=proxy_no_response")) return "Proxy no responde";
-        if (l.contains("stage=proxy_connect_failed")) return "Conexión al proxy fallida";
-        if (l.contains("stage=auth_rejected")) return "Acceso denegado por servidor";
-        if (l.contains("stage=manual_reconnect_required")) return "Requiere reconexión manual";
-        if (l.contains("not_registered")) return "Usuario no registrado";
-        if (l.contains("expired")) return "Usuario expirado";
-        if (l.contains("tunnel ok")) return "Túnel activo";
-        if (l.contains("relay listo")) return "Relay listo";
-        if (l.contains("pong timeout")) return "Tiempo de espera agotado";
-        if (l.contains("tunnel caido")) return "Túnel caído";
-        return "";
-    }
-
-    private void syncStateFromLogs(String logs) {
-        boolean run   = BtVpnService.iRun();
-        String  connState = findLatestConnectionState(logs);
-        if (!connState.isEmpty() && !connState.equals(lstConn)) lstConn = connState;
-        if ("connected".equals(connState)) hsOk = true;
-        if (run && hasHsEvidence(logs)) hsOk = true;
-
-        if ("manual_reconnect_required".equals(lstConn) || "auth_rejected".equals(lstConn)) {
-            apRt = false;
-            if (BtVpnService.iRun()) stopVpn();
-            setUiState(UiState.DISCONNECTED);
-        } else if (run && !lstRun) {
-            aSt = ""; apRt = false;
-            setUiState(hsOk ? UiState.CONNECTED : UiState.CONNECTING);
-        } else if (!run && lstRun) {
-            apRt = false; hsOk = false;
-            setUiState(UiState.DISCONNECTED);
-        } else if (run && hsOk) {
-            apRt = false;
-            if (uS != UiState.CONNECTED) setUiState(UiState.CONNECTED);
-        } else if (run && !hsOk) {
-            if ("failed".equals(lstConn)) {
-                if (SystemClock.elapsedRealtime() - connMs > CONNECTING_TIMEOUT_MS) {
-                    apRt = false; stopVpn(); setUiState(UiState.DISCONNECTED);
-                }
-            } else if (uS != UiState.CONNECTING) setUiState(UiState.CONNECTING);
-            else refreshConnectingDetail();
-        } else if (!run && uS == UiState.CONNECTING) {
-            if ("dropped".equals(lstConn) || "failed".equals(lstConn)) {
-                apRt = false;
-                setUiState(UiState.DISCONNECTED);
-            } else if (SystemClock.elapsedRealtime() - connMs > CONNECTING_TIMEOUT_MS) {
-                apRt = false; setUiState(UiState.DISCONNECTED);
-            } else refreshConnectingDetail();
-        }
-        lstRun = run;
-    }
-
-    private boolean hasHsEvidence(String logs) {
-        if (logs == null || logs.isEmpty()) return false;
-        String[] lines = logs.split("\n");
-        int from = Math.max(0, lines.length - 120);
-        for (int i = lines.length - 1; i >= from; i--) {
-            String line = lines[i];
-            if (line == null) continue;
-            String l = line.toLowerCase(Locale.ROOT);
-            if (l.contains("tunnel ok") || l.contains("stage=access_granted") ||
-                l.contains("user_name=") || l.contains("user_days=") || l.contains("ping_ms="))
-                return true;
-        }
-        return false;
     }
 
     private void refreshConnectingDetail() {
@@ -989,168 +1018,6 @@ public class SimpleModeActivity extends ComponentActivity {
         }
     }
 
-    private void refreshFromLogs(String logs) {
-        lstDcReason = findLatestDisconnectReason(logs);
-        updateServerAuthStatus(logs);
-        updateUserMetadata(logs);
-    }
-
-    private void updateServerAuthStatus(String logs) {
-        if (logs == null || stDtlsV == null) return;
-        String latestAuth = findLatestAuthState(logs);
-        if ("not_registered".equals(latestAuth)) {
-            if ("not_registered".equals(aSt)) return;
-            aSt = "not_registered"; setHideInternalId(false);
-            if (BtVpnService.iRun()) stopVpn();
-            setUiState(UiState.DISCONNECTED);
-            stDtlsV.setVisibility(View.VISIBLE);
-            stDtlsV.setText("✖ Usuario no registrado\nComparte tu ID interno para habilitación\nID: " + iid);
-            stDtlsV.setTextColor(c(R.color.color_disconnected));
-            showDisconnectOverlay(
-                "USUARIO NO REGISTRADO",
-                "Tu identificador no está registrado o fue eliminado.\nNo intentes reconectar.\n\nComparte este ID con soporte:\n" + iid,
-                c(R.color.color_disconnected)
-            );
-            if (cBtn != null) cBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
-        } else if ("expired".equals(latestAuth)) {
-            if ("expired".equals(aSt)) return;
-            aSt = "expired"; setHideInternalId(false);
-            if (BtVpnService.iRun()) stopVpn();
-            setUiState(UiState.DISCONNECTED);
-            stDtlsV.setVisibility(View.VISIBLE);
-            stDtlsV.setText("✖ Usuario expirado\nRenueva tu acceso con soporte\nID: " + iid);
-            stDtlsV.setTextColor(c(R.color.color_connecting));
-            showDisconnectOverlay(
-                "USUARIO EXPIRADO",
-                "Tu acceso venció y el servidor bloqueó la conexión.\nNo intentes reconectar.\n\nRenueva con soporte.\nID: " + iid,
-                c(R.color.color_connecting)
-            );
-            if (cBtn != null) cBtn.startAnimation(AnimationUtils.loadAnimation(this, R.anim.shake));
-        } else if ("kick".equals(latestAuth)) {
-            if ("kick".equals(aSt)) return;
-            aSt = "kick"; setHideInternalId(false);
-            if (BtVpnService.iRun()) stopVpn();
-            setUiState(UiState.DISCONNECTED);
-            showDisconnectOverlay(
-                "SESIÓN CERRADA",
-                "La sesión fue cerrada por el administrador o por otro inicio del mismo ID.\nNo intentes reconectar hasta validar con soporte.",
-                c(R.color.color_disconnected)
-            );
-        } else if ("ok".equals(latestAuth)) { aSt = ""; setHideInternalId(true); hideDisconnectOverlay(); }
-    }
-
-    private String findLatestAuthState(String logs) {
-        String[] lines = logs.split("\n");
-        for (int i = lines.length - 1; i >= 0; i--) {
-            String line = lines[i]; if (line == null) continue;
-            String lower = line.trim().toLowerCase(Locale.ROOT); if (lower.isEmpty()) continue;
-            if (lower.contains("disconnect_reason=not_registered")) return "not_registered";
-            if (lower.contains("disconnect_reason=expired")) return "expired";
-            if (lower.contains("usuario no registrado") || lower.contains("not_registered")) return "not_registered";
-            if (lower.contains("disconnect_reason=kick")) return "kick";
-            if (lower.contains("usuario expirado")      || lower.contains("expired"))        return "expired";
-            if (lower.contains("user_name=") || lower.contains("user_days=") || lower.contains("ping_ms=")) return "ok";
-        }
-        return "";
-    }
-
-    private String findLatestDisconnectReason(String logs) {
-        if (logs == null || logs.isEmpty()) return "";
-        String[] lines = logs.split("\n");
-        for (int i = lines.length - 1; i >= 0; i--) {
-            String line = lines[i];
-            if (line == null) continue;
-            String lower = line.trim().toLowerCase(Locale.ROOT);
-            if (lower.contains("disconnect_reason=not_registered")) return "not_registered";
-            if (lower.contains("disconnect_reason=expired")) return "expired";
-            if (lower.contains("disconnect_reason=kick")) return "kick";
-        }
-        return "";
-    }
-
-    private String findLatestConnectionState(String logs) {
-        if (logs == null || logs.isEmpty()) return "";
-        String[] lines = logs.split("\n");
-        for (int i = lines.length - 1; i >= 0; i--) {
-            String line = lines[i]; if (line == null) continue;
-            String lower = line.trim().toLowerCase(Locale.ROOT); if (lower.isEmpty()) continue;
-            if (lower.contains("tunnel ok")  || lower.contains("user_name=") ||
-                lower.contains("user_days=") || lower.contains("ping_ms=") ||
-                lower.contains("stage=access_granted"))                         return "connected";
-            if (lower.contains("stage=auth_rejected")) return "auth_rejected";
-            if (lower.contains("stage=manual_reconnect_required")) return "manual_reconnect_required";
-            if (lower.contains("handshake failed") || lower.contains("proxy no responde") ||
-                lower.contains("getaddrinfo fallo") || lower.contains("connect failed") ||
-                lower.contains("stage=proxy_connect_failed") || lower.contains("stage=proxy_no_response")) return "failed";
-            if (lower.contains("tunnel caido")       || lower.contains("pong timeout") ||
-                lower.contains("tunnel read failed")  || lower.contains("payload too large") ||
-                lower.contains("payload read failed"))                          return "dropped";
-        }
-        for (int i = lines.length - 1; i >= 0; i--) {
-            String line = lines[i]; if (line == null) continue;
-            String lower = line.trim().toLowerCase(Locale.ROOT); if (lower.isEmpty()) continue;
-            if (lower.contains("stage=proxy_connect_start")) return "proxy_connect_start";
-            if (lower.contains("stage=proxy_connected")) return "proxy_connected";
-            if (lower.contains("stage=server_auth_request")) return "server_auth_request";
-            if (lower.contains("stage=access_granted")) return "access_granted";
-            if (lower.contains("conectando...") || lower.contains("probando ") ||
-                lower.contains("ips estaticas fallaron") || lower.contains("dns ") ||
-                lower.contains("relay listo"))                                  return "retrying";
-        }
-        return "";
-    }
-
-    private void updateUserMetadata(String logs) {
-        if (logs == null) return;
-        String[] lines = logs.split("\n");
-        for (int i = lines.length - 1; i >= 0; i--) {
-            String line = lines[i].trim(); int idx = line.indexOf("user_name=");
-            if (idx >= 0) {
-                String v = line.substring(idx + "user_name=".length()).trim();
-                if (!v.isEmpty()) {
-                    if (usrNmWV != null) usrNmWV.setText("Usuario: " + v);
-                }
-                break;
-            }
-        }
-        for (int i = lines.length - 1; i >= 0; i--) {
-            String line = lines[i].trim(); int idx = line.indexOf("user_days=");
-            if (idx >= 0 && daysV != null) {
-                String v = line.substring(idx + "user_days=".length()).trim();
-                if (!v.isEmpty()) {
-                    daysV.setText(v + " días");
-                    try {
-                        int days = Integer.parseInt(v.replaceAll("[^0-9]", ""));
-                        daysV.setTextColor(days < 7 ? c(R.color.color_connecting) : c(R.color.color_connected));
-                        scheduleAutoDisconnectFromDays(days);
-                    } catch (Exception ignored) {}
-                }
-                break;
-            }
-        }
-        for (int i = lines.length - 1; i >= 0; i--) {
-            String line = lines[i].trim(); int idx = line.indexOf("ping_ms=");
-            if (idx >= 0) {
-                String v = line.substring(idx + "ping_ms=".length()).trim();
-                if (!v.isEmpty()) {
-                    try {
-                        int ping = Integer.parseInt(v.replaceAll("[^0-9]", ""));
-                        animatePingTo(ping);
-                        if (pngPlsV != null) {
-                            pngPlsV.setLineColor(resolvePingColor(ping));
-                            pngPlsV.pushPing(ping);
-                        }
-                    } catch (Exception ignored) {
-                        if (pngV != null) {
-                            pngV.setText("--");
-                            pngV.setTextColor(c(R.color.color_text_disabled));
-                        }
-                    }
-                }
-                break;
-            }
-        }
-    }
 
     private void animatePingTo(int targetPing) {
         if (pngV == null) return;
