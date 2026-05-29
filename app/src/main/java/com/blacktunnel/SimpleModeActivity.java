@@ -72,8 +72,8 @@ public class SimpleModeActivity extends ComponentActivity {
     private static final String PREF_UI              = "ui_state";
     private static final String KEY_HIDE_ID          = "hide_internal_id";
     private static final String KEY_FIRST_OK         = "first_ok";
-    private static final int    HOTSPOT_PROXY_PORT   = 7071;
     private static final long   CONNECTING_TIMEOUT_MS = 40000L;
+    private static final long   HEV_STATS_INTERVAL_MS = 1000L;
 
     private enum UiState { DISCONNECTED, CONNECTING, CONNECTED }
 
@@ -155,6 +155,12 @@ public class SimpleModeActivity extends ComponentActivity {
         if (BtVpnService.iActive()) stopVpn();
         else setUiState(UiState.DISCONNECTED);
     };
+    private final Runnable hevStatsRunnable = new Runnable() {
+        @Override public void run() {
+            updateHevFlowHint();
+            if (uS == UiState.CONNECTED) h.postDelayed(this, HEV_STATS_INTERVAL_MS);
+        }
+    };
     private ConnectivityManager connMgr;
     private ConnectivityManager.NetworkCallback netCb;
     private final Handler h = new Handler(Looper.getMainLooper());
@@ -171,10 +177,22 @@ public class SimpleModeActivity extends ComponentActivity {
         super.attachBaseContext(newBase.createConfigurationContext(configuration));
     }
 
+    private void startHevStatsLoop() {
+        txB = 0L; rxB = 0L; stMs = 0L;
+        h.removeCallbacks(hevStatsRunnable);
+        h.post(hevStatsRunnable);
+    }
+
+    private void stopHevStatsLoop() {
+        h.removeCallbacks(hevStatsRunnable);
+        txB = 0L; rxB = 0L; stMs = 0L;
+        if (hevRtV != null) hevRtV.setVisibility(View.GONE);
+        if (thrV != null) thrV.setVisibility(View.GONE);
+    }
+
     private void updateHevFlowHint() {
         if (uS != UiState.CONNECTED) {
-            if (hevRtV != null) hevRtV.setVisibility(View.GONE);
-            if (thrV != null) thrV.setVisibility(View.GONE);
+            stopHevStatsLoop();
             return;
         }
         try {
@@ -498,7 +516,6 @@ public class SimpleModeActivity extends ComponentActivity {
                         lstConn = "connected";
                         hsOk = true;
                         setUiState(UiState.CONNECTED);
-                        updateHevFlowHint();
                         break;
 
                     case "hev_failed":
@@ -640,6 +657,7 @@ public class SimpleModeActivity extends ComponentActivity {
         h.removeCallbacks(autoDisconnectRunnable);
         h.removeCallbacks(delayedReconnectRunnable);
         h.removeCallbacks(connectingTimeoutRunnable);
+        h.removeCallbacks(hevStatsRunnable);
         if (cBtn != null) cBtn.animate().cancel();
         if (stDtlsV != null) stDtlsV.animate().cancel();
         if (stBdV != null) stBdV.animate().cancel();
@@ -649,7 +667,6 @@ public class SimpleModeActivity extends ComponentActivity {
         if (connMgr != null && netCb != null) {
             try { connMgr.unregisterNetworkCallback(netCb); } catch (Throwable ignored) {}
         }
-        BtVpnService.stopLocalProxy();
         appEx.shutdownNow();
         super.onDestroy();
     }
@@ -976,10 +993,10 @@ public class SimpleModeActivity extends ComponentActivity {
             daysV.setText("--");
             daysV.setTextColor(c(R.color.color_text_disabled));
         }
-        if (hevRtV != null) hevRtV.setVisibility(View.GONE);
-        if (thrV != null) thrV.setVisibility(View.GONE);
+        stopHevStatsLoop();
         setUiState(UiState.CONNECTING);
         h.removeCallbacks(connectingTimeoutRunnable);
+        h.removeCallbacks(hevStatsRunnable);
         h.postDelayed(connectingTimeoutRunnable, CONNECTING_TIMEOUT_MS + 750L);
     }
 
@@ -987,6 +1004,7 @@ public class SimpleModeActivity extends ComponentActivity {
         pendRec = false;
         h.removeCallbacks(delayedReconnectRunnable);
         h.removeCallbacks(connectingTimeoutRunnable);
+        h.removeCallbacks(hevStatsRunnable);
         Intent i = new Intent(this, BtVpnService.class);
         i.setAction(BtVpnService.ACTION_STOP);
         startService(i);
@@ -1005,8 +1023,7 @@ public class SimpleModeActivity extends ComponentActivity {
             daysV.setText("--");
             daysV.setTextColor(c(R.color.color_text_disabled));
         }
-        if (hevRtV != null) hevRtV.setVisibility(View.GONE);
-        if (thrV != null) thrV.setVisibility(View.GONE);
+        stopHevStatsLoop();
         h.removeCallbacks(autoDisconnectRunnable);
         autoDcMs = -1L;
     }
@@ -1055,8 +1072,11 @@ public class SimpleModeActivity extends ComponentActivity {
 
     private void copyConnLog() {
         ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-        if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("conn_logs", ""));
-        Toast.makeText(this, "No hay logs para copiar", Toast.LENGTH_SHORT).show();
+        String logs = BtVpnService.gLogs();
+        if (cm != null) {
+            cm.setPrimaryClip(ClipData.newPlainText("conn_logs", logs));
+            Toast.makeText(this, logs.isEmpty() ? "No hay logs para copiar" : "Logs copiados", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void clearConnLogView() {
@@ -1148,6 +1168,11 @@ public class SimpleModeActivity extends ComponentActivity {
         uS              = newState;
         boolean stateChanged = (prev != newState);
         if (newState != UiState.CONNECTING) h.removeCallbacks(connectingTimeoutRunnable);
+        if (newState == UiState.CONNECTED) {
+            if (stateChanged) startHevStatsLoop();
+        } else {
+            stopHevStatsLoop();
+        }
 
         int accentColor = resolveAccentColor();
 

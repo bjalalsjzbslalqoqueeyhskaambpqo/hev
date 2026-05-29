@@ -126,23 +126,6 @@ public class BtVpnService extends VpnService {
         }
     }
 
-    public static String getHotspotIp() {
-        try {
-            InetAddress ip = InetAddress.getByName("192.168.43.1");
-            return ip.getHostAddress();
-        } catch (UnknownHostException ignored) {
-            return null;
-        }
-    }
-
-    public static void startLocalProxy(int port) {
-        log("I startLocalProxy port=" + port);
-    }
-
-    public static void stopLocalProxy() {
-        log("I stopLocalProxy");
-    }
-
     public static void log(String message) {
         String line = "[" + new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date())
                     + "] " + message + "\n";
@@ -150,6 +133,12 @@ public class BtVpnService extends VpnService {
             L_BUF.append(line);
             if (L_BUF.length() > L_MAX)
                 L_BUF.delete(0, L_BUF.length() - L_MAX);
+        }
+    }
+
+    public static String gLogs() {
+        synchronized (L_MU) {
+            return L_BUF.toString();
         }
     }
 
