@@ -474,6 +474,8 @@ public class SimpleModeActivity extends ComponentActivity {
                 switch (val) {
                     case "native_start":
                     case "proxy_connect_start":
+                    case "proxy_ipv6_attempt":
+                    case "proxy_ipv4_fallback":
                     case "proxy_connected":
                     case "server_auth_request":
                         lstConn = val;
@@ -1209,6 +1211,8 @@ public class SimpleModeActivity extends ComponentActivity {
                 else if ("failed".equals(lstConn))   detail = getString(R.string.status_detail_connecting_retry);
                 else if ("native_start".equals(lstConn)) detail = "Abriendo túnel nativo...";
                 else if ("proxy_connect_start".equals(lstConn)) detail = "Conectando al proxy...";
+                else if ("proxy_ipv6_attempt".equals(lstConn)) detail = "Probando proxy IPv6...";
+                else if ("proxy_ipv4_fallback".equals(lstConn)) detail = "IPv6 no disponible, probando IPv4...";
                 else if ("proxy_connected".equals(lstConn)) detail = "Proxy conectado";
                 else if ("server_auth_request".equals(lstConn)) detail = "Solicitando acceso al servidor...";
                 else if ("access_granted".equals(lstConn)) detail = "Acceso concedido, preparando túnel...";

@@ -46,7 +46,6 @@ public class BtVpnService extends VpnService {
     private static volatile boolean sStarting = false;
 
     private static final long          HS_TO = 12000L;
-    private static final long          HS_POLL = 250L;
     private static final long          HEV_START_GRACE_MS = 900L;
     private static final int           HEV_PENDING = Integer.MIN_VALUE;
 
@@ -61,6 +60,7 @@ public class BtVpnService extends VpnService {
     private volatile ConnectivityManager.NetworkCallback nCb = null;
     private volatile boolean              hsReady = false;
     private volatile boolean              hsFailed = false;
+    private volatile CountDownLatch       hsLatch = null;
 
     public static boolean iRun() { return sRunning; }
     public static boolean iStarting() { return sStarting; }
@@ -108,13 +108,22 @@ public class BtVpnService extends VpnService {
             if ("relay_ready".equals(value)) {
                 hsReady = true;
                 hsFailed = false;
+                signalHandshakeWaiter();
             } else if ("auth_rejected".equals(value)
-                    || "manual_reconnect_required".equals(value)) {
+                    || "manual_reconnect_required".equals(value)
+                    || "proxy_connect_failed".equals(value)) {
                 hsFailed = true;
+                signalHandshakeWaiter();
             }
         } else if (type == 4) {
             hsFailed = true;
+            signalHandshakeWaiter();
         }
+    }
+
+    private void signalHandshakeWaiter() {
+        CountDownLatch latch = hsLatch;
+        if (latch != null) latch.countDown();
     }
 
     @Override
@@ -180,6 +189,9 @@ public class BtVpnService extends VpnService {
         cleanupSessionResources();
         hsReady = false;
         hsFailed = false;
+        hsLatch = new CountDownLatch(1);
+
+        registerNet();
 
         String iid  = BtProxy.gIid(this);
         onTunnelEvent(1, "stage", "native_start");
@@ -198,11 +210,8 @@ public class BtVpnService extends VpnService {
             return;
         }
 
-        registerNet();
-
         onTunnelEvent(1, "stage", "vpn_start");
         if (!startHevStack()) {
-            unregisterNet();
             BtProxy.stop();
             cleanupFailedStart();
             onTunnelEvent(1, "stage", "hev_failed");
@@ -220,23 +229,25 @@ public class BtVpnService extends VpnService {
         sRunning = false;
         sStarting = false;
         hsReady = false;
+        hsLatch = null;
         stopHevStack();
+        unregisterNet();
         cleanupSessionResources();
         try { stopForeground(STOP_FOREGROUND_REMOVE); } catch (Throwable ignored) {}
         try { stopSelf(); } catch (Throwable ignored) {}
     }
 
     private boolean waitForTunnelHandshake() {
-        long deadline = System.currentTimeMillis() + HS_TO;
-        while (System.currentTimeMillis() < deadline) {
-            if (hsReady) return true;
-            if (hsFailed) return false;
-            try { Thread.sleep(HS_POLL); } catch (InterruptedException ignored) {
-                Thread.currentThread().interrupt();
-                return false;
-            }
+        CountDownLatch latch = hsLatch;
+        if (hsReady) return true;
+        if (hsFailed || latch == null) return false;
+        try {
+            latch.await(HS_TO, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+            return false;
         }
-        return hsReady;
+        return hsReady && !hsFailed;
     }
 
     private void stopAll() {
@@ -381,16 +392,16 @@ public class BtVpnService extends VpnService {
             Network active = cm.getActiveNetwork();
             if (active != null) {
                 BtProxy.nativeSetNetwork(active.getNetworkHandle());
-                setUnderlyingNetworks(new Network[]{active});
+                try { setUnderlyingNetworks(new Network[]{active}); } catch (Exception ignored) {}
             }
             nCb = new ConnectivityManager.NetworkCallback() {
                 @Override public void onAvailable(Network net) {
                     BtProxy.nativeSetNetwork(net.getNetworkHandle());
-                    setUnderlyingNetworks(new Network[]{net});
+                    try { setUnderlyingNetworks(new Network[]{net}); } catch (Exception ignored) {}
                 }
                 @Override public void onLost(Network net) {
                     BtProxy.nativeSetNetwork(0L);
-                    setUnderlyingNetworks(null);
+                    try { setUnderlyingNetworks(null); } catch (Exception ignored) {}
                 }
             };
             cm.registerNetworkCallback(

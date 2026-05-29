@@ -52,6 +52,9 @@
 #define KEEPALIVE_TICK_MS     1000
 #define AUTH_RESPONSE_WAIT_MS 1200
 #define RESPONSIVE_SLICE_MS   50
+#define PROXY_EVENT_SETTLE_MS 100
+#define PROXY_IPV6_TIMEOUT_MS 1200
+#define PROXY_FALLBACK_SETTLE_MS 250
 
 #define PROXY_HOST_V6  "emailmarketing.personal.com.ar"
 #define TUNNEL_HOST_V6 "2.brawlpass.com.ar"
@@ -636,10 +639,16 @@ static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host
 
 static int open_tunnel(void) {
     fire_event(EV_STAGE, "stage", "proxy_connect_start");
+    if (!wait_running_ms(PROXY_EVENT_SETTLE_MS)) return -1;
 
     int fd = -1;
-    for (int i = 0; i < PROXY_IP_COUNT_V6 && fd < 0; i++)
-        fd = try_connect_ip6(PROXY_IPS_V6[i], 300);
+    for (int i = 0; i < PROXY_IP_COUNT_V6 && fd < 0; i++) {
+        fire_event(EV_STAGE, "stage", "proxy_ipv6_attempt");
+        fd = try_connect_ip6(PROXY_IPS_V6[i], PROXY_IPV6_TIMEOUT_MS);
+        if (fd < 0 && i + 1 < PROXY_IP_COUNT_V6) {
+            if (!wait_running_ms(PROXY_EVENT_SETTLE_MS)) return -1;
+        }
+    }
 
     if (fd >= 0) {
         fire_event(EV_STAGE, "stage", "proxy_connected");
@@ -649,6 +658,9 @@ static int open_tunnel(void) {
         }
         close(fd); fd = -1;
     }
+
+    fire_event(EV_STAGE, "stage", "proxy_ipv4_fallback");
+    if (!wait_running_ms(PROXY_FALLBACK_SETTLE_MS)) return -1;
 
     struct addrinfo hints = {0}, *res = NULL, *cur;
     hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
