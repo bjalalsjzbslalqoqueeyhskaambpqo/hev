@@ -45,6 +45,7 @@ public class BtVpnService extends VpnService {
     private static final int    NF_ID = 33;
 
     private static volatile boolean sRunning = false;
+    private static volatile boolean sStarting = false;
 
     private static final Object        L_MU      = new Object();
     private static final StringBuilder L_BUF          = new StringBuilder(8192);
@@ -67,6 +68,8 @@ public class BtVpnService extends VpnService {
     private volatile boolean              hsFailed = false;
 
     public static boolean iRun() { return sRunning; }
+    public static boolean iStarting() { return sStarting; }
+    public static boolean iActive() { return sRunning || sStarting; }
 
     public interface TunnelEventListener {
         void onTunnelEvent(int type, String key, String value);
@@ -161,13 +164,16 @@ public class BtVpnService extends VpnService {
         String action = intent != null ? intent.getAction() : null;
         ex.execute(() -> {
             try {
+                log("I onStartCommand action=" + (action != null ? action : "<null>"));
                 if (ACTION_STOP.equals(action)) stopAll();
+                else if (ACTION_APPLY.equals(action)) applyAll();
                 else startAll();
             } catch (Throwable t) {
                 log("E onStartCommand task crash: " + t.getClass().getSimpleName() + ": " + t.getMessage());
                 run = false;
                 stop = false;
                 sRunning = false;
+                sStarting = false;
                 try { stopHevStack(); } catch (Throwable ignored) {}
                 try { BtProxy.stop(); } catch (Throwable ignored) {}
                 try { unregisterNet(); } catch (Throwable ignored) {}
@@ -187,6 +193,20 @@ public class BtVpnService extends VpnService {
         super.onDestroy();
     }
 
+
+    private void applyAll() {
+        log("I applyAll: solicitada actualización de configuración");
+        if (!run && !sRunning) {
+            log("I applyAll: servicio no corriendo, iniciando flujo completo");
+            startAll();
+            return;
+        }
+        // La configuración de rutas de aplicaciones se aplica al crear la interfaz TUN;
+        // para que el cambio tenga efecto sin dejar estados fantasma, reiniciamos el stack.
+        stopAll();
+        startAll();
+    }
+
     private void startAll() {
         if (stop) {
             log("W startAll: stop en progreso, reintentando breve");
@@ -196,11 +216,12 @@ public class BtVpnService extends VpnService {
                 return;
             }
         }
-        if (run) {
-            log("I startAll: ya corriendo, ignorado");
+        if (run || sRunning || sStarting) {
+            log("I startAll: ya activo, ignorado run=" + run + " starting=" + sStarting + " running=" + sRunning);
             return;
         }
 
+        sStarting = true;
         createChannel();
         startForeground(NF_ID, buildNotif());
 
@@ -211,20 +232,22 @@ public class BtVpnService extends VpnService {
 
         String iid  = BtProxy.gIid(this);
         log("I startAll: iniciando túnel nativo btproxy");
+        onTunnelEvent(1, "stage", "native_start");
         int    startResult = BtProxy.start(this, iid);
         if (startResult < 0) {
             log("E startAll: btproxy start failed" +
                 (BtProxy.isNativeReady() ? "" : " (" + BtProxy.getNativeLoadError() + ")"));
-            onTunnelEvent(1, "stage", "proxy_connect_failed");
             cleanupFailedStart();
+            onTunnelEvent(1, "stage", "proxy_connect_failed");
             return;
         }
 
         if (!waitForTunnelHandshake()) {
             log("E startAll: tunnel handshake timeout/failure");
-            onTunnelEvent(1, "stage", hsFailed ? "auth_rejected" : "proxy_connect_failed");
+            String failStage = hsFailed ? "auth_rejected" : "proxy_connect_failed";
             BtProxy.stop();
             cleanupFailedStart();
+            onTunnelEvent(1, "stage", failStage);
             return;
         }
 
@@ -233,15 +256,16 @@ public class BtVpnService extends VpnService {
         onTunnelEvent(1, "stage", "vpn_start");
         if (!startHevStack()) {
             log("E startAll: startHevStack failed, deshaciendo");
-            onTunnelEvent(1, "stage", "hev_failed");
             unregisterNet();
             BtProxy.stop();
             cleanupFailedStart();
+            onTunnelEvent(1, "stage", "hev_failed");
             return;
         }
 
         run  = true;
         sRunning = true;
+        sStarting = false;
         onTunnelEvent(1, "stage", "hev_started");
         log("I startAll ok");
     }
@@ -249,6 +273,7 @@ public class BtVpnService extends VpnService {
     private void cleanupFailedStart() {
         run = false;
         sRunning = false;
+        sStarting = false;
         hsReady = false;
         stopHevStack();
         cleanupSessionResources();
@@ -270,7 +295,7 @@ public class BtVpnService extends VpnService {
     }
 
     private void stopAll() {
-        if (!run && !sRunning) {
+        if (!run && !sRunning && !sStarting) {
             log("I stopAll: ya detenido, ignorado");
             return;
         }
@@ -278,6 +303,7 @@ public class BtVpnService extends VpnService {
 
         run  = false;
         sRunning = false;
+        sStarting = false;
 
         stopHevStack();
         BtProxy.stop();
@@ -375,7 +401,7 @@ public class BtVpnService extends VpnService {
             } finally {
                 result.set(rc);
                 exitedEarly.countDown();
-                if (!stop && hTh == Thread.currentThread()) {
+                if (!stop && sRunning && hTh == Thread.currentThread()) {
                     onTunnelEvent(1, "stage", "hev_failed");
                 }
             }
@@ -605,8 +631,14 @@ final class BtProxy {
     static String  getNativeLoadError() { return NATIVE_LOAD_ERROR; }
 
     static int start(VpnService svc, String id) {
-        if (!NATIVE_READY) return -1;
-        return nativeStart(SOCKS5_PORT, svc, id);
+        if (!NATIVE_READY) {
+            BtVpnService.log("E BtProxy.start: librería nativa no disponible: " + NATIVE_LOAD_ERROR);
+            return -1;
+        }
+        BtVpnService.log("I BtProxy.start: llamando nativeStart port=" + SOCKS5_PORT + " id=" + id);
+        int rc = nativeStart(SOCKS5_PORT, svc, id);
+        BtVpnService.log("I BtProxy.start: nativeStart rc=" + rc);
+        return rc;
     }
 
     static void stop() {

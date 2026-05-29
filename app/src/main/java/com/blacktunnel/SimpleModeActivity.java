@@ -152,7 +152,7 @@ public class SimpleModeActivity extends ComponentActivity {
         if (SystemClock.elapsedRealtime() - connMs < CONNECTING_TIMEOUT_MS) return;
         lstConn = "failed";
         apRt = false;
-        if (BtVpnService.iRun()) stopVpn();
+        if (BtVpnService.iActive()) stopVpn();
         else setUiState(UiState.DISCONNECTED);
     };
     private ConnectivityManager connMgr;
@@ -223,7 +223,7 @@ public class SimpleModeActivity extends ComponentActivity {
         vpnPermL = registerForActivityResult(
             new ActivityResultContracts.StartActivityForResult(),
             result -> {
-                if (result.getResultCode() == RESULT_OK) startVpn();
+                if (result.getResultCode() == RESULT_OK || VpnService.prepare(this) == null) startVpn();
                 else setUiState(UiState.DISCONNECTED);
             }
         );
@@ -278,14 +278,15 @@ public class SimpleModeActivity extends ComponentActivity {
         refreshDeviceIdVisibility();
 
         boolean run = BtVpnService.iRun();
-        setUiState(run ? UiState.CONNECTED : UiState.DISCONNECTED);
+        boolean starting = BtVpnService.iStarting();
+        setUiState(run ? UiState.CONNECTED : starting ? UiState.CONNECTING : UiState.DISCONNECTED);
         lstRun = run;
 
         cBtn.setOnClickListener(v -> {
             if (uS == UiState.CONNECTING) return;
             if (uS == UiState.CONNECTED) stopVpn();
             else {
-                if (BtVpnService.iRun()) {
+                if (BtVpnService.iActive()) {
                     if (!pendRec) {
                         pendRec = true;
                         setUiState(UiState.CONNECTING);
@@ -310,7 +311,7 @@ public class SimpleModeActivity extends ComponentActivity {
             gmSw.setOnCheckedChangeListener((buttonView, isChecked) -> {
                 BtProxy.sGm(this, isChecked);
                 rfGmUi();
-                if (BtVpnService.iRun()) {
+                if (BtVpnService.iActive()) {
                     showGamingApplyFeedback(
                         isChecked ? "Modo aplicaciones: activando..." : "Modo normal: aplicando...",
                         isChecked ? "Modo aplicaciones activo" : "Modo normal activo",
@@ -438,7 +439,7 @@ public class SimpleModeActivity extends ComponentActivity {
 
     private void handleConnectionFailureEvent() {
         lstConn = "failed";
-        if (BtVpnService.iRun()) {
+        if (BtVpnService.iActive()) {
             setUiState(UiState.CONNECTING);
         } else {
             setUiState(UiState.DISCONNECTED);
@@ -471,6 +472,7 @@ public class SimpleModeActivity extends ComponentActivity {
 
             case 1: // EV_STAGE
                 switch (val) {
+                    case "native_start":
                     case "proxy_connect_start":
                     case "proxy_connected":
                     case "server_auth_request":
@@ -502,7 +504,7 @@ public class SimpleModeActivity extends ComponentActivity {
                     case "hev_failed":
                         lstConn = "hev_failed";
                         apRt = false;
-                        if (BtVpnService.iRun()) stopVpn();
+                        if (BtVpnService.iActive()) stopVpn();
                         else setUiState(UiState.DISCONNECTED);
                         Toast.makeText(this, "No se pudo iniciar el motor VPN", Toast.LENGTH_SHORT).show();
                         break;
@@ -517,14 +519,14 @@ public class SimpleModeActivity extends ComponentActivity {
                     case "auth_rejected":
                         lstConn = "auth_rejected";
                         apRt = false;
-                        if (BtVpnService.iRun()) stopVpn();
+                        if (BtVpnService.iActive()) stopVpn();
                         else setUiState(UiState.DISCONNECTED);
                         break;
 
                     case "manual_reconnect_required":
                         lstConn = "manual_reconnect_required";
                         apRt    = false;
-                        if (BtVpnService.iRun()) stopVpn();
+                        if (BtVpnService.iActive()) stopVpn();
                         setUiState(UiState.DISCONNECTED);
                         break;
 
@@ -532,7 +534,7 @@ public class SimpleModeActivity extends ComponentActivity {
                         apRt = false;
                         hsOk  = false;
                         lstConn = "dropped";
-                        if (BtVpnService.iRun()) {
+                        if (BtVpnService.iActive()) {
                             setUiState(UiState.CONNECTING);
                         } else {
                             setUiState(UiState.DISCONNECTED);
@@ -583,7 +585,7 @@ public class SimpleModeActivity extends ComponentActivity {
                         if ("not_registered".equals(aSt)) break;
                         aSt = "not_registered";
                         setHideInternalId(false);
-                        if (BtVpnService.iRun()) stopVpn();
+                        if (BtVpnService.iActive()) stopVpn();
                         setUiState(UiState.DISCONNECTED);
                         if (stDtlsV != null) {
                             stDtlsV.setVisibility(View.VISIBLE);
@@ -601,7 +603,7 @@ public class SimpleModeActivity extends ComponentActivity {
                         if ("expired".equals(aSt)) break;
                         aSt = "expired";
                         setHideInternalId(false);
-                        if (BtVpnService.iRun()) stopVpn();
+                        if (BtVpnService.iActive()) stopVpn();
                         setUiState(UiState.DISCONNECTED);
                         if (stDtlsV != null) {
                             stDtlsV.setVisibility(View.VISIBLE);
@@ -618,7 +620,7 @@ public class SimpleModeActivity extends ComponentActivity {
                     case "kick":
                         if ("kick".equals(aSt)) break;
                         aSt = "kick";
-                        if (BtVpnService.iRun()) stopVpn();
+                        if (BtVpnService.iActive()) stopVpn();
                         setUiState(UiState.DISCONNECTED);
                         showDisconnectOverlay("SESIÓN CERRADA",
                             "La sesión fue cerrada por el administrador.",
@@ -1010,7 +1012,7 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void apGmIfRun() {
-        if (!BtVpnService.iRun()) return;
+        if (!BtVpnService.iActive()) return;
         apRt = true;
         connMs      = SystemClock.elapsedRealtime();
         lstConn     = "";
@@ -1065,7 +1067,8 @@ public class SimpleModeActivity extends ComponentActivity {
     private void refreshConnectingDetail() {
         if (stDtlsV == null) return;
         String detail;
-        if      ("proxy_connect_start".equals(lstConn)) detail = "Conectando al proxy...";
+        if      ("native_start".equals(lstConn)) detail = "Abriendo túnel nativo...";
+        else if ("proxy_connect_start".equals(lstConn)) detail = "Conectando al proxy...";
         else if ("proxy_connected".equals(lstConn)) detail = "Proxy conectado";
         else if ("server_auth_request".equals(lstConn)) detail = "Solicitando acceso al servidor...";
         else if ("access_granted".equals(lstConn)) detail = "Acceso concedido, preparando túnel...";
@@ -1131,7 +1134,7 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void runAutoDisconnect() {
-        if (!BtVpnService.iRun()) return;
+        if (!BtVpnService.iActive()) return;
         stopVpn(); setHideInternalId(false);
         if (stDtlsV != null) {
             stDtlsV.setVisibility(View.VISIBLE);
@@ -1223,6 +1226,7 @@ public class SimpleModeActivity extends ComponentActivity {
                 if      ("retrying".equals(lstConn)) detail = getString(R.string.status_detail_connecting_search);
                 else if ("dropped".equals(lstConn))  detail = getString(R.string.status_detail_connecting_reconnect);
                 else if ("failed".equals(lstConn))   detail = getString(R.string.status_detail_connecting_retry);
+                else if ("native_start".equals(lstConn)) detail = "Abriendo túnel nativo...";
                 else if ("proxy_connect_start".equals(lstConn)) detail = "Conectando al proxy...";
                 else if ("proxy_connected".equals(lstConn)) detail = "Proxy conectado";
                 else if ("server_auth_request".equals(lstConn)) detail = "Solicitando acceso al servidor...";
