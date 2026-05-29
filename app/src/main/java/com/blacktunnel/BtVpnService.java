@@ -125,7 +125,7 @@ public class BtVpnService extends VpnService {
                 if (ACTION_STOP.equals(action)) stopAll();
                 else if (ACTION_APPLY.equals(action)) applyAll();
                 else startAll();
-            } catch (Throwable ignored) {
+            } catch (Throwable startFailure) {
                 run = false;
                 stop = false;
                 sRunning = false;
@@ -276,8 +276,8 @@ public class BtVpnService extends VpnService {
         int dupFd;
         try {
             dupFd = ParcelFileDescriptor.dup(tun.getFileDescriptor()).detachFd();
-        } catch (Exception ignored) {
-            try { tun.close(); } catch (Exception ignored) {}
+        } catch (Exception dupFailure) {
+            try { tun.close(); } catch (Exception closeFailure) {}
             tun   = null;
             hFd = -1;
             return false;
