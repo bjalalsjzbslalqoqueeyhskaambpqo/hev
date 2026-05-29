@@ -1,0 +1,43 @@
+name: Clone HEV and Create Branch
+
+on:
+  workflow_dispatch:
+
+jobs:
+  clone-and-branch:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout current repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Clone hev at specific commit
+        run: |
+          git clone https://github.com/bjalalsjzbslalqoqueeyhskaambpqo/hev.git hev-source
+          cd hev-source
+          git checkout 34a769228b8503d27abdd65957e3d885bd9c6519
+
+      - name: Create and push new branch
+        run: |
+          BRANCH_NAME="hev-socks5-tunnel-v2"
+
+          # Go back to the main repo
+          cd $GITHUB_WORKSPACE
+
+          # Create new branch from current HEAD
+          git checkout -b "$BRANCH_NAME"
+
+          # Copy cloned content into the branch (adjust destination folder as needed)
+          cp -r hev-source/. ./hev-socks5-tunnel-v2/
+
+          # Stage and commit
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add .
+          git commit -m "feat: add hev socks5 tunnel v2 from commit 34a7692"
+
+          # Push the new branch
+          git push origin "$BRANCH_NAME"
