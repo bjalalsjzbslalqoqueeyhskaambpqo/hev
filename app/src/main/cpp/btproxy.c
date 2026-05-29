@@ -92,27 +92,59 @@ static pthread_mutex_t g_m    = PTHREAD_MUTEX_INITIALIZER;
 
 static void fire_event(int type, const char *key, const char *val) {
     if (!g_r) return;
-    JavaVM *jvm; jobject svc;
-    lk(&g_m); jvm = g_j; svc = g_s; ul(&g_m);
-    if (!jvm || !svc) return;
 
-    JNIEnv *env = NULL; int att = 0;
+    JavaVM *jvm = NULL;
+    lk(&g_m);
+    jvm = g_j;
+    ul(&g_m);
+    if (!jvm) return;
+
+    JNIEnv *env = NULL;
+    int att = 0;
     if ((*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {
-        (*jvm)->AttachCurrentThread(jvm, &env, NULL);
+        if ((*jvm)->AttachCurrentThread(jvm, &env, NULL) != JNI_OK || !env) return;
         att = 1;
     }
 
-    jclass    cls = (*env)->GetObjectClass(env, svc);
-    jmethodID m   = (*env)->GetMethodID(env, cls, "onTunnelEvent",
-                                        "(ILjava/lang/String;Ljava/lang/String;)V");
-    if (m) {
+    jobject svc = NULL;
+    lk(&g_m);
+    if (g_s) svc = (*env)->NewLocalRef(env, g_s);
+    ul(&g_m);
+    if (!svc) {
+        if (att) (*jvm)->DetachCurrentThread(jvm);
+        return;
+    }
+
+    jclass cls = (*env)->GetObjectClass(env, svc);
+    if (!cls || (*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, svc);
+        if (att) (*jvm)->DetachCurrentThread(jvm);
+        return;
+    }
+
+    jmethodID m = (*env)->GetMethodID(env, cls, "onTunnelEvent",
+                                      "(ILjava/lang/String;Ljava/lang/String;)V");
+    if (m && !(*env)->ExceptionCheck(env)) {
         jstring jkey = (*env)->NewStringUTF(env, key ? key : "");
         jstring jval = (*env)->NewStringUTF(env, val ? val : "");
-        (*env)->CallVoidMethod(env, svc, m, (jint)type, jkey, jval);
-        (*env)->DeleteLocalRef(env, jkey);
-        (*env)->DeleteLocalRef(env, jval);
+        if (jkey && jval) {
+            (*env)->CallVoidMethod(env, svc, m, (jint)type, jkey, jval);
+            if ((*env)->ExceptionCheck(env)) {
+                (*env)->ExceptionDescribe(env);
+                (*env)->ExceptionClear(env);
+            }
+        } else if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+        }
+        if (jkey) (*env)->DeleteLocalRef(env, jkey);
+        if (jval) (*env)->DeleteLocalRef(env, jval);
+    } else if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
     }
+
     (*env)->DeleteLocalRef(env, cls);
+    (*env)->DeleteLocalRef(env, svc);
     if (att) (*jvm)->DetachCurrentThread(jvm);
 }
 

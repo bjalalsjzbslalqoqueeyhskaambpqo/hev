@@ -912,8 +912,15 @@ public class SimpleModeActivity extends ComponentActivity {
         BtVpnService.cLogs();
         Intent i = new Intent(this, BtVpnService.class);
         i.setAction(BtVpnService.ACTION_START);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
-        else startService(i);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
+            else startService(i);
+        } catch (Throwable t) {
+            lstConn = "failed";
+            setUiState(UiState.DISCONNECTED);
+            Toast.makeText(this, "No se pudo iniciar la VPN", Toast.LENGTH_SHORT).show();
+            return;
+        }
         connMs = SystemClock.elapsedRealtime();
         hsOk = false; lstConn = ""; lstDtl = ""; aSt = "";
         lstPing = -1;
