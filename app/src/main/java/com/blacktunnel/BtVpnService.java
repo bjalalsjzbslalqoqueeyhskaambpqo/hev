@@ -45,7 +45,7 @@ public class BtVpnService extends VpnService {
     private static volatile boolean sRunning = false;
     private static volatile boolean sStarting = false;
 
-    private static final long          HS_TO = 12000L;
+    private static final long          HS_TO = 40000L;
     private static final long          HEV_START_GRACE_MS = 900L;
     private static final int           HEV_PENDING = Integer.MIN_VALUE;
 
@@ -60,6 +60,7 @@ public class BtVpnService extends VpnService {
     private volatile ConnectivityManager.NetworkCallback nCb = null;
     private volatile boolean              hsReady = false;
     private volatile boolean              hsFailed = false;
+    private volatile String               hsFailStage = "";
     private volatile CountDownLatch       hsLatch = null;
 
     public static boolean iRun() { return sRunning; }
@@ -108,15 +109,17 @@ public class BtVpnService extends VpnService {
             if ("relay_ready".equals(value)) {
                 hsReady = true;
                 hsFailed = false;
+                hsFailStage = "";
                 signalHandshakeWaiter();
             } else if ("auth_rejected".equals(value)
-                    || "manual_reconnect_required".equals(value)
-                    || "proxy_connect_failed".equals(value)) {
+                    || "manual_reconnect_required".equals(value)) {
                 hsFailed = true;
+                hsFailStage = value;
                 signalHandshakeWaiter();
             }
         } else if (type == 4) {
             hsFailed = true;
+            hsFailStage = "auth_rejected";
             signalHandshakeWaiter();
         }
     }
@@ -189,6 +192,7 @@ public class BtVpnService extends VpnService {
         cleanupSessionResources();
         hsReady = false;
         hsFailed = false;
+        hsFailStage = "";
         hsLatch = new CountDownLatch(1);
 
         registerNet();
@@ -203,7 +207,7 @@ public class BtVpnService extends VpnService {
         }
 
         if (!waitForTunnelHandshake()) {
-            String failStage = hsFailed ? "auth_rejected" : "proxy_connect_failed";
+            String failStage = hsFailed && !hsFailStage.isEmpty() ? hsFailStage : "proxy_connect_failed";
             BtProxy.stop();
             cleanupFailedStart();
             onTunnelEvent(1, "stage", failStage);
@@ -229,6 +233,7 @@ public class BtVpnService extends VpnService {
         sRunning = false;
         sStarting = false;
         hsReady = false;
+        hsFailStage = "";
         hsLatch = null;
         stopHevStack();
         unregisterNet();

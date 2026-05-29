@@ -53,8 +53,8 @@
 #define AUTH_RESPONSE_WAIT_MS 1200
 #define RESPONSIVE_SLICE_MS   50
 #define PROXY_EVENT_SETTLE_MS 100
-#define PROXY_IPV6_TIMEOUT_MS 1200
-#define PROXY_FALLBACK_SETTLE_MS 250
+#define PROXY_IPV6_TIMEOUT_MS 2000
+#define PROXY_FALLBACK_SETTLE_MS 100
 
 #define PROXY_HOST_V6  "emailmarketing.personal.com.ar"
 #define TUNNEL_HOST_V6 "2.brawlpass.com.ar"
@@ -620,8 +620,8 @@ static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host
             char reason[64] = {0};
             parse_hdr(h2, "X-Disconnect-Reason:", reason, sizeof(reason));
             atomic_store(&g_af, 1);
-            fire_event(EV_STAGE, "stage", "auth_rejected");
             if (reason[0]) fire_event(EV_DISCONNECT, "reason", reason);
+            fire_event(EV_STAGE, "stage", "auth_rejected");
         }
         return -1;
     }
