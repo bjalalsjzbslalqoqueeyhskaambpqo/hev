@@ -90,7 +90,23 @@ static size_t          g_ll  = 0;
 static long            nms(void);
 
 static void pl(const char *lvl, const char *fmt, ...) {
-    // logging disabled - no logcat, no buffer
+    va_list ap; va_start(ap, fmt);
+    char msg[512]; vsnprintf(msg, sizeof(msg), fmt, ap); va_end(ap);
+    // if (lvl[0] == 'E') LOGE("%s", msg); else LOGI("%s", msg);
+    lk(&g_lm);
+    char line[560];
+    int n = snprintf(line, sizeof(line), "%s %s\n", lvl, msg);
+    if (n > 0) {
+        if (g_ll + (size_t)n >= sizeof(g_lb)) {
+            size_t drop = g_ll + n - sizeof(g_lb) + 1;
+            memmove(g_lb, g_lb + drop, g_ll - drop);
+            g_ll -= drop;
+        }
+        memcpy(g_lb + g_ll, line, n);
+        g_ll += n;
+        g_lb[g_ll] = 0;
+    }
+    ul(&g_lm);
 }
 
 #define HT_SIZE 4096
