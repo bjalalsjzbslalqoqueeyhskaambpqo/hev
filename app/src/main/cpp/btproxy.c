@@ -206,6 +206,17 @@ static void si_close_all(int epfd) {
         si_h[i] = NULL; ul(&si_m[i]); }
 }
 
+static void sc_close(int epfd, int tfd, uint32_t sid, sinfo_t *si) {
+    epoll_ctl(epfd, EPOLL_CTL_DEL, si->cfd, NULL);
+    shutdown(si->cfd, SHUT_RDWR); close(si->cfd);
+    ht_del(sid); si_del(sid); cq_flush(&si->lq); free(si);
+    tun_enqueue(tfd, epfd, T_CLOSE, sid, NULL, 0);
+}
+static void ht_close(int epfd, uint32_t sid, int cfd) {
+    epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
+    shutdown(cfd, SHUT_RDWR); close(cfd); ht_del(sid);
+}
+
 typedef struct frame_s {
     struct frame_s *next;
     size_t          total;
@@ -555,9 +566,7 @@ static void *tunnel_reader(void *arg) {
 
             if (si->lq.bytes + len > LOCAL_QUEUE_HARD_LIMIT) {
                 tun_enqueue(tfd, epfd, T_CLOSE, sid, NULL, 0);
-                epoll_ctl(epfd, EPOLL_CTL_DEL, si->cfd, NULL);
-                ht_del(sid); si_del(sid);
-                close(si->cfd); cq_flush(&si->lq); free(si);
+                sc_close(epfd, tfd, sid, si);
                 break;
             }
 
@@ -582,9 +591,7 @@ static void *tunnel_reader(void *arg) {
                     break;
                 }
                 tun_enqueue(tfd, epfd, T_CLOSE, sid, NULL, 0);
-                epoll_ctl(epfd, EPOLL_CTL_DEL, si->cfd, NULL);
-                ht_del(sid); si_del(sid);
-                close(si->cfd); cq_flush(&si->lq); free(si);
+                sc_close(epfd, tfd, sid, si);
                 stream_dead = 1;
             }
             break;
@@ -593,22 +600,11 @@ static void *tunnel_reader(void *arg) {
             sinfo_t *si = si_get(sid);
             if (si) {
                 epoll_ctl(epfd, EPOLL_CTL_DEL, si->cfd, NULL);
-                if (si->lq.head) {
-                    si->cp = 1;
-                } else {
-                    shutdown(si->cfd, SHUT_RDWR);
-                    close(si->cfd);
-                    ht_del(sid); si_del(sid);
-                    cq_flush(&si->lq); free(si);
-                }
+                if (si->lq.head) { si->cp = 1; }
+                else { shutdown(si->cfd, SHUT_RDWR); close(si->cfd); ht_del(sid); si_del(sid); cq_flush(&si->lq); free(si); }
             } else {
                 int cfd = ht_get(sid);
-                if (cfd >= 0) {
-                    epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
-                    shutdown(cfd, SHUT_RDWR);
-                    close(cfd);
-                    ht_del(sid);
-                }
+                if (cfd >= 0) ht_close(epfd, sid, cfd);
             }
             break;
         }
@@ -849,10 +845,8 @@ static void *main_thread(void *arg) {
 
                 if (evs & (EPOLLERR | EPOLLHUP)) {
                     epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
-                    ht_del(sid);
-                    if (si) { cq_flush(&si->lq); si_del(sid); free(si); }
-                    close(cfd);
-                    tun_enqueue(tfd, epfd, T_CLOSE, sid, NULL, 0);
+                    ht_del(sid); if (si) { cq_flush(&si->lq); si_del(sid); free(si); }
+                    close(cfd); tun_enqueue(tfd, epfd, T_CLOSE, sid, NULL, 0);
                     continue;
                 }
 
@@ -887,13 +881,8 @@ static void *main_thread(void *arg) {
                         si->lq.bytes = 0; si->lq.tail = NULL;
                         si->ps = 0;
                         si->la = nms();
-                        if (si->cp) {
-                            epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
-                            shutdown(cfd, SHUT_RDWR);
-                            close(cfd);
-                            ht_del(sid); si_del(sid);
-                            cq_flush(&si->lq); free(si);
-                        } else {
+                        if (si->cp) { sc_close(epfd, tfd, sid, si); }
+                        else {
                             struct epoll_event cev;
                             cev.events   = EPOLLIN;
                             cev.data.u64 = ((uint64_t)sid << 32) | (uint32_t)cfd;
