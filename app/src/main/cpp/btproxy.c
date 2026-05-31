@@ -80,22 +80,10 @@ static atomic_int      g_af = 0;
 static char            g_i[160] = {0};
 static JavaVM         *g_j          = NULL;
 static jobject         g_s          = NULL;
-static jclass          g_c          = NULL;
-static jmethodID       g_m_onTunnelOk = NULL;
 static jmethodID       g_m_protect = NULL;
 static net_handle_t    g_n          = NETWORK_UNSPECIFIED;
 static pthread_t       g_mt  = 0;
 static pthread_mutex_t g_m           = PTHREAD_MUTEX_INITIALIZER;
-
-/* Event to notify Java when tunnel is established */
-static void fire_tunnel_ok(void) {
-    JNIEnv *env;
-    if (!g_j || !g_s || !g_c || !g_m_onTunnelOk) return;
-    (*g_j)->AttachCurrentThread(g_j, &env, NULL);
-    (*env)->CallVoidMethod(env, g_s, g_m_onTunnelOk);
-    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
-    (*g_j)->DetachCurrentThread(g_j);
-}
 
 static pthread_mutex_t g_lm  = PTHREAD_MUTEX_INITIALIZER;
 static char            g_lb[32768];
@@ -570,7 +558,6 @@ static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host
     if (udays[0]) pl("I", "user_days=%s", udays);
     pl("I", "stage=access_granted");
     pl("I", "tunnel ok");
-    fire_tunnel_ok();
     atomic_store(&g_lp, (long)time(NULL));
     return 0;
 }
@@ -1118,9 +1105,9 @@ n_start(JNIEnv *env, jclass clazz,
     lk(&g_m);
     (*env)->GetJavaVM(env, &g_j);
     g_s = (*env)->NewGlobalRef(env, svc);
-    g_c = (*env)->NewGlobalRef(env, (*env)->GetObjectClass(env, svc));
-    g_m_onTunnelOk = (*env)->GetMethodID(env, g_c, "onTunnelOk", "()V");
-    g_m_protect = (*env)->GetMethodID(env, g_c, "protect", "(I)Z");
+    jclass cls = (*env)->NewGlobalRef(env, (*env)->GetObjectClass(env, svc));
+    g_m_protect = (*env)->GetMethodID(env, cls, "protect", "(I)Z");
+    (*env)->DeleteGlobalRef(env, cls);
     g_i[0] = 0;
     if (iid) {
         const char *s = (*env)->GetStringUTFChars(env, iid, NULL);
@@ -1156,8 +1143,6 @@ n_stop(JNIEnv *env, jclass clazz) {
     g_r = 0;
     g_i[0] = 0;
     jobject svc = g_s; g_s = NULL; g_j = NULL;
-    if (g_c) { (*env)->DeleteGlobalRef(env, g_c); g_c = NULL; }
-    g_m_onTunnelOk = NULL;
     g_m_protect = NULL;
     int rfd  = g_rf;  g_rf  = -1;
     int tfd  = g_tf;    g_tf    = -1;

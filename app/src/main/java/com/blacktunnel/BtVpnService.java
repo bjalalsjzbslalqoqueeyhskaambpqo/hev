@@ -64,10 +64,6 @@ public class BtVpnService extends VpnService {
 
     public static boolean iRun() { return sRunning; }
 
-    public void onTunnelOk() {
-        tunnelOk.set(true);
-    }
-
     public static String getHotspotIp() {
         try {
             InetAddress ip = InetAddress.getByName("192.168.43.1");
@@ -197,10 +193,10 @@ public class BtVpnService extends VpnService {
     }
 
     private boolean waitForTunnelHandshake() {
-        tunnelOk.set(false);
         long deadline = System.currentTimeMillis() + HS_TO;
         while (System.currentTimeMillis() < deadline) {
-            if (tunnelOk.get()) return true;
+            String logs = dLogs();
+            if (logs != null && logs.contains("tunnel ok")) return true;
             try { Thread.sleep(50); } catch (InterruptedException ignored) { return false; }
         }
         return false;
