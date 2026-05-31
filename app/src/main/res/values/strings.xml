@@ -1,33 +1,4 @@
 <resources>
-    <string name="app_name">Strike</string>
-    <string name="app_brand">STRIKE</string>
     <string name="connect">Conectar</string>
     <string name="disconnect">Desconectar</string>
-    <string name="copy">Copiar ID</string>
-    <string name="ping_default">Ping: — ms</string>
-    <string name="user_default">Usuario: Gamer123</string>
-    <string name="days_default">Días disponibles: 15</string>
-    <string name="device_id_default">ID: ABC123XYZ</string>
-    <string name="gaming_mode_title">Modo aplicaciones seleccionadas</string>
-    <string name="gaming_mode_desc">Permite solo el tráfico de hasta 3 apps seleccionadas en el túnel.</string>
-    <string name="gaming_mode_on_badge">MODO APPS ACTIVO</string>
-    <string name="gaming_mode_off_badge">MODO NORMAL</string>
-    <string name="gaming_mode_on_compact">MODO APPS ON</string>
-    <string name="gaming_mode_off_compact">MODO APPS OFF</string>
-    <string name="connect_gaming">Conectar Apps</string>
-    <string name="gaming_select_apps">Seleccionar aplicaciones</string>
-    <string name="gaming_selected_count">Seleccionadas: %1$d/3</string>
-    <string name="gaming_apply_notice">Para aplicar cambios, desconecta y vuelve a conectar.</string>
-    <string name="gaming_search_hint">Buscar app o juego…</string>
-    <string name="gaming_picker_title">Aplicaciones seleccionadas (máx. 3)</string>
-    <string name="gaming_loading_apps">Cargando aplicaciones instaladas…</string>
-    <string name="status_connecting">CONECTANDO…</string>
-    <string name="status_connected">CONECTADO</string>
-    <string name="status_disconnected">DESCONECTADO</string>
-    <string name="status_detail_connecting_search">• Buscando servidor disponible…</string>
-    <string name="status_detail_connecting_reconnect">• Reconectando al servidor…</string>
-    <string name="status_detail_connecting_retry">• Reintentando conexión…</string>
-    <string name="status_detail_connecting_default">• Estableciendo conexión segura…</string>
-    <string name="status_detail_connected">✓ Conexión establecida</string>
-    <string name="overlay_close">Entendido</string>
 </resources>
