@@ -1,9 +1,12 @@
 package com.blacktunnel;
 
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
-import android.view.View;
 import android.widget.Button;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import androidx.activity.ComponentActivity;
 import java.util.concurrent.Executors;
@@ -14,19 +17,29 @@ public class SimpleModeActivity extends ComponentActivity {
 
     private State       state   = State.DISCONNECTED;
     private Button      btn;
-    private TextView   status;
+    private Button      copyBtn;
+    private TextView    status;
+    private TextView    logView;
+    private StringBuilder fullLog = new StringBuilder();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_simple_mode);
 
-        btn    = findViewById(R.id.btnConnect);
-        status = findViewById(R.id.txtStatus);
+        btn     = findViewById(R.id.btnConnect);
+        copyBtn = findViewById(R.id.btnCopy);
+        status  = findViewById(R.id.txtStatus);
+        logView = findViewById(R.id.txtLog);
 
         btn.setOnClickListener(v -> {
             if (state == State.DISCONNECTED) startVpn();
             else stopVpn();
+        });
+
+        copyBtn.setOnClickListener(v -> {
+            ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            cm.setPrimaryClip(ClipData.newPlainText("logs", fullLog.toString()));
         });
 
         startMonitoring();
@@ -35,6 +48,7 @@ public class SimpleModeActivity extends ComponentActivity {
     private void startVpn() {
         state = State.CONNECTING;
         updateUi();
+        appendLog(">> Iniciando VPN...\n");
 
         Intent intent = new Intent(this, BtVpnService.class);
         intent.setAction(BtVpnService.ACTION_START);
@@ -42,6 +56,7 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void stopVpn() {
+        appendLog(">> Deteniendo VPN...\n");
         Intent intent = new Intent(this, BtVpnService.class);
         intent.setAction(BtVpnService.ACTION_STOP);
         startService(intent);
@@ -70,11 +85,28 @@ public class SimpleModeActivity extends ComponentActivity {
         }
     }
 
+    private void appendLog(String line) {
+        fullLog.append(line);
+        runOnUiThread(() -> {
+            logView.setText(fullLog.toString());
+            ((ScrollView) logView.getParent()).scrollTo(0, logView.getHeight());
+        });
+    }
+
     private void startMonitoring() {
+        String lastLog = "";
         Executors.newSingleThreadExecutor().submit(() -> {
             while (true) {
                 String logs = BtVpnService.dLogs();
-                if (logs != null) {
+                if (logs != null && !logs.equals(lastLog)) {
+                    String[] lines = logs.split("\n");
+                    for (String line : lines) {
+                        if (!line.trim().isEmpty()) {
+                            appendLog(line + "\n");
+                        }
+                    }
+                    lastLog = logs;
+
                     if (logs.contains("tunnel ok") && state == State.CONNECTING) {
                         state = State.CONNECTED;
                         runOnUiThread(this::updateUi);
@@ -84,7 +116,7 @@ public class SimpleModeActivity extends ComponentActivity {
                         runOnUiThread(this::updateUi);
                     }
                 }
-                try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(200); } catch (InterruptedException ignored) {}
             }
         });
     }

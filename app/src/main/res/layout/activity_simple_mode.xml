@@ -1,39 +1,63 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout
+<LinearLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:padding="16dp"
     android:background="@color/color_bg">
 
-    <LinearLayout
+    <TextView
+        android:id="@+id/txtStatus"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="center"
-        android:orientation="vertical"
-        android:gravity="center">
+        android:text="DESCONECTADO"
+        android:textColor="@color/color_disconnected"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:letterSpacing="0.1" />
+
+    <Button
+        android:id="@+id/btnConnect"
+        android:layout_width="200dp"
+        android:layout_height="60dp"
+        android:layout_marginTop="24dp"
+        android:background="@drawable/hud_btn_connect"
+        android:text="@string/connect"
+        android:textAllCaps="true"
+        android:textColor="@color/color_text_primary"
+        android:textSize="16sp"
+        android:textStyle="bold" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="24dp"
+        android:background="@drawable/hud_btn_connect">
 
         <TextView
-            android:id="@+id/txtStatus"
-            android:layout_width="wrap_content"
+            android:id="@+id/txtLog"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="DESCONECTADO"
-            android:textColor="@color/color_disconnected"
-            android:textSize="18sp"
-            android:textStyle="bold"
-            android:letterSpacing="0.1" />
-
-        <Button
-            android:id="@+id/btnConnect"
-            android:layout_width="200dp"
-            android:layout_height="60dp"
-            android:layout_marginTop="24dp"
-            android:background="@drawable/hud_btn_connect"
-            android:text="@string/connect"
-            android:textAllCaps="true"
+            android:padding="8dp"
             android:textColor="@color/color_text_primary"
-            android:textSize="16sp"
-            android:textStyle="bold" />
+            android:textSize="10sp"
+            android:fontFamily="monospace"
+            android:textIsSelectable="true" />
 
-    </LinearLayout>
+    </ScrollView>
 
-</FrameLayout>
+    <Button
+        android:id="@+id/btnCopy"
+        android:layout_width="match_parent"
+        android:layout_height="40dp"
+        android:layout_marginTop="8dp"
+        android:background="@drawable/strike_btn_secondary"
+        android:text="Copiar Logs"
+        android:textAllCaps="false"
+        android:textColor="@color/color_text_primary"
+        android:textSize="12sp" />
+
+</LinearLayout>
