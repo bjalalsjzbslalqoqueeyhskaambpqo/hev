@@ -70,7 +70,7 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void startMonitoring() {
-        Thread.ofVirtual().start(() -> {
+        Executors.newSingleThreadExecutor().submit(() -> {
             while (true) {
                 String logs = BtVpnService.dLogs();
                 if (logs != null) {
