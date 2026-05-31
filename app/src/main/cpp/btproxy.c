@@ -92,7 +92,7 @@ static long            nms(void);
 static void pl(const char *lvl, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     char msg[512]; vsnprintf(msg, sizeof(msg), fmt, ap); va_end(ap);
-    if (lvl[0] == 'E') LOGE("%s", msg); else LOGI("%s", msg);
+    // if (lvl[0] == 'E') LOGE("%s", msg); else LOGI("%s", msg);
     lk(&g_lm);
     char line[560];
     int n = snprintf(line, sizeof(line), "%s %s\n", lvl, msg);
