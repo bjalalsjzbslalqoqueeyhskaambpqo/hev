@@ -43,7 +43,7 @@
 #define RELAY_BACKLOG          512
 #define PONG_TIMEOUT_SEC       120
 #define KEEPALIVE_INTERVAL_SEC 3
-#define CONNECT_TIMEOUT_SEC    15
+#define CONNECT_TIMEOUT_MS 2000
 #define HANDSHAKE_TIMEOUT_SEC  4
 #define MAX_EPOLL_EVENTS       64
 
@@ -63,8 +63,6 @@ static const char *PROXY_IPS_V6[] = {
     "2606:4700::6812:17b7",
 };
 #define PROXY_IP_COUNT_V6 2
-
-#define CONNECT_TIMEOUT_MS 2000
 
 static volatile int    g_r      = 0;
 static int             g_rf     = -1;
