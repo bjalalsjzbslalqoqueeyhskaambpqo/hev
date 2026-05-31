@@ -158,6 +158,14 @@ public class BtVpnService extends VpnService {
         createChannel();
         startForeground(NF_ID, buildNotif());
 
+        Intent prep = VpnService.prepare(this);
+        if (prep != null) {
+            log("W startAll: VPN not authorized, launching auth dialog");
+            startActivity(prep);
+            stopForeground(STOP_FOREGROUND_REMOVE);
+            return;
+        }
+
         BtProxy.stop();
         cleanupSessionResources();
         tunnelOk.set(false);
