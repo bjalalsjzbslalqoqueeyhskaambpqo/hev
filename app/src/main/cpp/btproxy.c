@@ -213,6 +213,10 @@ static void ht_close(int epfd, uint32_t sid, int cfd) {
     shutdown(cfd, SHUT_RDWR); close(cfd); ht_del(sid);
 }
 
+static void sc_close(int, int, uint32_t, sinfo_t*);
+static void ht_close(int, uint32_t, int);
+static int tun_enqueue(int, int, uint8_t, uint32_t, const uint8_t*, uint16_t);
+
 typedef struct frame_s {
     struct frame_s *next;
     size_t          total;
