@@ -34,6 +34,8 @@
 #define T_KICK  0x06
 #define T_EXPIRED 0x07
 
+#define WAKE(ep, ww) do { if (atomic_load(&g_te) == (ep)) { uint8_t _b = 1; write((ww), &_b, 1); } } while(0)
+
 #define FRAME_HDR              7
 #define MAX_PAYLOAD            16384
 #define RELAY_BACKLOG          512
@@ -82,25 +84,22 @@ static size_t          g_ll  = 0;
 static long            nms(void);
 
 static void pl(const char *lvl, const char *fmt, ...) {
-    // Only tunnel ok and ping_ms are needed by Java
     char msg[512];
     va_list ap; va_start(ap, fmt); vsnprintf(msg, sizeof(msg), fmt, ap); va_end(ap);
-    if (strstr(msg, "tunnel ok") || strstr(msg, "ping_ms=")) {
-        lk(&g_lm);
-        char line[560];
-        int n = snprintf(line, sizeof(line), "%s %s\n", lvl, msg);
-        if (n > 0) {
-            if (g_ll + (size_t)n >= sizeof(g_lb)) {
-                size_t drop = g_ll + n - sizeof(g_lb) + 1;
-                memmove(g_lb, g_lb + drop, g_ll - drop);
-                g_ll -= drop;
-            }
-            memcpy(g_lb + g_ll, line, n);
-            g_ll += n;
-            g_lb[g_ll] = 0;
+    lk(&g_lm);
+    char line[560];
+    int n = snprintf(line, sizeof(line), "%s %s\n", lvl, msg);
+    if (n > 0) {
+        if (g_ll + (size_t)n >= sizeof(g_lb)) {
+            size_t drop = g_ll + n - sizeof(g_lb) + 1;
+            memmove(g_lb, g_lb + drop, g_ll - drop);
+            g_ll -= drop;
         }
-        ul(&g_lm);
+        memcpy(g_lb + g_ll, line, n);
+        g_ll += n;
+        g_lb[g_ll] = 0;
     }
+    ul(&g_lm);
 }
 
 #define HT_SIZE 4096
@@ -439,68 +438,28 @@ static void parse_hdr(const char *hdrs, const char *key, char *out, size_t out_c
     }
 }
 
-static int try_connect_ip4(const char *ip, int timeout_ms) {
-    struct sockaddr_in a = {0};
-    a.sin_family = AF_INET;
-    a.sin_port = htons(PROXY_PORT);
-    if (inet_pton(AF_INET, ip, &a.sin_addr) != 1) return -1;
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
+static int try_connect(int family, void *addr, socklen_t addrlen, int timeout_ms) {
+    int fd = socket(family, SOCK_STREAM, 0);
     if (fd < 0) return -1;
     protect_fd(fd);
-    int one = 1;
+    int one = 1, v;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,   &one, sizeof(one));
     setsockopt(fd, SOL_SOCKET,  SO_KEEPALIVE,  &one, sizeof(one));
-    int v;
     v = 30;     setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,  &v, sizeof(v));
     v = 10;     setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &v, sizeof(v));
-    v = 3;      setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,   &v, sizeof(v));
+    v =  3;     setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,   &v, sizeof(v));
     v = 524288; setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &v, sizeof(v));
-    v = 524288; setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &v, sizeof(v));
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &v, sizeof(v));
     int fl = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, fl | O_NONBLOCK);
     fcntl(fd, F_SETFD, FD_CLOEXEC);
-    int r = connect(fd, (struct sockaddr *)&a, sizeof(a));
+    int r = connect(fd, addr, addrlen);
     if (r == 0) { fcntl(fd, F_SETFL, fl); return fd; }
-    if (errno != EINPROGRESS) { pl("W", "connect immediate fail ip=%s errno=%d", ip, errno); close(fd); return -1; }
+    if (errno != EINPROGRESS) { close(fd); return -1; }
     struct pollfd p = {fd, POLLOUT, 0};
-    int pr = poll(&p, 1, timeout_ms);
-    if (pr <= 0) { pl("W", "connect timeout ip=%s ms=%d", ip, timeout_ms); close(fd); return -1; }
+    if (poll(&p, 1, timeout_ms) <= 0) { close(fd); return -1; }
     int e = 0; socklen_t el = sizeof(e);
-    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) < 0 || e != 0)
-        { pl("W", "connect so_error ip=%s err=%d", ip, e); close(fd); return -1; }
-    fcntl(fd, F_SETFL, fl);
-    return fd;
-}
-
-static int try_connect_ip6(const char *ip, int timeout_ms) {
-    struct sockaddr_in6 a = {0};
-    a.sin6_family = AF_INET6;
-    a.sin6_port = htons(PROXY_PORT);
-    if (inet_pton(AF_INET6, ip, &a.sin6_addr) != 1) return -1;
-    int fd = socket(AF_INET6, SOCK_STREAM, 0);
-    if (fd < 0) return -1;
-    protect_fd(fd);
-    int one = 1;
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,   &one, sizeof(one));
-    setsockopt(fd, SOL_SOCKET,  SO_KEEPALIVE,  &one, sizeof(one));
-    int v;
-    v = 30;     setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,  &v, sizeof(v));
-    v = 10;     setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &v, sizeof(v));
-    v = 3;      setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,   &v, sizeof(v));
-    v = 524288; setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &v, sizeof(v));
-    v = 524288; setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &v, sizeof(v));
-    int fl = fcntl(fd, F_GETFL, 0);
-    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
-    fcntl(fd, F_SETFD, FD_CLOEXEC);
-    int r = connect(fd, (struct sockaddr *)&a, sizeof(a));
-    if (r == 0) { fcntl(fd, F_SETFL, fl); return fd; }
-    if (errno != EINPROGRESS) { pl("W", "connect immediate fail ipv6=%s errno=%d", ip, errno); close(fd); return -1; }
-    struct pollfd p = {fd, POLLOUT, 0};
-    int pr = poll(&p, 1, 300);
-    if (pr <= 0) { pl("W", "connect timeout ipv6=%s ms=300", ip); close(fd); return -1; }
-    int e = 0; socklen_t el = sizeof(e);
-    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) < 0 || e != 0)
-        { pl("W", "connect so_error ipv6=%s err=%d", ip, e); close(fd); return -1; }
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) < 0 || e != 0) { close(fd); return -1; }
     fcntl(fd, F_SETFL, fl);
     return fd;
 }
@@ -555,10 +514,13 @@ static int open_tunnel(void) {
     pl("I", "method=ipv6_primary start");
     for (int i = 0; i < PROXY_IP_COUNT_V6 && fd < 0; i++) {
         pl("I", "proxy intento=ipv6_static_%d", i + 1);
-        fd = try_connect_ip6(PROXY_IPS_V6[i], 300);
+        struct sockaddr_in6 a6 = {0};
+        a6.sin6_family = AF_INET6; a6.sin6_port = htons(PROXY_PORT);
+        inet_pton(AF_INET6, PROXY_IPS_V6[i], &a6.sin6_addr);
+        fd = try_connect(AF_INET6, (struct sockaddr *)&a6, sizeof(a6), 300);
     }
-    /* Intencional: sin resoluciÃ³n DNS IPv6 dinÃ¡mica para priorizar velocidad.
-     * Solo se intentan las IPs IPv6 estÃ¡ticas y luego se hace fallback a IPv4. */
+    /* Intencional: sin resolución DNS IPv6 dinámica para priorizar velocidad.
+     * Solo se intentan las IPs IPv6 estáticas y luego se hace fallback a IPv4. */
     if (fd >= 0) {
         pl("I", "stage=proxy_connected method=ipv6_primary");
         if (run_handshake(fd, PROXY_HOST_V6, TUNNEL_HOST_V6) == 0) {
@@ -583,7 +545,7 @@ static int open_tunnel(void) {
             struct sockaddr_in *a4 = (struct sockaddr_in *)cur->ai_addr;
             inet_ntop(AF_INET, &a4->sin_addr, ipbuf, sizeof(ipbuf));
             pl("I", "proxy intento=ipv4_dns_%d", dns_try);
-            fd = try_connect_ip4(ipbuf, CONNECT_TIMEOUT_MS);
+            fd = try_connect(AF_INET, (struct sockaddr *)a4, sizeof(*a4), CONNECT_TIMEOUT_MS);
         }
         freeaddrinfo(res);
     } else {
@@ -613,7 +575,7 @@ static void *tunnel_reader(void *arg) {
             if ((long)time(NULL) - atomic_load(&g_lp) > PONG_TIMEOUT_SEC) {
                 pl("E", "pong timeout");
                 if (atomic_load(&g_te) == epoch) {
-                    uint8_t b = 1; write(wake_w, &b, 1);
+                    WAKE(epoch, wake_w);
                 }
             }
             continue;
@@ -621,7 +583,7 @@ static void *tunnel_reader(void *arg) {
         if (rc < 0) {
             pl("E", "tunnel read failed");
             if (atomic_load(&g_te) == epoch) {
-                uint8_t b = 1; write(wake_w, &b, 1);
+                WAKE(epoch, wake_w);
             }
             break;
         }
@@ -634,14 +596,14 @@ static void *tunnel_reader(void *arg) {
         if (len > MAX_PAYLOAD) {
             pl("E", "payload too large");
             if (atomic_load(&g_te) == epoch) {
-                uint8_t b = 1; write(wake_w, &b, 1);
+                WAKE(epoch, wake_w);
             }
             break;
         }
         if (len > 0 && tun_recv_full(tfd, payload, len, 30000) < 0) {
             pl("E", "payload read failed");
             if (atomic_load(&g_te) == epoch) {
-                uint8_t b = 1; write(wake_w, &b, 1);
+                WAKE(epoch, wake_w);
             }
             break;
         }
@@ -721,7 +683,7 @@ static void *tunnel_reader(void *arg) {
                 pl("E", "disconnect_reason=kick");
                 pl("E", "stage=manual_reconnect_required");
                 if (atomic_load(&g_te) == epoch) {
-                    uint8_t b = 1; write(wake_w, &b, 1);
+                    WAKE(epoch, wake_w);
                 }
             }
             break;
@@ -730,7 +692,7 @@ static void *tunnel_reader(void *arg) {
                 pl("E", "disconnect_reason=expired");
                 pl("E", "stage=auth_rejected");
                 if (atomic_load(&g_te) == epoch) {
-                    uint8_t b = 1; write(wake_w, &b, 1);
+                    WAKE(epoch, wake_w);
                 }
             }
             break;
@@ -752,7 +714,7 @@ static void *keepalive(void *arg) {
         if (now - atomic_load(&g_lp) > PONG_TIMEOUT_SEC) {
             pl("E", "pong timeout keepalive");
             if (atomic_load(&g_te) == epoch) {
-                uint8_t b = 1; write(wake_w, &b, 1);
+                WAKE(epoch, wake_w);
             }
             break;
         }
@@ -761,7 +723,7 @@ static void *keepalive(void *arg) {
         atomic_store(&g_lpt, nms());
         if (tun_enqueue(tfd, epfd, T_PING, 0, NULL, 0) < 0) {
             if (atomic_load(&g_te) == epoch) {
-                uint8_t b = 1; write(wake_w, &b, 1);
+                WAKE(epoch, wake_w);
             }
             break;
         }
