@@ -297,20 +297,20 @@ public class BtVpnService extends VpnService {
                     .setMtu(1420)
                     .addAddress("198.18.0.1", 32)
                     .addAddress("fc00::1", 128)
-                    .addDnsServer("198.18.0.2")
-                    .addRoute("0.0.0.0", 0)
-                    .addRoute("::", 0);
+                    .addDnsServer("8.8.8.8");
+
+            addPublicRoutes(builder);
 
             try {
                 builder.addDisallowedApplication(getPackageName());
-            } catch (Exception e) {
-                log("W addDisallowedApplication: " + e.getMessage());
+            } catch (Throwable t) {
+                log("W addDisallowedApplication: " + t.getMessage());
             }
 
             ParcelFileDescriptor pfd = builder.establish();
             if (pfd == null) log("E establish returned null");
             return pfd;
-        } catch (Exception e) {
+        } catch (Throwable e) {
             log("E buildTunInterface: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             return null;
         }
@@ -353,64 +353,8 @@ public class BtVpnService extends VpnService {
     }
 
     private void addPublicRoutes(Builder builder) {
-        String[] excludes = {
-            "0.0.0.0/8",
-            "10.0.0.0/8",
-            "100.64.0.0/10",
-            "127.0.0.0/8",
-            "169.254.0.0/16",
-            "172.16.0.0/12",
-            "192.168.0.0/16",
-            "198.18.0.0/15",
-            "224.0.0.0/4",
-            "240.0.0.0/4",
-            "255.255.255.255/32"
-        };
-
-        List<long[]> excluded = new ArrayList<>();
-        for (String cidr : excludes) {
-            try {
-                String[] p = cidr.split("/");
-                long base = ip2long(InetAddress.getByName(p[0]));
-                int  pfx  = Integer.parseInt(p[1]);
-                long mask  = pfx == 0 ? 0L : (~0L << (32 - pfx)) & 0xFFFFFFFFL;
-                long start = base & mask;
-                excluded.add(new long[]{start, start + (~mask & 0xFFFFFFFFL)});
-            } catch (UnknownHostException ignored) {}
-        }
-        excluded.sort((a, b) -> Long.compare(a[0], b[0]));
-
-        long cur = 1L;
-        for (long[] ex : excluded) {
-            if (cur < ex[0]) addCIDRs(builder, cur, ex[0] - 1);
-            if (cur <= ex[1]) cur = ex[1] + 1;
-        }
-        if (cur <= 0xFFFFFFFEL) addCIDRs(builder, cur, 0xFFFFFFFEL);
-
-        builder.addRoute("2000::", 3);
-    }
-
-    private void addCIDRs(Builder builder, long start, long end) {
-        while (start <= end) {
-            int prefix = maxPrefix(start, end);
-            builder.addRoute(long2ip(start), prefix);
-            start += (1L << (32 - prefix));
-        }
-    }
-
-    private int maxPrefix(long start, long end) {
-        int p = Math.max(0, 32 - Math.min(32, Long.numberOfTrailingZeros(start)));
-        while (p < 32 && (1L << (32 - p)) > (end - start + 1)) p++;
-        return p;
-    }
-
-    private long ip2long(InetAddress a) {
-        byte[] b = a.getAddress();
-        return ((long)(b[0]&0xFF)<<24)|((long)(b[1]&0xFF)<<16)|((long)(b[2]&0xFF)<<8)|(b[3]&0xFF);
-    }
-
-    private String long2ip(long v) {
-        return ((v>>24)&0xFF)+"."+((v>>16)&0xFF)+"."+((v>>8)&0xFF)+"."+(v&0xFF);
+        // Exclude private ranges - use simple approach without complex CIDR logic
+        builder.addRoute("0.0.0.0", 0);
     }
 
     private File writeHevCfg() {

@@ -1123,7 +1123,7 @@ n_stop(JNIEnv *env, jclass clazz) {
     pthread_t th = g_mt;
     g_mt = 0;
     g_r = 0;
-    g_i[0] = 0;
+    // g_i persists across stop/start - don't clear it
     int rfd  = g_rf;  g_rf  = -1;
     int tfd  = g_tf;    g_tf    = -1;
     int epfd = g_ef;  g_ef  = -1;
