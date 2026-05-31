@@ -1,5 +1,7 @@
 package com.blacktunnel;
 
+import android.app.Notification;
+import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Context;
@@ -10,6 +12,7 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 import android.net.VpnService;
+import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.provider.Settings;
 import androidx.core.app.NotificationCompat;
