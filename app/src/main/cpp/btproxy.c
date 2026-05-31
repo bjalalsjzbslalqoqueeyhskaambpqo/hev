@@ -913,11 +913,8 @@ static void *main_thread(void *arg) {
                         ul(&g_wq_mu);
 
                         if (wq_total > WRITE_QUEUE_HIGH_WATER && si) {
-                            si->pr = 1;
-                            struct epoll_event cev;
-                            cev.events   = 0;
-                            cev.data.u64 = ((uint64_t)sid << 32) | (uint32_t)cfd;
-                            epoll_ctl(epfd, EPOLL_CTL_MOD, cfd, &cev);
+                            if (tun_enqueue(tfd, epfd, T_DATA, sid, buf, (uint16_t)nr) < 0) { dead = 1; }
+                            else { si->pr = 1; cev.events = 0; cev.data.u64 = ((uint64_t)sid << 32) | (uint32_t)cfd; epoll_ctl(epfd, EPOLL_CTL_MOD, cfd, &cev); }
                         } else {
                             if (tun_enqueue(tfd, epfd, T_DATA, sid, buf, (uint16_t)nr) < 0)
                                 dead = 1;
