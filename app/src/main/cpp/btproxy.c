@@ -26,10 +26,6 @@
 #define lk pthread_mutex_lock
 #define ul pthread_mutex_unlock
 
-#define LOG_TAG "btproxy"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-
 #define T_OPEN  0x01
 #define T_DATA  0x02
 #define T_CLOSE 0x03

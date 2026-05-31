@@ -1,7 +1,6 @@
 package com.blacktunnel;
 
 import android.app.Notification;
-import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Context;
@@ -43,10 +42,9 @@ public class BtVpnService extends VpnService {
     private static volatile boolean sRunning = false;
 
     private static final Object        L_MU      = new Object();
-    private static final StringBuilder L_BUF          = new StringBuilder(8192);
-    private static final int           L_MAX = 24000;
-    private static final long          HS_TO = 12000L;
-    private static final long          HS_POLL = 250L;
+    private static final StringBuilder L_BUF     = new StringBuilder(8192);
+    private static final int           L_MAX     = 24000;
+    private static final long          HS_TO     = 12000L;
 
     private final ExecutorService ex = Executors.newSingleThreadExecutor();
 
