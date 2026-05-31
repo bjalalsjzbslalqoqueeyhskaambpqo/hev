@@ -106,65 +106,35 @@ static void pl(const char *lvl, const char *fmt, ...) {
 #define HT_MASK (HT_SIZE - 1)
 
 typedef struct hn_s { struct hn_s *next; uint32_t sid; int cfd; } hn_t;
-static hn_t           *g_h[HT_SIZE];
-static pthread_mutex_t g_hm[HT_SIZE];
-static int             g_hi = 0;
-
+static hn_t      *ht_h[HT_SIZE];
+static pthread_mutex_t ht_m[HT_SIZE];
+static volatile int ht_i = 0;
 static void ht_init(void) {
-    for (int i = 0; i < HT_SIZE; i++) {
-        g_h[i] = NULL;
-        if (!g_hi) pthread_mutex_init(&g_hm[i], NULL);
-    }
-    g_hi = 1;
+    for (int i = 0; i < HT_SIZE; i++) { ht_h[i] = NULL;
+        if (!ht_i) pthread_mutex_init(&ht_m[i], NULL); }
+    ht_i = 1;
 }
-
 static int ht_get(uint32_t sid) {
-    int slot = sid & HT_MASK;
-    lk(&g_hm[slot]);
-    hn_t *n = g_h[slot];
-    while (n && n->sid != sid) n = n->next;
-    int cfd = n ? n->cfd : -1;
-    ul(&g_hm[slot]);
-    return cfd;
+    int s = sid & HT_MASK; lk(&ht_m[s]);
+    hn_t *n = ht_h[s]; while (n && n->sid != sid) n = n->next;
+    int v = n ? n->cfd : -1; ul(&ht_m[s]); return v;
 }
-
 static void ht_put(uint32_t sid, int cfd) {
-    hn_t *n = malloc(sizeof(*n));
-    if (!n) return;
-    n->sid = sid; n->cfd = cfd;
-    int slot = sid & HT_MASK;
-    lk(&g_hm[slot]);
-    n->next = g_h[slot]; g_h[slot] = n;
-    ul(&g_hm[slot]);
+    hn_t *n = malloc(sizeof(*n)); if (!n) return;
+    n->sid = sid; n->cfd = cfd; int s = sid & HT_MASK;
+    lk(&ht_m[s]); n->next = ht_h[s]; ht_h[s] = n; ul(&ht_m[s]);
 }
-
 static void ht_del(uint32_t sid) {
-    int slot = sid & HT_MASK;
-    lk(&g_hm[slot]);
-    hn_t **pp = &g_h[slot];
-    while (*pp) {
-        if ((*pp)->sid == sid) {
-            hn_t *n = *pp; *pp = n->next; free(n); break;
-        }
-        pp = &(*pp)->next;
-    }
-    ul(&g_hm[slot]);
+    int s = sid & HT_MASK; lk(&ht_m[s]);
+    hn_t **p = &ht_h[s]; while (*p && (*p)->sid != sid) p = &(*p)->next;
+    if (*p) { hn_t *x = *p; *p = x->next; free(x); } ul(&ht_m[s]);
 }
-
 static void ht_close_all(int epfd) {
-    for (int i = 0; i < HT_SIZE; i++) {
-        lk(&g_hm[i]);
-        hn_t *n = g_h[i];
-        while (n) {
-            hn_t *nx = n->next;
+    for (int i = 0; i < HT_SIZE; i++) { lk(&ht_m[i]);
+        hn_t *n = ht_h[i]; while (n) { hn_t *nx = n->next;
             if (epfd >= 0) epoll_ctl(epfd, EPOLL_CTL_DEL, n->cfd, NULL);
-            close(n->cfd);
-            free(n);
-            n = nx;
-        }
-        g_h[i] = NULL;
-        ul(&g_hm[i]);
-    }
+            close(n->cfd); free(n); n = nx; }
+        ht_h[i] = NULL; ul(&ht_m[i]); }
 }
 
 typedef struct chunk_s {
@@ -205,68 +175,36 @@ typedef struct sinfo_s {
 #define SI_MASK (SI_SIZE - 1)
 
 typedef struct si_hn_s { struct si_hn_s *next; uint32_t sid; sinfo_t *si; } si_hn_t;
-static si_hn_t        *g_x[SI_SIZE];
-static pthread_mutex_t g_xm[SI_SIZE];
-static int             g_xi = 0;
-
+static si_hn_t  *si_h[SI_SIZE];
+static pthread_mutex_t si_m[SI_SIZE];
+static volatile int si_i = 0;
 static void si_init(void) {
-    for (int i = 0; i < SI_SIZE; i++) {
-        g_x[i] = NULL;
-        if (!g_xi) pthread_mutex_init(&g_xm[i], NULL);
-    }
-    g_xi = 1;
+    for (int i = 0; i < SI_SIZE; i++) { si_h[i] = NULL;
+        if (!si_i) pthread_mutex_init(&si_m[i], NULL); }
+    si_i = 1;
 }
-
 static sinfo_t *si_get(uint32_t sid) {
-    int slot = sid & SI_MASK;
-    lk(&g_xm[slot]);
-    si_hn_t *n = g_x[slot];
-    while (n && n->sid != sid) n = n->next;
-    sinfo_t *si = n ? n->si : NULL;
-    ul(&g_xm[slot]);
-    return si;
+    int s = sid & SI_MASK; lk(&si_m[s]);
+    si_hn_t *n = si_h[s]; while (n && n->sid != sid) n = n->next;
+    sinfo_t *v = n ? n->si : NULL; ul(&si_m[s]); return v;
 }
-
 static void si_put(uint32_t sid, sinfo_t *si) {
-    si_hn_t *n = malloc(sizeof(*n));
-    if (!n) return;
-    n->sid = sid; n->si = si;
-    int slot = sid & SI_MASK;
-    lk(&g_xm[slot]);
-    n->next = g_x[slot]; g_x[slot] = n;
-    ul(&g_xm[slot]);
+    si_hn_t *n = malloc(sizeof(*n)); if (!n) return;
+    n->sid = sid; n->si = si; int s = sid & SI_MASK;
+    lk(&si_m[s]); n->next = si_h[s]; si_h[s] = n; ul(&si_m[s]);
 }
-
 static void si_del(uint32_t sid) {
-    int slot = sid & SI_MASK;
-    lk(&g_xm[slot]);
-    si_hn_t **pp = &g_x[slot];
-    while (*pp) {
-        if ((*pp)->sid == sid) {
-            si_hn_t *n = *pp; *pp = n->next; free(n); break;
-        }
-        pp = &(*pp)->next;
-    }
-    ul(&g_xm[slot]);
+    int s = sid & SI_MASK; lk(&si_m[s]);
+    si_hn_t **p = &si_h[s]; while (*p && (*p)->sid != sid) p = &(*p)->next;
+    if (*p) { si_hn_t *x = *p; *p = x->next; free(x); } ul(&si_m[s]);
 }
-
 static void si_close_all(int epfd) {
-    for (int i = 0; i < SI_SIZE; i++) {
-        lk(&g_xm[i]);
-        si_hn_t *n = g_x[i];
-        while (n) {
-            si_hn_t *nx = n->next;
-            sinfo_t *si = n->si;
-            if (epfd >= 0) epoll_ctl(epfd, EPOLL_CTL_DEL, si->cfd, NULL);
-            shutdown(si->cfd, SHUT_RDWR);
-            close(si->cfd);
-            cq_flush(&si->lq);
-            free(si); free(n);
-            n = nx;
-        }
-        g_x[i] = NULL;
-        ul(&g_xm[i]);
-    }
+    for (int i = 0; i < SI_SIZE; i++) { lk(&si_m[i]);
+        si_hn_t *n = si_h[i]; while (n) { si_hn_t *nx = n->next;
+            if (epfd >= 0) epoll_ctl(epfd, EPOLL_CTL_DEL, n->si->cfd, NULL);
+            shutdown(n->si->cfd, SHUT_RDWR); close(n->si->cfd);
+            cq_flush(&n->si->lq); free(n->si); free(n); n = nx; }
+        si_h[i] = NULL; ul(&si_m[i]); }
 }
 
 typedef struct frame_s {
@@ -752,8 +690,8 @@ static int make_relay_socket(int port) {
 
 static void resume_prs(int epfd) {
     for (int i = 0; i < SI_SIZE; i++) {
-        lk(&g_xm[i]);
-        si_hn_t *n = g_x[i];
+        lk(&si_m[i]);
+        si_hn_t *n = si_h[i];
         while (n) {
             sinfo_t *si = n->si;
             if (si->pr) {
@@ -765,7 +703,7 @@ static void resume_prs(int epfd) {
             }
             n = n->next;
         }
-        ul(&g_xm[i]);
+        ul(&si_m[i]);
     }
 }
 
@@ -847,8 +785,8 @@ static void *main_thread(void *arg) {
             if (now - last_to_check > 15000) {
                 last_to_check = now;
                 for (int i = 0; i < SI_SIZE; i++) {
-                    lk(&g_xm[i]);
-                    si_hn_t **pp = &g_x[i];
+                    lk(&si_m[i]);
+                    si_hn_t **pp = &si_h[i];
                     while (*pp) {
                         sinfo_t *si = (*pp)->si;
                         if (now - si->la > STREAM_TIMEOUT_MS) {
@@ -862,7 +800,7 @@ static void *main_thread(void *arg) {
                             pp = &(*pp)->next;
                         }
                     }
-                    ul(&g_xm[i]);
+                    ul(&si_m[i]);
                 }
             }
 
