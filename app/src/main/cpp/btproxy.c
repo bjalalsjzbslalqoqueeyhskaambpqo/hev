@@ -1126,6 +1126,7 @@ n_start(JNIEnv *env, jclass clazz,
         if (s) { snprintf(g_i, sizeof(g_i), "%s", s);
                  (*env)->ReleaseStringUTFChars(env, iid, s); }
     }
+    pl("I", "using internal_id=%s", g_i);
     ht_init();
     si_init();
     g_r = 1;
