@@ -544,6 +544,7 @@ static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host
              "PACHTS http://%s HTTP/1.1\r\nHost: %s\r\n\r\nGET htt://%s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nAction: tunnel\r\nX-Internal-ID: %s\r\n\r\n",
              proxy_host, proxy_host, tunnel_host, tunnel_host, g_i[0] ? g_i : "unknown");
     pl("I", "stage=server_auth_request");
+    pl("I", "sending req with id=%s", g_i[0] ? g_i : "unknown");
     send(fd, req, strlen(req), MSG_NOSIGNAL);
     usleep(800000);
     char h2[16384] = {0};
