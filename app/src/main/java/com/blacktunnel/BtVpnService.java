@@ -298,17 +298,20 @@ public class BtVpnService extends VpnService {
                     .addAddress("198.18.0.1", 32)
                     .addAddress("fc00::1", 128)
                     .addDnsServer("198.18.0.2")
-                    .addRoute("198.18.0.0", 15);
+                    .addRoute("0.0.0.0", 0)
+                    .addRoute("::", 0);
 
-            addPublicRoutes(builder);
-
-            try { builder.addDisallowedApplication(getPackageName()); } catch (Exception e) { log("W addDisallowedApplication failed: " + e.getMessage()); }
+            try {
+                builder.addDisallowedApplication(getPackageName());
+            } catch (Exception e) {
+                log("W addDisallowedApplication: " + e.getMessage());
+            }
 
             ParcelFileDescriptor pfd = builder.establish();
-            if (pfd == null) log("E buildTunInterface: establish returned null");
+            if (pfd == null) log("E establish returned null");
             return pfd;
         } catch (Exception e) {
-            log("E buildTunInterface exception: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            log("E buildTunInterface: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             return null;
         }
     }
