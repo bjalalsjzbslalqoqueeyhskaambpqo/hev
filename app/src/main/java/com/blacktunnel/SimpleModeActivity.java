@@ -10,6 +10,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import androidx.activity.ComponentActivity;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class SimpleModeActivity extends ComponentActivity {
 
@@ -94,18 +95,19 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void startMonitoring() {
-        String lastLog = "";
+        AtomicReference<String> lastLog = new AtomicReference<>("");
         Executors.newSingleThreadExecutor().submit(() -> {
             while (true) {
                 String logs = BtVpnService.dLogs();
-                if (logs != null && !logs.equals(lastLog)) {
+                String prev = lastLog.get();
+                if (logs != null && !logs.equals(prev)) {
                     String[] lines = logs.split("\n");
                     for (String line : lines) {
                         if (!line.trim().isEmpty()) {
                             appendLog(line + "\n");
                         }
                     }
-                    lastLog = logs;
+                    lastLog.set(logs);
 
                     if (logs.contains("tunnel ok") && state == State.CONNECTING) {
                         state = State.CONNECTED;
