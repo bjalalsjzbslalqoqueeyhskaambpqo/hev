@@ -73,6 +73,10 @@ typedef struct { int rf, tf, ef, wr, ww; pthread_t mt; char iid[160]; } proxy_st
 static proxy_state_t g = { .rf=-1, .tf=-1, .ef=-1, .wr=-1, .ww=-1 };
 static pthread_mutex_t g_m = PTHREAD_MUTEX_INITIALIZER;
 
+static void sc_close(int, int, uint32_t, sinfo_t*);
+static void ht_close(int, uint32_t, int);
+static int tun_enqueue(int, int, uint8_t, uint32_t, const uint8_t*, uint16_t);
+
 static pthread_mutex_t g_lm  = PTHREAD_MUTEX_INITIALIZER;
 static char            g_lb[32768];
 static size_t          g_ll  = 0;
@@ -212,10 +216,6 @@ static void ht_close(int epfd, uint32_t sid, int cfd) {
     epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
     shutdown(cfd, SHUT_RDWR); close(cfd); ht_del(sid);
 }
-
-static void sc_close(int, int, uint32_t, sinfo_t*);
-static void ht_close(int, uint32_t, int);
-static int tun_enqueue(int, int, uint8_t, uint32_t, const uint8_t*, uint16_t);
 
 typedef struct frame_s {
     struct frame_s *next;
