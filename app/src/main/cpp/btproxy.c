@@ -592,14 +592,23 @@ static void *tunnel_reader(void *arg) {
         case T_CLOSE: {
             sinfo_t *si = si_get(sid);
             if (si) {
+                epoll_ctl(epfd, EPOLL_CTL_DEL, si->cfd, NULL);
                 if (si->lq.head) {
                     si->cp = 1;
                 } else {
                     shutdown(si->cfd, SHUT_RDWR);
+                    close(si->cfd);
+                    ht_del(sid); si_del(sid);
+                    cq_flush(&si->lq); free(si);
                 }
             } else {
                 int cfd = ht_get(sid);
-                if (cfd >= 0) shutdown(cfd, SHUT_RDWR);
+                if (cfd >= 0) {
+                    epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
+                    shutdown(cfd, SHUT_RDWR);
+                    close(cfd);
+                    ht_del(sid);
+                }
             }
             break;
         }
@@ -879,7 +888,11 @@ static void *main_thread(void *arg) {
                         si->ps = 0;
                         si->la = nms();
                         if (si->cp) {
+                            epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
                             shutdown(cfd, SHUT_RDWR);
+                            close(cfd);
+                            ht_del(sid); si_del(sid);
+                            cq_flush(&si->lq); free(si);
                         } else {
                             struct epoll_event cev;
                             cev.events   = EPOLLIN;
