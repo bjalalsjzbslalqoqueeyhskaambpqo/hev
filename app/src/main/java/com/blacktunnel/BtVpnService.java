@@ -1,6 +1,5 @@
 package com.blacktunnel;
 
-import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Context;
@@ -11,7 +10,6 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 import android.net.VpnService;
-import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.provider.Settings;
 import androidx.core.app.NotificationCompat;
@@ -29,7 +27,6 @@ import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 public class BtVpnService extends VpnService {
 
@@ -57,7 +54,6 @@ public class BtVpnService extends VpnService {
     private volatile Thread               hTh   = null;
     private volatile File                 hCfg  = null;
     private volatile ConnectivityManager.NetworkCallback nCb = null;
-    private final AtomicBoolean tunnelOk = new AtomicBoolean(false);
 
     public static boolean iRun() { return sRunning; }
 
@@ -141,7 +137,6 @@ public class BtVpnService extends VpnService {
 
         BtProxy.stop();
         cleanupSessionResources();
-        tunnelOk.set(false);
 
         String iid  = BtProxy.gIid(this);
         int    startResult = BtProxy.start(this, iid);
@@ -461,20 +456,16 @@ final class BtProxy {
     private static final String KEY_INTERNAL_ID = "internal_id";
 
     private static final boolean NATIVE_READY;
-    private static final String  NATIVE_LOAD_ERROR;
 
     static {
         boolean ready = false;
-        String  error = "";
         try {
             System.loadLibrary("btproxy");
             ready = true;
         } catch (Throwable t) {
-            error = t.getClass().getSimpleName() + ": " + t.getMessage();
-            android.util.Log.e("BtProxy", "No se pudo cargar btproxy", t);
+            android.util.Log.e("BtProxy", "Failed to load btproxy", t);
         }
-        NATIVE_READY      = ready;
-        NATIVE_LOAD_ERROR = error;
+        NATIVE_READY = ready;
     }
 
     static boolean isNativeReady()      { return NATIVE_READY; }
