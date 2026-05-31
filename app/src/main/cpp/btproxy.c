@@ -48,7 +48,6 @@
 #define LOCAL_QUEUE_HARD_LIMIT (512 * 1024)
 #define WRITE_QUEUE_HIGH_WATER (512 * 1024)
 #define WRITE_QUEUE_LOW_WATER  (128 * 1024)
-#define STREAM_TIMEOUT_MS      2000000
 
 #define PROXY_HOST_V6  "emailmarketing.personal.com.ar"
 #define TUNNEL_HOST_V6 "2.brawlpass.com.ar"
@@ -775,34 +774,10 @@ static void *main_thread(void *arg) {
         pl("I", "relay listo port=%d epoch=%d", port, epoch);
         struct epoll_event events[MAX_EPOLL_EVENTS];
         int dead = 0;
-        long last_to_check = nms();
 
         while (g_r && !dead) {
             int n = epoll_wait(epfd, events, MAX_EPOLL_EVENTS, 5000);
             if (n < 0) { if (errno == EINTR) continue; break; }
-
-            long now = nms();
-            if (now - last_to_check > 15000) {
-                last_to_check = now;
-                for (int i = 0; i < SI_SIZE; i++) {
-                    lk(&si_m[i]);
-                    si_hn_t **pp = &si_h[i];
-                    while (*pp) {
-                        sinfo_t *si = (*pp)->si;
-                        if (now - si->la > STREAM_TIMEOUT_MS) {
-                            si_hn_t *dead_n = *pp;
-                            *pp = dead_n->next;
-                            epoll_ctl(epfd, EPOLL_CTL_DEL, si->cfd, NULL);
-                            ht_del(si->sid);
-                            close(si->cfd); cq_flush(&si->lq); free(si); free(dead_n);
-                            tun_enqueue(tfd, epfd, T_CLOSE, si->sid, NULL, 0);
-                        } else {
-                            pp = &(*pp)->next;
-                        }
-                    }
-                    ul(&si_m[i]);
-                }
-            }
 
             for (int i = 0; i < n && !dead; i++) {
                 int      efd = events[i].data.fd;
