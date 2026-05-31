@@ -62,7 +62,7 @@ static const char *PROXY_IPS_V6[] = {
 #define PROXY_IP_COUNT_V6 2
 
 static volatile int    g_r      = 0;
-static atomic_int      g.nets     = 1;
+static atomic_int      g_ns = 1;
 static atomic_int      g_te = 0;
 static atomic_long     g_lp    = 0;
 static atomic_long     g_lpt = 0;
@@ -657,7 +657,7 @@ static void *keepalive(void *arg) {
         if (now - last < KEEPALIVE_INTERVAL_SEC) continue;
         last = now;
         atomic_store(&g_lpt, nms());
-        if (tun_enqueue(tfd, epfd, T_PING, 0, NULL, 0) < 0) {
+        if (tun_enqueue(tfd, 0, T_PING, 0, NULL, 0) < 0) {
             WAKE(epoch, wake_w);
             break;
         }
@@ -803,7 +803,7 @@ static void *main_thread(void *arg) {
                         if (cfd < 0) break;
 
                         uint32_t sid;
-                        do { sid = (uint32_t)atomic_fetch_add(&g.nets, 1) & 0x7FFFFFFF; }
+                        do { sid = (uint32_t)atomic_fetch_add(&g_ns, 1) & 0x7FFFFFFF; }
                         while (!sid || ht_get(sid) != -1);
 
                         sinfo_t *si = calloc(1, sizeof(sinfo_t));
@@ -956,7 +956,7 @@ n_start(JNIEnv *env, jclass clazz,
     ht_init();
     si_init();
     g_r = 1;
-    atomic_store(&g.nets, 1);
+    atomic_store(&g_ns, 1);
     ul(&g_m);
 
     pthread_t thr;
