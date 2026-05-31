@@ -78,9 +78,6 @@ static atomic_long     g_lp    = 0;
 static atomic_long     g_lpt = 0;
 static atomic_int      g_af = 0;
 static char            g_i[160] = {0};
-static JavaVM         *g_j          = NULL;
-static jobject         g_s          = NULL;
-static jmethodID       g_m_protect = NULL;
 static net_handle_t    g_n          = NETWORK_UNSPECIFIED;
 static pthread_t       g_mt  = 0;
 static pthread_mutex_t g_m           = PTHREAD_MUTEX_INITIALIZER;
@@ -372,16 +369,8 @@ static int tun_enqueue(int tfd, int epfd, uint8_t type, uint32_t sid,
 static void protect_fd(int fd) {
     lk(&g_m);
     net_handle_t net = g_n;
-    JavaVM *jvm = g_j; jobject svc = g_s;
     ul(&g_m);
     if (net != NETWORK_UNSPECIFIED) android_setsocknetwork(net, fd);
-    if (!jvm || !svc) return;
-    JNIEnv *env = NULL; int att = 0;
-    if ((*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK)
-        { (*jvm)->AttachCurrentThread(jvm, &env, NULL); att = 1; }
-    jmethodID m = g_m_protect;
-    if (m) (*env)->CallBooleanMethod(env, svc, m, fd);
-    if (att) (*jvm)->DetachCurrentThread(jvm);
 }
 
 static int tun_recv_full(int fd, uint8_t *buf, int len, int ms) {
@@ -1103,11 +1092,6 @@ n_start(JNIEnv *env, jclass clazz,
     }
 
     lk(&g_m);
-    (*env)->GetJavaVM(env, &g_j);
-    g_s = (*env)->NewGlobalRef(env, svc);
-    jclass cls = (*env)->NewGlobalRef(env, (*env)->GetObjectClass(env, svc));
-    g_m_protect = (*env)->GetMethodID(env, cls, "protect", "(I)Z");
-    (*env)->DeleteGlobalRef(env, cls);
     g_i[0] = 0;
     if (iid) {
         const char *s = (*env)->GetStringUTFChars(env, iid, NULL);
@@ -1123,9 +1107,7 @@ n_start(JNIEnv *env, jclass clazz,
 
     pthread_t thr;
     if (pthread_create(&thr, NULL, main_thread, (void *)(intptr_t)port) != 0) {
-        lk(&g_m); g_r = 0;
-        (*env)->DeleteGlobalRef(env, g_s); g_s = NULL; g_j = NULL;
-        ul(&g_m); return -1;
+        lk(&g_m); g_r = 0; ul(&g_m); return -1;
     }
     lk(&g_m); g_mt = thr; ul(&g_m);
 
@@ -1142,8 +1124,6 @@ n_stop(JNIEnv *env, jclass clazz) {
     g_mt = 0;
     g_r = 0;
     g_i[0] = 0;
-    jobject svc = g_s; g_s = NULL; g_j = NULL;
-    g_m_protect = NULL;
     int rfd  = g_rf;  g_rf  = -1;
     int tfd  = g_tf;    g_tf    = -1;
     int epfd = g_ef;  g_ef  = -1;
