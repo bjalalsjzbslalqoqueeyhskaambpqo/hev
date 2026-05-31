@@ -83,13 +83,6 @@ public class BtVpnService extends VpnService {
         }
     }
 
-    public static void cLogs() {
-        synchronized (L_MU) {
-            L_BUF.setLength(0);
-            try { BtProxy.drainLogs(); } catch (Throwable ignored) {}
-        }
-    }
-
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : null;
@@ -457,7 +450,6 @@ public class BtVpnService extends VpnService {
         static { System.loadLibrary("hev-jni"); }
         static native int  start(String path, int fd);
         static native void stop();
-        static native long[] stats();
     }
 }
 
@@ -486,7 +478,6 @@ final class BtProxy {
     }
 
     static boolean isNativeReady()      { return NATIVE_READY; }
-    static String  getNativeLoadError() { return NATIVE_LOAD_ERROR; }
 
     static int start(VpnService svc, String id) {
         if (!NATIVE_READY) return -1;
