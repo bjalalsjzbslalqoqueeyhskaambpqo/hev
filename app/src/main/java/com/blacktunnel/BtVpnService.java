@@ -291,19 +291,26 @@ public class BtVpnService extends VpnService {
     }
 
     private ParcelFileDescriptor buildTunInterface() {
-        Builder builder = new Builder()
-                .setSession("bt-hev")
-                .setMtu(1420)
-                .addAddress("198.18.0.1", 32)
-                .addAddress("fc00::1", 128)
-                .addDnsServer("198.18.0.2")
-                .addRoute("198.18.0.0", 15);
+        try {
+            Builder builder = new Builder()
+                    .setSession("bt-hev")
+                    .setMtu(1420)
+                    .addAddress("198.18.0.1", 32)
+                    .addAddress("fc00::1", 128)
+                    .addDnsServer("198.18.0.2")
+                    .addRoute("198.18.0.0", 15);
 
-        addPublicRoutes(builder);
+            addPublicRoutes(builder);
 
-        try { builder.addDisallowedApplication(getPackageName()); } catch (Exception ignored) {}
+            try { builder.addDisallowedApplication(getPackageName()); } catch (Exception e) { log("W addDisallowedApplication failed: " + e.getMessage()); }
 
-        return builder.establish();
+            ParcelFileDescriptor pfd = builder.establish();
+            if (pfd == null) log("E buildTunInterface: establish returned null");
+            return pfd;
+        } catch (Exception e) {
+            log("E buildTunInterface exception: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            return null;
+        }
     }
 
     private void registerNet() {
