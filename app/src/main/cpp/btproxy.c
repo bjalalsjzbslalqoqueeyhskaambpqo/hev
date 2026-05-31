@@ -90,11 +90,17 @@ static void fire_tunnel_ok(void) {
     lk(&g_m); jvm = g_j; svc = g_s; ul(&g_m);
     if (!jvm || !svc) return;
     JNIEnv *env = NULL; int att = 0;
-    if ((*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK)
-        { (*jvm)->AttachCurrentThread(jvm, &env, NULL); att = 1; }
+    if ((*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {
+        if ((*jvm)->AttachCurrentThread(jvm, &env, NULL) != 0) return;
+        att = 1;
+    }
     jclass cls = (*env)->GetObjectClass(env, svc);
+    if (!cls) { if (att) (*jvm)->DetachCurrentThread(jvm); return; }
     jmethodID m = (*env)->GetMethodID(env, cls, "onTunnelOk", "()V");
-    if (m) (*env)->CallVoidMethod(env, svc, m);
+    if (m) {
+        (*env)->CallVoidMethod(env, svc, m);
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    }
     (*env)->DeleteLocalRef(env, cls);
     if (att) (*jvm)->DetachCurrentThread(jvm);
 }
