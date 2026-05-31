@@ -1148,7 +1148,6 @@ n_stop(JNIEnv *env, jclass clazz) {
     ul(&g_wq_mu);
 
     if (th) pthread_join(th, NULL);
-    if (svc) (*env)->DeleteGlobalRef(env, svc);
 }
 
 JNIEXPORT jstring JNICALL
