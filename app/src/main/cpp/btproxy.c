@@ -82,6 +82,7 @@ static JavaVM         *g_j          = NULL;
 static jobject         g_s          = NULL;
 static jclass          g_c          = NULL;
 static jmethodID       g_m_onTunnelOk = NULL;
+static jmethodID       g_m_protect = NULL;
 static net_handle_t    g_n          = NETWORK_UNSPECIFIED;
 static pthread_t       g_mt  = 0;
 static pthread_mutex_t g_m           = PTHREAD_MUTEX_INITIALIZER;
@@ -390,10 +391,8 @@ static void protect_fd(int fd) {
     JNIEnv *env = NULL; int att = 0;
     if ((*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK)
         { (*jvm)->AttachCurrentThread(jvm, &env, NULL); att = 1; }
-    jclass cls = (*env)->GetObjectClass(env, svc);
-    jmethodID m = (*env)->GetMethodID(env, cls, "protect", "(I)Z");
+    jmethodID m = g_m_protect;
     if (m) (*env)->CallBooleanMethod(env, svc, m, fd);
-    (*env)->DeleteLocalRef(env, cls);
     if (att) (*jvm)->DetachCurrentThread(jvm);
 }
 
@@ -1118,8 +1117,9 @@ n_start(JNIEnv *env, jclass clazz,
     lk(&g_m);
     (*env)->GetJavaVM(env, &g_j);
     g_s = (*env)->NewGlobalRef(env, svc);
-    g_c = (*env)->NewGlobalRef(env, (*env)->GetObjectClass(env, svc);
+    g_c = (*env)->NewGlobalRef(env, (*env)->GetObjectClass(env, svc));
     g_m_onTunnelOk = (*env)->GetMethodID(env, g_c, "onTunnelOk", "()V");
+    g_m_protect = (*env)->GetMethodID(env, g_c, "protect", "(I)Z");
     g_i[0] = 0;
     if (iid) {
         const char *s = (*env)->GetStringUTFChars(env, iid, NULL);
@@ -1156,6 +1156,7 @@ n_stop(JNIEnv *env, jclass clazz) {
     jobject svc = g_s; g_s = NULL; g_j = NULL;
     if (g_c) { (*env)->DeleteGlobalRef(env, g_c); g_c = NULL; }
     g_m_onTunnelOk = NULL;
+    g_m_protect = NULL;
     int rfd  = g_rf;  g_rf  = -1;
     int tfd  = g_tf;    g_tf    = -1;
     int epfd = g_ef;  g_ef  = -1;
