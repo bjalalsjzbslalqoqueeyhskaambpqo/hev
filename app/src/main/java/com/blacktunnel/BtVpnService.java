@@ -32,6 +32,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class BtVpnService extends VpnService {
 
@@ -59,8 +60,13 @@ public class BtVpnService extends VpnService {
     private volatile Thread               hTh   = null;
     private volatile File                 hCfg  = null;
     private volatile ConnectivityManager.NetworkCallback nCb = null;
+    private final AtomicBoolean tunnelOk = new AtomicBoolean(false);
 
     public static boolean iRun() { return sRunning; }
+
+    public void onTunnelOk() {
+        tunnelOk.set(true);
+    }
 
     public static String getHotspotIp() {
         try {
@@ -158,6 +164,7 @@ public class BtVpnService extends VpnService {
 
         BtProxy.stop();
         cleanupSessionResources();
+        tunnelOk.set(false);
 
         String iid  = BtProxy.gIid(this);
         int    startResult = BtProxy.start(this, iid);
@@ -190,30 +197,11 @@ public class BtVpnService extends VpnService {
     }
 
     private boolean waitForTunnelHandshake() {
+        tunnelOk.set(false);
         long deadline = System.currentTimeMillis() + HS_TO;
         while (System.currentTimeMillis() < deadline) {
-            String nativeLogs = BtProxy.drainLogs();
-            if (nativeLogs != null && !nativeLogs.isBlank()) {
-                synchronized (L_MU) {
-                    L_BUF.append(nativeLogs);
-                    if (L_BUF.length() > L_MAX)
-                        L_BUF.delete(0, L_BUF.length() - L_MAX);
-                }
-                for (String line : nativeLogs.split("\n")) {
-                    if (line == null) continue;
-                    String lower = line.trim().toLowerCase(Locale.ROOT);
-                    if (lower.isEmpty()) continue;
-                    if (lower.contains("tunnel ok") ||
-                        lower.contains("user_name=") ||
-                        lower.contains("user_days=")) return true;
-                    if (lower.contains("handshake failed") ||
-                        lower.contains("proxy no responde") ||
-                        lower.contains("connect failed") ||
-                        lower.contains("not_registered") ||
-                        lower.contains("expired")) return false;
-                }
-            }
-            try { Thread.sleep(HS_POLL); } catch (InterruptedException ignored) { return false; }
+            if (tunnelOk.get()) return true;
+            try { Thread.sleep(50); } catch (InterruptedException ignored) { return false; }
         }
         return false;
     }

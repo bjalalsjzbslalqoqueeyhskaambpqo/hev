@@ -84,6 +84,21 @@ static net_handle_t    g_n          = NETWORK_UNSPECIFIED;
 static pthread_t       g_mt  = 0;
 static pthread_mutex_t g_m           = PTHREAD_MUTEX_INITIALIZER;
 
+/* Event to notify Java when tunnel is established */
+static void fire_tunnel_ok(void) {
+    JavaVM *jvm; jobject svc;
+    lk(&g_m); jvm = g_j; svc = g_s; ul(&g_m);
+    if (!jvm || !svc) return;
+    JNIEnv *env = NULL; int att = 0;
+    if ((*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK)
+        { (*jvm)->AttachCurrentThread(jvm, &env, NULL); att = 1; }
+    jclass cls = (*env)->GetObjectClass(env, svc);
+    jmethodID m = (*env)->GetMethodID(env, cls, "onTunnelOk", "()V");
+    if (m) (*env)->CallVoidMethod(env, svc, m);
+    (*env)->DeleteLocalRef(env, cls);
+    if (att) (*jvm)->DetachCurrentThread(jvm);
+}
+
 static pthread_mutex_t g_lm  = PTHREAD_MUTEX_INITIALIZER;
 static char            g_lb[32768];
 static size_t          g_ll  = 0;
@@ -558,6 +573,7 @@ static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host
     if (udays[0]) pl("I", "user_days=%s", udays);
     pl("I", "stage=access_granted");
     pl("I", "tunnel ok");
+    fire_tunnel_ok();
     atomic_store(&g_lp, (long)time(NULL));
     return 0;
 }
