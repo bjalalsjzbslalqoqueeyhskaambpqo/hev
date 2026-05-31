@@ -88,15 +88,8 @@ public class BtVpnService extends VpnService {
                 if (ACTION_STOP.equals(action)) stopAll();
                 else startAll();
             } catch (Throwable t) {
-                log("E onStartCommand task crash: " + t.getClass().getSimpleName() + ": " + t.getMessage());
-                run = false;
-                stop = false;
-                sRunning = false;
-                try { stopHevStack(); } catch (Throwable ignored) {}
-                try { BtProxy.stop(); } catch (Throwable ignored) {}
-                try { unregisterNet(); } catch (Throwable ignored) {}
-                try { stopForeground(STOP_FOREGROUND_REMOVE); } catch (Throwable ignored) {}
-                try { stopSelf(); } catch (Throwable ignored) {}
+                log("E crash: " + t.getClass().getSimpleName() + ": " + t.getMessage());
+                recoverFromCrash();
             }
         });
         if (ACTION_STOP.equals(action)) return START_NOT_STICKY;
@@ -115,58 +108,44 @@ public class BtVpnService extends VpnService {
         if (stop) {
             log("W startAll: stop en progreso, reintentando breve");
             try { Thread.sleep(450); } catch (InterruptedException ignored) { return; }
-            if (stop) {
-                log("W startAll: cancelado porque stop sigue en progreso");
-                return;
-            }
+            if (stop) { log("W startAll: cancelado porque stop sigue en progreso"); return; }
         }
-        if (run) {
-            log("I startAll: ya corriendo, ignorado");
-            return;
-        }
+        if (run) { log("I startAll: ya corriendo, ignorado"); return; }
 
         createChannel();
         startForeground(NF_ID, buildNotif());
 
         Intent prep = VpnService.prepare(this);
-        if (prep != null) {
-            log("W startAll: VPN not authorized, launching auth dialog");
-            startActivity(prep);
-            stopForeground(STOP_FOREGROUND_REMOVE);
-            return;
-        }
+        if (prep != null) { log("W VPN not authorized"); startActivity(prep); stopForeground(STOP_FOREGROUND_REMOVE); return; }
 
         BtProxy.stop();
         cleanupSessionResources();
 
-        String iid  = BtProxy.gIid(this);
-        int    startResult = BtProxy.start(this, iid);
-        if (startResult < 0) {
-            log("E startAll: btproxy start failed");
-            stopForeground(STOP_FOREGROUND_REMOVE);
-            return;
-        }
-
-        if (!waitForTunnelHandshake()) {
-            log("E startAll: tunnel handshake timeout/failure");
-            BtProxy.stop();
-            stopForeground(STOP_FOREGROUND_REMOVE);
-            return;
-        }
+        String iid = BtProxy.gIid(this);
+        if (BtProxy.start(this, iid) < 0)        { abortStart("E btproxy start failed");      return; }
+        if (!waitForTunnelHandshake())             { abortStart("E tunnel handshake timeout");   return; }
 
         registerNet();
+        if (!startHevStack())                     { unregisterNet(); abortStart("E startHevStack failed"); return; }
 
-        if (!startHevStack()) {
-            log("E startAll: startHevStack failed, deshaciendo");
-            unregisterNet();
-            BtProxy.stop();
-            stopForeground(STOP_FOREGROUND_REMOVE);
-            return;
-        }
-
-        run  = true;
-        sRunning = true;
+        run = sRunning = true;
         log("I startAll ok");
+    }
+
+    private void abortStart(String reason) {
+        log(reason);
+        BtProxy.stop();
+        cleanupSessionResources();
+        stopForeground(STOP_FOREGROUND_REMOVE);
+    }
+
+    private void recoverFromCrash() {
+        run = false; stop = false; sRunning = false;
+        try { stopHevStack(); } catch (Throwable ignored) {}
+        try { BtProxy.stop(); } catch (Throwable ignored) {}
+        try { unregisterNet(); } catch (Throwable ignored) {}
+        try { stopForeground(STOP_FOREGROUND_REMOVE); } catch (Throwable ignored) {}
+        try { stopSelf(); } catch (Throwable ignored) {}
     }
 
     private boolean waitForTunnelHandshake() {
@@ -180,20 +159,14 @@ public class BtVpnService extends VpnService {
     }
 
     private void stopAll() {
-        if (!run && !sRunning) {
-            log("I stopAll: ya detenido, ignorado");
-            return;
-        }
+        if (!run && !sRunning) { log("I stopAll: ya detenido, ignorado"); return; }
         stop = true;
-
-        run  = false;
-        sRunning = false;
+        run = sRunning = false;
 
         stopHevStack();
         BtProxy.stop();
         unregisterNet();
         cleanupSessionResources();
-
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
         stop = false;
@@ -391,33 +364,34 @@ public class BtVpnService extends VpnService {
     }
 
     private File writeHevCfg() {
-        String yml =
-            "tunnel:\n" +
-            "  name: bt-hev\n" +
-            "  mtu: 1420\n" +
-            "  ipv4: 198.18.0.1\n" +
-            "  ipv6: 'fc00::1'\n" +
-            "socks5:\n" +
-            "  address: 127.0.0.1\n" +
-            "  port: " + BtProxy.SOCKS5_PORT + "\n" +
-            "  udp: 'tcp'\n" +
-            "  pipeline: false\n" +
-            "mapdns:\n" +
-            "  address: 198.18.0.2\n" +
-            "  port: 53\n" +
-            "  network: 198.18.0.0\n" +
-            "  netmask: 255.254.0.0\n" +
-            "  cache-size: 10000\n" +
-            "misc:\n" +
-            "  task-stack-size: 86016\n" +
-            "  tcp-buffer-size: 65536\n" +
-            "  connect-timeout: 10000\n" +
-            "  read-write-timeout: 300000\n" +
-            "  tcp-read-write-timeout: 3600000\n" +
-            "  max-session-count: 4096\n" +
-            "  limit-nofile: 65535\n" +
-            "  log-file: stderr\n" +
-            "  log-level: warn\n";
+        String yml = """
+            tunnel:
+              name: bt-hev
+              mtu: 1420
+              ipv4: 198.18.0.1
+              ipv6: 'fc00::1'
+            socks5:
+              address: 127.0.0.1
+              port: %d
+              udp: 'tcp'
+              pipeline: false
+            mapdns:
+              address: 198.18.0.2
+              port: 53
+              network: 198.18.0.0
+              netmask: 255.254.0.0
+              cache-size: 10000
+            misc:
+              task-stack-size: 86016
+              tcp-buffer-size: 65536
+              connect-timeout: 10000
+              read-write-timeout: 300000
+              tcp-read-write-timeout: 3600000
+              max-session-count: 4096
+              limit-nofile: 65535
+              log-file: stderr
+              log-level: warn
+            """.formatted(BtProxy.SOCKS5_PORT);
         File f = new File(getFilesDir(), "hev.yml");
         try (FileOutputStream o = new FileOutputStream(f, false)) {
             o.write(yml.getBytes(StandardCharsets.UTF_8));
@@ -490,8 +464,8 @@ final class BtProxy {
         SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String existing = sp.getString(KEY_INTERNAL_ID, null);
         if (existing != null && !existing.isBlank()) return existing;
-        String rawId = Settings.Secure.getString(
-                ctx.getContentResolver(), Settings.Secure.ANDROID_ID);
+
+        String rawId = Settings.Secure.getString(ctx.getContentResolver(), Settings.Secure.ANDROID_ID);
         if (rawId == null || rawId.isBlank()) rawId = "unknown";
         String seed = rawId + "|" + Build.BRAND + "|" + Build.MODEL + "|" +
                       ctx.getPackageName() + "|" + System.currentTimeMillis();
