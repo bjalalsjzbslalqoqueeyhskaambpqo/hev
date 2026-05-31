@@ -73,7 +73,7 @@ typedef struct { int rf, tf, ef, wr, ww; pthread_t mt; char iid[160]; } proxy_st
 static proxy_state_t g = { .rf=-1, .tf=-1, .ef=-1, .wr=-1, .ww=-1 };
 static pthread_mutex_t g_m = PTHREAD_MUTEX_INITIALIZER;
 
-static void sc_close(int, int, uint32_t, sinfo_t*);
+static void sc_close(int, int, uint32_t, struct sinfo_s*);
 static void ht_close(int, uint32_t, int);
 static int tun_enqueue(int, int, uint8_t, uint32_t, const uint8_t*, uint16_t);
 
