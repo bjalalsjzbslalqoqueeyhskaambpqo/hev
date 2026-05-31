@@ -62,15 +62,14 @@ static const char *PROXY_IPS_V6[] = {
 #define PROXY_IP_COUNT_V6 2
 
 static volatile int    g_r      = 0;
-static atomic_int      g_ns     = 1;
+static atomic_int      g.nets     = 1;
 static atomic_int      g_te = 0;
 static atomic_long     g_lp    = 0;
 static atomic_long     g_lpt = 0;
 static atomic_int      g_af = 0;
-static net_handle_t    g_n     = NETWORK_UNSPECIFIED;
 
-typedef struct { int rf, tf, ef, wr, ww; pthread_t mt; char iid[160]; } proxy_state_t;
-static proxy_state_t g = { .rf=-1, .tf=-1, .ef=-1, .wr=-1, .ww=-1 };
+typedef struct { int rf, tf, ef, wr, ww; pthread_t mt; char iid[160]; net_handle_t net; } proxy_state_t;
+static proxy_state_t g = { .rf=-1, .tf=-1, .ef=-1, .wr=-1, .ww=-1, .net=NETWORK_UNSPECIFIED };
 static pthread_mutex_t g_m = PTHREAD_MUTEX_INITIALIZER;
 
 typedef struct sinfo_s sinfo_t;
@@ -208,10 +207,13 @@ static void si_close_all(int epfd) {
         si_h[i] = NULL; ul(&si_m[i]); }
 }
 
-static void sc_close(int epfd, int tfd, uint32_t sid, sinfo_t *si) {
+static void sc_close_quiet(int epfd, uint32_t sid, sinfo_t *si) {
     epoll_ctl(epfd, EPOLL_CTL_DEL, si->cfd, NULL);
     shutdown(si->cfd, SHUT_RDWR); close(si->cfd);
     ht_del(sid); si_del(sid); cq_flush(&si->lq); free(si);
+}
+static void sc_close(int epfd, int tfd, uint32_t sid, sinfo_t *si) {
+    sc_close_quiet(epfd, sid, si);
     tun_enqueue(tfd, epfd, T_CLOSE, sid, NULL, 0);
 }
 static void ht_close(int epfd, uint32_t sid, int cfd) {
@@ -313,7 +315,7 @@ static int tun_enqueue(int tfd, int epfd, uint8_t type, uint32_t sid,
 
 static void protect_fd(int fd) {
     lk(&g_m);
-    net_handle_t net = g_n;
+    net_handle_t net = g.net;
     ul(&g_m);
     if (net != NETWORK_UNSPECIFIED) android_setsocknetwork(net, fd);
 }
@@ -598,7 +600,7 @@ static void *tunnel_reader(void *arg) {
             sinfo_t *si = si_get(sid);
             if (si) {
                 if (si->lq.head) { si->cp = 1; }
-                else { epoll_ctl(epfd, EPOLL_CTL_DEL, si->cfd, NULL); shutdown(si->cfd, SHUT_RDWR); close(si->cfd); ht_del(sid); si_del(sid); cq_flush(&si->lq); free(si); }
+                else { sc_close_quiet(epfd, sid, si); }
             } else {
                 int cfd = ht_get(sid);
                 if (cfd >= 0) ht_close(epfd, sid, cfd);
@@ -638,7 +640,8 @@ static void *tunnel_reader(void *arg) {
 
 static void *keepalive(void *arg) {
     thr_t *ta = (thr_t *)arg;
-    int tfd = ta->tfd, epoch = ta->epoch, epfd = ta->epfd, wake_w = ta->wake_w;
+    int tfd = ta->tfd, epoch = ta->epoch, wake_w = ta->wake_w;
+    (void)ta->epfd;
     free(ta);
 
     long last = time(NULL);
@@ -758,8 +761,7 @@ static void *main_thread(void *arg) {
             close(epfd); close(wfds[0]); close(wfds[1]); close(rfd); close(tfd);
             sleep(1); continue;
         }
-        *ta = (thr_t){ tfd, epoch, epfd, wfds[1] };
-        *tb = (thr_t){ tfd, epoch, epfd, wfds[1] };
+        *ta = *tb = (thr_t){ tfd, epoch, epfd, wfds[1] };
 
         pthread_t tr, tk;
         pthread_create(&tr, NULL, tunnel_reader, ta); pthread_detach(tr);
@@ -801,7 +803,7 @@ static void *main_thread(void *arg) {
                         if (cfd < 0) break;
 
                         uint32_t sid;
-                        do { sid = (uint32_t)atomic_fetch_add(&g_ns, 1) & 0x7FFFFFFF; }
+                        do { sid = (uint32_t)atomic_fetch_add(&g.nets, 1) & 0x7FFFFFFF; }
                         while (!sid || ht_get(sid) != -1);
 
                         sinfo_t *si = calloc(1, sizeof(sinfo_t));
@@ -833,9 +835,8 @@ static void *main_thread(void *arg) {
                 sinfo_t *si  = si_get(sid);
 
                 if (evs & (EPOLLERR | EPOLLHUP)) {
-                    epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
-                    ht_del(sid); if (si) { cq_flush(&si->lq); si_del(sid); free(si); }
-                    close(cfd); tun_enqueue(tfd, epfd, T_CLOSE, sid, NULL, 0);
+                    if (si) { sc_close(epfd, tfd, sid, si); close(cfd); }
+                    else { epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL); ht_del(sid); close(cfd); tun_enqueue(tfd, epfd, T_CLOSE, sid, NULL, 0); }
                     continue;
                 }
 
@@ -857,10 +858,7 @@ static void *main_thread(void *arg) {
                         } else if (errno == EINTR) {
                             continue;
                         } else {
-                            epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
-                            ht_del(sid); cq_flush(&si->lq); si_del(sid); free(si);
-                            close(cfd);
-                            tun_enqueue(tfd, epfd, T_CLOSE, sid, NULL, 0);
+                            sc_close(epfd, tfd, sid, si);
                             drain_done = -1; break;
                         }
                     }
@@ -898,11 +896,8 @@ static void *main_thread(void *arg) {
                                 dead = 1;
                         }
                     } else if (nr == 0) {
-                        epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
-                        ht_del(sid);
-                        if (si) { cq_flush(&si->lq); si_del(sid); free(si); }
-                        close(cfd);
-                        tun_enqueue(tfd, epfd, T_CLOSE, sid, NULL, 0);
+                        if (si) { sc_close(epfd, tfd, sid, si); close(cfd); }
+                        else { epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL); ht_del(sid); close(cfd); tun_enqueue(tfd, epfd, T_CLOSE, sid, NULL, 0); }
                     }
                 }
             }
@@ -961,7 +956,7 @@ n_start(JNIEnv *env, jclass clazz,
     ht_init();
     si_init();
     g_r = 1;
-    atomic_store(&g_ns, 1);
+    atomic_store(&g.nets, 1);
     ul(&g_m);
 
     pthread_t thr;
@@ -1024,7 +1019,7 @@ n_drain(JNIEnv *env, jclass c) {
 JNIEXPORT void JNICALL
 n_net(JNIEnv *e, jclass c, jlong net) {
     (void)e; (void)c;
-    lk(&g_m); g_n = (net_handle_t)net; ul(&g_m);
+    lk(&g_m); g.net = (net_handle_t)net; ul(&g_m);
 }
 
 static JNINativeMethod g_methods[] = {
