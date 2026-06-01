@@ -883,7 +883,6 @@ n_stop(JNIEnv *env, jclass clazz) {
 }
 
 JNIEXPORT void JNICALL
-JNIEXPORT void JNICALL
 n_set_callback(JNIEnv *env, jclass clazz, jobject methodObj) {
     (void)clazz;
     lk(&g_cb_mu);
