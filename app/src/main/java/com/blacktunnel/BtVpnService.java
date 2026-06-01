@@ -79,7 +79,8 @@ public class BtVpnService extends VpnService {
             sTunnelOk = true;
             if (sTunnelLatch != null) { sTunnelLatch.countDown(); sTunnelLatch = null; }
         }
-        if (BtProxy.logListener != null) BtProxy.logListener.accept(line);
+        java.util.function.Consumer<String> listener = BtProxy.logListener;
+        if (listener != null) listener.accept(line);
     }
 
     public static boolean tunnelOk() { return sTunnelOk; }
@@ -90,7 +91,8 @@ public class BtVpnService extends VpnService {
             case "running": sRunning = true; break;
             case "stopped": sRunning = false; break;
         }
-        if (BtProxy.stateListener != null) BtProxy.stateListener.accept(state);
+        java.util.function.Consumer<String> listener = BtProxy.stateListener;
+        if (listener != null) listener.accept(state);
     }
 
     public static String dLogs() {
@@ -469,8 +471,8 @@ final class BtProxy {
 
     private static boolean NATIVE_READY = false;
 
-    static java.util.function.Consumer<String> logListener;
-    static java.util.function.Consumer<String> stateListener;
+    static volatile java.util.function.Consumer<String> logListener;
+    static volatile java.util.function.Consumer<String> stateListener;
 
     static {
         try {
@@ -501,6 +503,13 @@ final class BtProxy {
     static void setStateListener(java.util.function.Consumer<String> l) {
         android.util.Log.d("BtProxy", "setStateListener: l=" + (l != null));
         stateListener = l;
+    }
+
+    static void clearListeners(java.util.function.Consumer<String> log,
+                               java.util.function.Consumer<String> state) {
+        android.util.Log.d("BtProxy", "clearListeners");
+        if (logListener == log) logListener = null;
+        if (stateListener == state) stateListener = null;
     }
 
     static void doRegisterCallbacks() {

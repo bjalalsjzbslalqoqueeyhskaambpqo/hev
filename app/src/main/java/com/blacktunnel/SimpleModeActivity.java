@@ -12,6 +12,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import androidx.activity.ComponentActivity;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Consumer;
 
 public class SimpleModeActivity extends ComponentActivity {
 
@@ -24,6 +25,8 @@ public class SimpleModeActivity extends ComponentActivity {
     private TextView logView;
     private final CopyOnWriteArrayList<String> pendingLogs = new CopyOnWriteArrayList<>();
     private final Handler ui = new Handler(Looper.getMainLooper());
+    private final Consumer<String> logCallback = this::onLogReceived;
+    private final Consumer<String> stateCallback = this::onStateReceived;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -48,11 +51,15 @@ public class SimpleModeActivity extends ComponentActivity {
             cm.setPrimaryClip(ClipData.newPlainText("logs", logView.getText()));
         });
 
-        android.util.Log.d("SMA", "onCreate: calling BtProxy.setLogListener");
-        BtProxy.setLogListener(this::onLogReceived);
-        android.util.Log.d("SMA", "onCreate: calling BtProxy.setStateListener");
-        BtProxy.setStateListener(this::onStateReceived);
         android.util.Log.d("SMA", "onCreate: DONE, state=" + state);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        android.util.Log.d("SMA", "onResume: reconnecting BtProxy listeners");
+        BtProxy.setLogListener(logCallback);
+        BtProxy.setStateListener(stateCallback);
     }
 
     private void onLogReceived(String line) {
@@ -122,8 +129,7 @@ public class SimpleModeActivity extends ComponentActivity {
 
     @Override
     protected void onDestroy() {
-        BtProxy.setLogListener(null);
-        BtProxy.setStateListener(null);
+        BtProxy.clearListeners(logCallback, stateCallback);
         super.onDestroy();
     }
 }

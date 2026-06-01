@@ -885,25 +885,57 @@ n_stop(JNIEnv *env, jclass clazz) {
 JNIEXPORT void JNICALL
 n_set_callback(JNIEnv *env, jclass clazz, jobject methodObj) {
     (void)clazz;
+    jclass svcClass = NULL;
+    jmethodID methodId = NULL;
+
+    if (methodObj) {
+        svcClass = (*env)->FindClass(env, "com/blacktunnel/BtVpnService");
+        if (!svcClass) return;
+        methodId = (*env)->FromReflectedMethod(env, methodObj);
+        if (!methodId) {
+            (*env)->DeleteLocalRef(env, svcClass);
+            return;
+        }
+    }
+
     lk(&g_cb_mu);
     if (g_cb_cls) { (*env)->DeleteGlobalRef(env, g_cb_cls); g_cb_cls = NULL; }
-    if (methodObj) {
-        g_cb_cls = (*env)->NewGlobalRef(env, methodObj);
-        g_cb_mid = (*env)->FromReflectedMethod(env, methodObj);
+    g_cb_mid = NULL;
+    if (svcClass) {
+        g_cb_cls = (*env)->NewGlobalRef(env, svcClass);
+        g_cb_mid = methodId;
     }
     ul(&g_cb_mu);
+
+    if (svcClass) (*env)->DeleteLocalRef(env, svcClass);
 }
 
 JNIEXPORT void JNICALL
 n_set_state_callback(JNIEnv *env, jclass clazz, jobject methodObj) {
     (void)clazz;
+    jclass svcClass = NULL;
+    jmethodID methodId = NULL;
+
+    if (methodObj) {
+        svcClass = (*env)->FindClass(env, "com/blacktunnel/BtVpnService");
+        if (!svcClass) return;
+        methodId = (*env)->FromReflectedMethod(env, methodObj);
+        if (!methodId) {
+            (*env)->DeleteLocalRef(env, svcClass);
+            return;
+        }
+    }
+
     lk(&g_cb_mu);
     if (g_st_cls) { (*env)->DeleteGlobalRef(env, g_st_cls); g_st_cls = NULL; }
-    if (methodObj) {
-        g_st_cls = (*env)->NewGlobalRef(env, methodObj);
-        g_st_mid = (*env)->FromReflectedMethod(env, methodObj);
+    g_st_mid = NULL;
+    if (svcClass) {
+        g_st_cls = (*env)->NewGlobalRef(env, svcClass);
+        g_st_mid = methodId;
     }
     ul(&g_cb_mu);
+
+    if (svcClass) (*env)->DeleteLocalRef(env, svcClass);
 }
 
 JNIEXPORT void JNICALL
