@@ -447,22 +447,9 @@ final class BtProxy {
     static java.util.function.Consumer<String> logListener;
     static java.util.function.Consumer<String> stateListener;
 
-    static {
-        boolean ready = false;
-        try {
-            System.loadLibrary("btproxy");
-            ready = true;
-            if (ready) {
-                nativeSetCallback(BtProxy.class, "onLog");
-                nativeSetStateCallback(BtProxy.class, "onStateChange");
-            }
-        } catch (Throwable t) {
-            android.util.Log.e("BtProxy", "Failed to load btproxy", t);
-        }
-        NATIVE_READY = ready;
-    }
+    static { System.loadLibrary("btproxy"); NATIVE_READY = true; }
 
-    static boolean isNativeReady()      { return NATIVE_READY; }
+    static boolean isNativeReady() { return NATIVE_READY; }
 
     static int start(VpnService svc, String id) {
         if (!NATIVE_READY) return -1;
@@ -474,8 +461,15 @@ final class BtProxy {
         nativeStop();
     }
 
-    static void setLogListener(java.util.function.Consumer<String> l) { logListener = l; }
-    static void setStateListener(java.util.function.Consumer<String> l) { stateListener = l; }
+    static void setLogListener(java.util.function.Consumer<String> l) {
+        logListener = l;
+        if (l != null) nativeSetCallback(BtProxy.class, "onLog");
+    }
+
+    static void setStateListener(java.util.function.Consumer<String> l) {
+        stateListener = l;
+        if (l != null) nativeSetStateCallback(BtProxy.class, "onStateChange");
+    }
 
     static String gIid(Context ctx) {
         SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
