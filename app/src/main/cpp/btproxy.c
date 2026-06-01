@@ -887,9 +887,16 @@ n_set_callback(JNIEnv *env, jclass clazz, jobject methodObj) {
     (void)clazz;
     lk(&g_cb_mu);
     if (g_cb_cls) { (*env)->DeleteGlobalRef(env, g_cb_cls); g_cb_cls = NULL; }
+    g_cb_mid = NULL;
     if (methodObj) {
-        g_cb_cls = (*env)->NewGlobalRef(env, methodObj);
-        g_cb_mid = (*env)->FromReflectedMethod(env, methodObj);
+        jclass methodClass = (*env)->FindClass(env, "java/lang/reflect/Method");
+        jmethodID getDeclaringClass = (*env)->GetMethodID(env, methodClass,
+            "getDeclaringClass", "()Ljava/lang/Class;");
+        jclass declaringClass = (*env)->CallObjectMethod(env, methodObj, getDeclaringClass);
+        if (declaringClass) {
+            g_cb_cls = (*env)->NewGlobalRef(env, declaringClass);
+            g_cb_mid = (*env)->FromReflectedMethod(env, methodObj);
+        }
     }
     ul(&g_cb_mu);
 }
@@ -899,9 +906,16 @@ n_set_state_callback(JNIEnv *env, jclass clazz, jobject methodObj) {
     (void)clazz;
     lk(&g_cb_mu);
     if (g_st_cls) { (*env)->DeleteGlobalRef(env, g_st_cls); g_st_cls = NULL; }
+    g_st_mid = NULL;
     if (methodObj) {
-        g_st_cls = (*env)->NewGlobalRef(env, methodObj);
-        g_st_mid = (*env)->FromReflectedMethod(env, methodObj);
+        jclass methodClass = (*env)->FindClass(env, "java/lang/reflect/Method");
+        jmethodID getDeclaringClass = (*env)->GetMethodID(env, methodClass,
+            "getDeclaringClass", "()Ljava/lang/Class;");
+        jclass declaringClass = (*env)->CallObjectMethod(env, methodObj, getDeclaringClass);
+        if (declaringClass) {
+            g_st_cls = (*env)->NewGlobalRef(env, declaringClass);
+            g_st_mid = (*env)->FromReflectedMethod(env, methodObj);
+        }
     }
     ul(&g_cb_mu);
 }

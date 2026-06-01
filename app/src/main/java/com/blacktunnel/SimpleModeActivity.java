@@ -55,6 +55,13 @@ public class SimpleModeActivity extends ComponentActivity {
         android.util.Log.d("SMA", "onCreate: DONE, state=" + state);
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        BtProxy.setLogListener(this::onLogReceived);
+        BtProxy.setStateListener(this::onStateReceived);
+    }
+
     private void onLogReceived(String line) {
         ui.post(() -> {
             appendLog(line + "\n");

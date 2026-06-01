@@ -469,8 +469,8 @@ final class BtProxy {
 
     private static boolean NATIVE_READY = false;
 
-    static java.util.function.Consumer<String> logListener;
-    static java.util.function.Consumer<String> stateListener;
+    static volatile java.util.function.Consumer<String> logListener;
+    static volatile java.util.function.Consumer<String> stateListener;
 
     static {
         try {
