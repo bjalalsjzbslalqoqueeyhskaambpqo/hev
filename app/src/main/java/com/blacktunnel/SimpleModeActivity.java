@@ -51,6 +51,10 @@ public class SimpleModeActivity extends ComponentActivity {
             cm.setPrimaryClip(ClipData.newPlainText("logs", logView.getText()));
         });
 
+        android.util.Log.d("SMA", "onCreate: calling BtProxy.setLogListener");
+        BtProxy.setLogListener(logCallback);
+        android.util.Log.d("SMA", "onCreate: calling BtProxy.setStateListener");
+        BtProxy.setStateListener(stateCallback);
         android.util.Log.d("SMA", "onCreate: DONE, state=" + state);
     }
 
