@@ -77,7 +77,7 @@ public class BtVpnService extends VpnService {
             sTunnelOk = true;
             if (sTunnelLatch != null) { sTunnelLatch.countDown(); sTunnelLatch = null; }
         }
-        if (logListener != null) logListener.accept(line);
+        if (BtProxy.logListener != null) BtProxy.logListener.accept(line);
     }
 
     public static boolean tunnelOk() { return sTunnelOk; }
@@ -87,7 +87,7 @@ public class BtVpnService extends VpnService {
             case "running": sRunning = true; break;
             case "stopped": sRunning = false; break;
         }
-        if (stateListener != null) stateListener.accept(state);
+        if (BtProxy.stateListener != null) BtProxy.stateListener.accept(state);
     }
 
     public static String dLogs() {
@@ -444,8 +444,8 @@ final class BtProxy {
 
     private static final boolean NATIVE_READY;
 
-    private static java.util.function.Consumer<String> logListener;
-    private static java.util.function.Consumer<String> stateListener;
+    static java.util.function.Consumer<String> logListener;
+    static java.util.function.Consumer<String> stateListener;
 
     static {
         boolean ready = false;
