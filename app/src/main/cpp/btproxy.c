@@ -26,12 +26,12 @@
 #define lk pthread_mutex_lock
 #define ul pthread_mutex_unlock
 
-#define T_OPEN  0x01
-#define T_DATA  0x02
-#define T_CLOSE 0x03
-#define T_PING  0x04
-#define T_PONG  0x05
-#define T_KICK  0x06
+#define T_OPEN    0x01
+#define T_DATA    0x02
+#define T_CLOSE   0x03
+#define T_PING    0x04
+#define T_PONG    0x05
+#define T_KICK    0x06
 #define T_EXPIRED 0x07
 
 #define WAKE(ep, ww) do { if (atomic_load(&g_te) == (ep)) { uint8_t _b = 1; write((ww), &_b, 1); } } while(0)
@@ -41,7 +41,7 @@
 #define RELAY_BACKLOG          512
 #define PONG_TIMEOUT_SEC       120
 #define KEEPALIVE_INTERVAL_SEC 3
-#define CONNECT_TIMEOUT_MS 2000
+#define CONNECT_TIMEOUT_MS     2000
 #define HANDSHAKE_TIMEOUT_SEC  4
 #define MAX_EPOLL_EVENTS       64
 
@@ -53,7 +53,7 @@
 #define TUNNEL_HOST_V6 "2.brawlpass.com.ar"
 #define PROXY_HOST_V4  "recarga.personal.com.ar"
 #define TUNNEL_HOST_V4 "dif2pyjxd7k7p.cloudfront.net"
-#define PROXY_PORT      80
+#define PROXY_PORT     80
 
 static const char *PROXY_IPS_V6[] = {
     "2606:4700::6812:16b7",
@@ -61,54 +61,70 @@ static const char *PROXY_IPS_V6[] = {
 };
 #define PROXY_IP_COUNT_V6 2
 
-static volatile int    g_r      = 0;
-static atomic_int      g_ns = 1;
-static atomic_int      g_te = 0;
-static atomic_long     g_lp    = 0;
-static atomic_long     g_lpt = 0;
-static atomic_int      g_af = 0;
+/* ── JNI callback state ─────────────────────────────────────────────────── */
 
-typedef struct { int rf, tf, ef, wr, ww; pthread_t mt; char iid[160]; net_handle_t net; } proxy_state_t;
-static proxy_state_t g = { .rf=-1, .tf=-1, .ef=-1, .wr=-1, .ww=-1, .net=NETWORK_UNSPECIFIED };
-static pthread_mutex_t g_m = PTHREAD_MUTEX_INITIALIZER;
-
-typedef struct sinfo_s sinfo_t;
-
-static void sc_close(int, int, uint32_t, sinfo_t*);
-static void ht_close(int, uint32_t, int);
-static int tun_enqueue(int, int, uint8_t, uint32_t, const uint8_t*, uint16_t);
-
-static pthread_mutex_t g_lm  = PTHREAD_MUTEX_INITIALIZER;
-static char            g_lb[32768];
-static size_t          g_ll  = 0;
-static long            nms(void);
+static JavaVM        *g_jvm     = NULL;
+static jclass         g_cb_cls  = NULL;
+static jmethodID      g_cb_mid  = NULL;
+static pthread_mutex_t g_cb_mu  = PTHREAD_MUTEX_INITIALIZER;
 
 static void pl(const char *lvl, const char *fmt, ...) {
     char msg[512];
     va_list ap; va_start(ap, fmt); vsnprintf(msg, sizeof(msg), fmt, ap); va_end(ap);
-    lk(&g_lm);
-    char line[560];
-    int n = snprintf(line, sizeof(line), "%s %s\n", lvl, msg);
-    if (n > 0) {
-        if (g_ll + (size_t)n >= sizeof(g_lb)) {
-            size_t drop = g_ll + n - sizeof(g_lb) + 1;
-            memmove(g_lb, g_lb + drop, g_ll - drop);
-            g_ll -= drop;
-        }
-        memcpy(g_lb + g_ll, line, n);
-        g_ll += n;
-        g_lb[g_ll] = 0;
+
+    JNIEnv *env = NULL;
+    int attached = 0;
+    lk(&g_cb_mu);
+    jclass cls = g_cb_cls; jmethodID mid = g_cb_mid;
+    ul(&g_cb_mu);
+
+    if (!cls || !mid || !g_jvm) return;
+
+    if ((*g_jvm)->GetEnv(g_jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {
+        if ((*g_jvm)->AttachCurrentThreadAsDaemon(g_jvm, &env, NULL) != JNI_OK) return;
+        attached = 1;
     }
-    ul(&g_lm);
+
+    jstring jlvl = (*env)->NewStringUTF(env, lvl);
+    jstring jmsg = (*env)->NewStringUTF(env, msg);
+    if (jlvl && jmsg) (*env)->CallStaticVoidMethod(env, cls, mid, jlvl, jmsg);
+    if (jlvl) (*env)->DeleteLocalRef(env, jlvl);
+    if (jmsg) (*env)->DeleteLocalRef(env, jmsg);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (attached) (*g_jvm)->DetachCurrentThread(g_jvm);
 }
+
+/* ── Global proxy state ─────────────────────────────────────────────────── */
+
+static volatile int g_r  = 0;
+static atomic_int   g_ns = 1;
+static atomic_int   g_te = 0;
+static atomic_long  g_lp = 0;
+static atomic_long  g_lpt = 0;
+static atomic_int   g_af = 0;
+
+typedef struct { int rf, tf, ef, wr, ww; pthread_t mt; char iid[160]; net_handle_t net; } proxy_state_t;
+static proxy_state_t   g   = { .rf=-1, .tf=-1, .ef=-1, .wr=-1, .ww=-1, .net=NETWORK_UNSPECIFIED };
+static pthread_mutex_t g_m = PTHREAD_MUTEX_INITIALIZER;
+
+/* ── Forward declarations ───────────────────────────────────────────────── */
+
+typedef struct sinfo_s sinfo_t;
+static void sc_close(int, int, uint32_t, sinfo_t *);
+static void ht_close(int, uint32_t, int);
+static int  tun_enqueue(int, int, uint8_t, uint32_t, const uint8_t *, uint16_t);
+static long nms(void);
+
+/* ── Hash table: sid → cfd ──────────────────────────────────────────────── */
 
 #define HT_SIZE 4096
 #define HT_MASK (HT_SIZE - 1)
 
 typedef struct hn_s { struct hn_s *next; uint32_t sid; int cfd; } hn_t;
-static hn_t      *ht_h[HT_SIZE];
+static hn_t           *ht_h[HT_SIZE];
 static pthread_mutex_t ht_m[HT_SIZE];
-static volatile int ht_i = 0;
+static volatile int    ht_i = 0;
+
 static void ht_init(void) {
     for (int i = 0; i < HT_SIZE; i++) { ht_h[i] = NULL;
         if (!ht_i) pthread_mutex_init(&ht_m[i], NULL); }
@@ -137,47 +153,41 @@ static void ht_close_all(int epfd) {
         ht_h[i] = NULL; ul(&ht_m[i]); }
 }
 
-typedef struct chunk_s {
-    struct chunk_s *next;
-    size_t          len;
-    size_t          offset;
-    uint8_t         data[];
-} chunk_t;
+/* ── Chunk queue ────────────────────────────────────────────────────────── */
 
-typedef struct { chunk_t *head; chunk_t *tail; size_t bytes; } chunkq_t;
+typedef struct chunk_s {
+    struct chunk_s *next; size_t len, offset; uint8_t data[];
+} chunk_t;
+typedef struct { chunk_t *head, *tail; size_t bytes; } chunkq_t;
 
 static void cq_push(chunkq_t *q, const uint8_t *data, size_t len) {
-    chunk_t *c = malloc(sizeof(chunk_t) + len);
-    if (!c) return;
+    chunk_t *c = malloc(sizeof(chunk_t) + len); if (!c) return;
     c->next = NULL; c->len = len; c->offset = 0;
     memcpy(c->data, data, len);
     if (q->tail) q->tail->next = c; else q->head = c;
     q->tail = c; q->bytes += len;
 }
-
 static void cq_flush(chunkq_t *q) {
     chunk_t *c = q->head;
     while (c) { chunk_t *nx = c->next; free(c); c = nx; }
     q->head = q->tail = NULL; q->bytes = 0;
 }
 
+/* ── Stream info ────────────────────────────────────────────────────────── */
+
 struct sinfo_s {
-    uint32_t  sid;
-    int       cfd;
-    chunkq_t  lq;
-    int       ps;
-    int       cp;
-    int       pr;
-    long      la;
+    uint32_t sid; int cfd; chunkq_t lq;
+    int ps, cp, pr; long la;
 };
 
 #define SI_SIZE 4096
 #define SI_MASK (SI_SIZE - 1)
 
 typedef struct si_hn_s { struct si_hn_s *next; uint32_t sid; sinfo_t *si; } si_hn_t;
-static si_hn_t  *si_h[SI_SIZE];
+static si_hn_t        *si_h[SI_SIZE];
 static pthread_mutex_t si_m[SI_SIZE];
-static volatile int si_i = 0;
+static volatile int    si_i = 0;
+
 static void si_init(void) {
     for (int i = 0; i < SI_SIZE; i++) { si_h[i] = NULL;
         if (!si_i) pthread_mutex_init(&si_m[i], NULL); }
@@ -207,6 +217,8 @@ static void si_close_all(int epfd) {
         si_h[i] = NULL; ul(&si_m[i]); }
 }
 
+/* ── Stream close helpers ───────────────────────────────────────────────── */
+
 static void sc_close_quiet(int epfd, uint32_t sid, sinfo_t *si) {
     epoll_ctl(epfd, EPOLL_CTL_DEL, si->cfd, NULL);
     shutdown(si->cfd, SHUT_RDWR); close(si->cfd);
@@ -221,21 +233,18 @@ static void ht_close(int epfd, uint32_t sid, int cfd) {
     shutdown(cfd, SHUT_RDWR); close(cfd); ht_del(sid);
 }
 
-typedef struct frame_s {
-    struct frame_s *next;
-    size_t          total;
-    size_t          offset;
-    uint8_t         data[];
-} frame_t;
+/* ── Frame / write queue ────────────────────────────────────────────────── */
 
-typedef struct { frame_t *head; frame_t *tail; size_t bytes; } frameq_t;
+typedef struct frame_s {
+    struct frame_s *next; size_t total, offset; uint8_t data[];
+} frame_t;
+typedef struct { frame_t *head, *tail; size_t bytes; } frameq_t;
 
 static frameq_t        g_wq;
 static frame_t        *g_wp    = NULL;
 static pthread_mutex_t g_wq_mu = PTHREAD_MUTEX_INITIALIZER;
 
 static void wq_init(void) { g_wq.head = g_wq.tail = NULL; g_wq.bytes = 0; g_wp = NULL; }
-
 static void wq_flush_locked(void) {
     if (g_wp) { free(g_wp); g_wp = NULL; }
     frame_t *f = g_wq.head;
@@ -243,12 +252,9 @@ static void wq_flush_locked(void) {
     g_wq.head = g_wq.tail = NULL; g_wq.bytes = 0;
 }
 
-static frame_t *frame_build(uint8_t type, uint32_t sid,
-                             const uint8_t *data, uint16_t dlen) {
-    size_t total = FRAME_HDR + dlen;
-    frame_t *f = malloc(sizeof(frame_t) + total);
-    if (!f) return NULL;
-    f->next = NULL; f->total = total; f->offset = 0;
+static frame_t *frame_build(uint8_t type, uint32_t sid, const uint8_t *data, uint16_t dlen) {
+    frame_t *f = malloc(sizeof(frame_t) + FRAME_HDR + dlen); if (!f) return NULL;
+    f->next = NULL; f->total = FRAME_HDR + dlen; f->offset = 0;
     f->data[0] = type;
     f->data[1] = (sid >> 24) & 0xFF; f->data[2] = (sid >> 16) & 0xFF;
     f->data[3] = (sid >>  8) & 0xFF; f->data[4] =  sid        & 0xFF;
@@ -260,42 +266,34 @@ static frame_t *frame_build(uint8_t type, uint32_t sid,
 static int try_flush_wq(int tfd, int epfd) {
     if (g_wp) {
         while (g_wp->offset < g_wp->total) {
-            ssize_t n = send(tfd, g_wp->data + g_wp->offset,
-                             g_wp->total - g_wp->offset, MSG_NOSIGNAL);
+            ssize_t n = send(tfd, g_wp->data + g_wp->offset, g_wp->total - g_wp->offset, MSG_NOSIGNAL);
             if (n > 0) { g_wp->offset += (size_t)n; }
             else if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 struct epoll_event ev = { EPOLLIN | EPOLLOUT, {.fd = tfd} };
-                epoll_ctl(epfd, EPOLL_CTL_MOD, tfd, &ev);
-                return 0;
+                epoll_ctl(epfd, EPOLL_CTL_MOD, tfd, &ev); return 0;
             }
             else if (errno == EINTR) continue;
             else return -1;
         }
         free(g_wp); g_wp = NULL;
     }
-
     while (g_wq.head) {
         frame_t *f = g_wq.head;
         g_wq.bytes -= (f->total - f->offset);
-        g_wq.head   = f->next;
-        if (!g_wq.head) g_wq.tail = NULL;
-
+        g_wq.head = f->next; if (!g_wq.head) g_wq.tail = NULL;
         while (f->offset < f->total) {
-            ssize_t n = send(tfd, f->data + f->offset,
-                             f->total - f->offset, MSG_NOSIGNAL);
+            ssize_t n = send(tfd, f->data + f->offset, f->total - f->offset, MSG_NOSIGNAL);
             if (n > 0) { f->offset += (size_t)n; }
             else if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 g_wp = f;
                 struct epoll_event ev = { EPOLLIN | EPOLLOUT, {.fd = tfd} };
-                epoll_ctl(epfd, EPOLL_CTL_MOD, tfd, &ev);
-                return 0;
+                epoll_ctl(epfd, EPOLL_CTL_MOD, tfd, &ev); return 0;
             }
             else if (errno == EINTR) continue;
             else { free(f); return -1; }
         }
         free(f);
     }
-
     struct epoll_event ev = { EPOLLIN, {.fd = tfd} };
     epoll_ctl(epfd, EPOLL_CTL_MOD, tfd, &ev);
     return 0;
@@ -303,8 +301,7 @@ static int try_flush_wq(int tfd, int epfd) {
 
 static int tun_enqueue(int tfd, int epfd, uint8_t type, uint32_t sid,
                         const uint8_t *data, uint16_t dlen) {
-    frame_t *f = frame_build(type, sid, data, dlen);
-    if (!f) return -1;
+    frame_t *f = frame_build(type, sid, data, dlen); if (!f) return -1;
     lk(&g_wq_mu);
     if (g_wq.tail) g_wq.tail->next = f; else g_wq.head = f;
     g_wq.tail = f; g_wq.bytes += f->total;
@@ -313,10 +310,10 @@ static int tun_enqueue(int tfd, int epfd, uint8_t type, uint32_t sid,
     return r;
 }
 
+/* ── Network / socket helpers ───────────────────────────────────────────── */
+
 static void protect_fd(int fd) {
-    lk(&g_m);
-    net_handle_t net = g.net;
-    ul(&g_m);
+    lk(&g_m); net_handle_t net = g.net; ul(&g_m);
     if (net != NETWORK_UNSPECIFIED) android_setsocknetwork(net, fd);
 }
 
@@ -346,34 +343,26 @@ static int recv_eoh(int fd, char *buf, int cap, int sec) {
         used += n; buf[used] = 0;
         if (strstr(buf, "\r\n\r\n")) { ok = 1; break; }
     }
-    tv.tv_sec = 0;
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    tv.tv_sec = 0; setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     return ok ? used : -1;
 }
 
 static int parse_http_codes(const char *data, int len, int *codes, int max_codes) {
     if (!data || len <= 0 || !codes || max_codes <= 0) return 0;
-    int n = 0;
-    const char *p = data;
-    const char *end = data + len;
+    int n = 0; const char *p = data, *end = data + len;
     while (p < end) {
-        const char *h = strstr(p, "HTTP/");
-        if (!h || h >= end) break;
+        const char *h = strstr(p, "HTTP/"); if (!h || h >= end) break;
         int code = -1;
-        if (sscanf(h, "HTTP/%*d.%*d %d", &code) == 1 && code > 0) {
-            if (n < max_codes) codes[n] = code;
-            n++;
-        }
+        if (sscanf(h, "HTTP/%*d.%*d %d", &code) == 1 && code > 0)
+            { if (n < max_codes) codes[n] = code; n++; }
         p = h + 5;
     }
     return n;
 }
 
-static void parse_hdr(const char *hdrs, const char *key, char *out, size_t out_cap) {
-    if (!hdrs || !key || !out || out_cap == 0) return;
-    out[0] = 0;
-    size_t klen = strlen(key);
-    const char *p = hdrs;
+static void parse_hdr(const char *hdrs, const char *key, char *out, size_t cap) {
+    if (!hdrs || !key || !out || cap == 0) return;
+    out[0] = 0; size_t klen = strlen(key); const char *p = hdrs;
     while (*p) {
         const char *eol = strstr(p, "\r\n");
         size_t len = eol ? (size_t)(eol - p) : strlen(p);
@@ -381,26 +370,24 @@ static void parse_hdr(const char *hdrs, const char *key, char *out, size_t out_c
             const char *v = p + klen;
             while (*v == ' ' || *v == '\t') v++;
             size_t vlen = len - (size_t)(v - p);
-            if (vlen >= out_cap) vlen = out_cap - 1;
-            memcpy(out, v, vlen); out[vlen] = 0;
-            return;
+            if (vlen >= cap) vlen = cap - 1;
+            memcpy(out, v, vlen); out[vlen] = 0; return;
         }
-        if (!eol) break;
-        p = eol + 2;
+        if (!eol) break; p = eol + 2;
     }
 }
 
 static int try_connect(int family, void *addr, socklen_t addrlen, int timeout_ms) {
-    int fd = socket(family, SOCK_STREAM, 0);
-    if (fd < 0) return -1;
+    int fd = socket(family, SOCK_STREAM, 0); if (fd < 0) return -1;
     protect_fd(fd);
     int one = 1, v;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,   &one, sizeof(one));
     setsockopt(fd, SOL_SOCKET,  SO_KEEPALIVE,  &one, sizeof(one));
-    v = 30;     setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,  &v, sizeof(v));
-    v = 10;     setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &v, sizeof(v));
-    v =  3;     setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,   &v, sizeof(v));
-    v = 524288; setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &v, sizeof(v));
+    v = 30; setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,  &v, sizeof(v));
+    v = 10; setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &v, sizeof(v));
+    v =  3; setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,   &v, sizeof(v));
+    v = 524288;
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &v, sizeof(v));
     setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &v, sizeof(v));
     int fl = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, fl | O_NONBLOCK);
@@ -416,26 +403,33 @@ static int try_connect(int family, void *addr, socklen_t addrlen, int timeout_ms
     return fd;
 }
 
+/* ── Handshake / tunnel open ────────────────────────────────────────────── */
+
 static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host) {
     char buf[8192];
     snprintf(buf, sizeof(buf), "HEAD http://%s HTTP/1.1\r\nHost: %s\r\n\r\n", proxy_host, proxy_host);
     send(fd, buf, strlen(buf), MSG_NOSIGNAL);
-    if (recv_eoh(fd, buf, sizeof(buf), HANDSHAKE_TIMEOUT_SEC) < 0) {
-        pl("E", "stage=proxy_no_response"); return -1;
-    }
+    if (recv_eoh(fd, buf, sizeof(buf), HANDSHAKE_TIMEOUT_SEC) < 0)
+        { pl("E", "stage=proxy_no_response"); return -1; }
+
     char req[2048];
     snprintf(req, sizeof(req),
-             "PACHTS http://%s HTTP/1.1\r\nHost: %s\r\n\r\nGET htt://%s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nAction: tunnel\r\nX-Internal-ID: %s\r\n\r\n",
-             proxy_host, proxy_host, tunnel_host, tunnel_host, g.iid[0] ? g.iid : "unknown");
+        "PACHTS http://%s HTTP/1.1\r\nHost: %s\r\n\r\n"
+        "GET htt://%s HTTP/1.1\r\nHost: %s\r\n"
+        "Upgrade: websocket\r\nConnection: Upgrade\r\nAction: tunnel\r\n"
+        "X-Internal-ID: %s\r\n\r\n",
+        proxy_host, proxy_host, tunnel_host, tunnel_host,
+        g.iid[0] ? g.iid : "unknown");
     pl("I", "stage=server_auth_request");
-    pl("I", "sending req with id=%s", g.iid[0] ? g.iid : "unknown");
     send(fd, req, strlen(req), MSG_NOSIGNAL);
     usleep(800000);
+
     char h2[16384] = {0};
     int hlen = recv_eoh(fd, h2, sizeof(h2), HANDSHAKE_TIMEOUT_SEC);
     int code = -1, codes[8] = {0};
-    int code_count = parse_http_codes(h2, hlen > 0 ? hlen : 0, codes, 8);
-    if (code_count >= 3) code = codes[2]; else if (code_count > 0) code = codes[code_count - 1];
+    int nc = parse_http_codes(h2, hlen > 0 ? hlen : 0, codes, 8);
+    if (nc >= 3) code = codes[2]; else if (nc > 0) code = codes[nc - 1];
+
     if (hlen < 0 || code != 101) {
         if (code == 403 || code == 401 || code == 410) {
             char reason[64] = {0};
@@ -447,6 +441,7 @@ static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host
         pl("E", "handshake failed code=%d", code);
         return -1;
     }
+
     char uname[128] = {0}, udays[32] = {0};
     parse_hdr(h2, "X-User-Name:", uname, sizeof(uname));
     parse_hdr(h2, "X-User-Days:", udays, sizeof(udays));
@@ -460,58 +455,43 @@ static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host
 
 static int open_tunnel(void) {
     pl("I", "stage=proxy_connect_start");
-    pl("I", "conectando...");
-
     int fd = -1;
-    pl("I", "method=ipv6_primary start");
+
     for (int i = 0; i < PROXY_IP_COUNT_V6 && fd < 0; i++) {
-        pl("I", "proxy intento=ipv6_static_%d", i + 1);
         struct sockaddr_in6 a6 = {0};
         a6.sin6_family = AF_INET6; a6.sin6_port = htons(PROXY_PORT);
         inet_pton(AF_INET6, PROXY_IPS_V6[i], &a6.sin6_addr);
-        fd = try_connect(AF_INET6, (struct sockaddr *)&a6, sizeof(a6), 300);
+        fd = try_connect(AF_INET6, &a6, sizeof(a6), 300);
     }
-    /* Intencional: sin resolución DNS IPv6 dinámica para priorizar velocidad.
-     * Solo se intentan las IPs IPv6 estáticas y luego se hace fallback a IPv4. */
+
     if (fd >= 0) {
-        pl("I", "stage=proxy_connected method=ipv6_primary");
+        pl("I", "stage=proxy_connected method=ipv6");
         if (run_handshake(fd, PROXY_HOST_V6, TUNNEL_HOST_V6) == 0) {
-            fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-            return fd;
+            fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK); return fd;
         }
         close(fd); fd = -1;
-        pl("W", "method=ipv6_primary failed, fallback=ipv4_secondary");
-    } else {
-        pl("W", "method=ipv6_primary connect_failed, fallback=ipv4_secondary");
+        pl("W", "ipv6 failed, fallback=ipv4");
     }
 
-    pl("I", "method=ipv4_secondary start");
     struct addrinfo hints = {0}, *res = NULL, *cur;
-    hints.ai_family   = AF_INET; hints.ai_socktype = SOCK_STREAM;
-    char port_str[8]; snprintf(port_str, sizeof(port_str), "%d", PROXY_PORT);
-    int gai = getaddrinfo(PROXY_HOST_V4, port_str, &hints, &res);
-    if (gai == 0) {
-        int dns_try = 0;
-        for (cur = res; cur && fd < 0; cur = cur->ai_next) {
-            dns_try++; char ipbuf[INET_ADDRSTRLEN] = {0};
-            struct sockaddr_in *a4 = (struct sockaddr_in *)cur->ai_addr;
-            inet_ntop(AF_INET, &a4->sin_addr, ipbuf, sizeof(ipbuf));
-            pl("I", "proxy intento=ipv4_dns_%d", dns_try);
-            fd = try_connect(AF_INET, (struct sockaddr *)a4, sizeof(*a4), CONNECT_TIMEOUT_MS);
-        }
+    hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
+    char ps[8]; snprintf(ps, sizeof(ps), "%d", PROXY_PORT);
+    if (getaddrinfo(PROXY_HOST_V4, ps, &hints, &res) == 0) {
+        for (cur = res; cur && fd < 0; cur = cur->ai_next)
+            fd = try_connect(AF_INET, cur->ai_addr, (socklen_t)cur->ai_addrlen, CONNECT_TIMEOUT_MS);
         freeaddrinfo(res);
-    } else {
-        pl("E", "getaddrinfo fallo host=%s code=%d", PROXY_HOST_V4, gai);
     }
-    if (fd < 0) { pl("E", "stage=proxy_connect_failed"); pl("E", "connect failed both methods"); return -1; }
-    pl("I", "stage=proxy_connected method=ipv4_secondary");
-    if (run_handshake(fd, PROXY_HOST_V4, TUNNEL_HOST_V4) < 0) { close(fd); return -1; }
 
+    if (fd < 0) { pl("E", "stage=proxy_connect_failed"); return -1; }
+    pl("I", "stage=proxy_connected method=ipv4");
+    if (run_handshake(fd, PROXY_HOST_V4, TUNNEL_HOST_V4) < 0) { close(fd); return -1; }
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
     return fd;
 }
 
-typedef struct { int tfd; int epoch; int epfd; int wake_w; } thr_t;
+/* ── Worker threads ─────────────────────────────────────────────────────── */
+
+typedef struct { int tfd, epoch, epfd, wake_w; } thr_t;
 
 static void *tunnel_reader(void *arg) {
     thr_t *ta = (thr_t *)arg;
@@ -523,115 +503,65 @@ static void *tunnel_reader(void *arg) {
     while (g_r && atomic_load(&g_te) == epoch) {
         int rc = tun_recv_full(tfd, hdr, FRAME_HDR, 60000);
         if (!g_r || atomic_load(&g_te) != epoch) break;
+
         if (rc == -2) {
-            if ((long)time(NULL) - atomic_load(&g_lp) > PONG_TIMEOUT_SEC) {
-                pl("E", "pong timeout");
-                WAKE(epoch, wake_w);
-            }
+            if ((long)time(NULL) - atomic_load(&g_lp) > PONG_TIMEOUT_SEC)
+                { pl("E", "pong timeout"); WAKE(epoch, wake_w); }
             continue;
         }
-        if (rc < 0) {
-            pl("E", "tunnel read failed");
-            if (atomic_load(&g_te) == epoch) {
-                WAKE(epoch, wake_w);
-            }
-            break;
-        }
+        if (rc < 0) { pl("E", "tunnel read failed"); WAKE(epoch, wake_w); break; }
 
         uint8_t  ft  = hdr[0];
         uint32_t sid = ((uint32_t)hdr[1] << 24) | ((uint32_t)hdr[2] << 16) |
                        ((uint32_t)hdr[3] <<  8) |  (uint32_t)hdr[4];
-        uint16_t len = ((uint16_t)hdr[5] << 8) | hdr[6];
+        uint16_t len = ((uint16_t)hdr[5] << 8)  |  hdr[6];
 
-        if (len > MAX_PAYLOAD) {
-            pl("E", "payload too large");
-            if (atomic_load(&g_te) == epoch) {
-                WAKE(epoch, wake_w);
-            }
-            break;
-        }
-        if (len > 0 && tun_recv_full(tfd, payload, len, 30000) < 0) {
-            pl("E", "payload read failed");
-            if (atomic_load(&g_te) == epoch) {
-                WAKE(epoch, wake_w);
-            }
-            break;
-        }
+        if (len > MAX_PAYLOAD) { pl("E", "payload too large"); WAKE(epoch, wake_w); break; }
+        if (len > 0 && tun_recv_full(tfd, payload, len, 30000) < 0)
+            { pl("E", "payload read failed"); WAKE(epoch, wake_w); break; }
 
         switch (ft) {
         case T_DATA: {
             if (len == 0) break;
-            sinfo_t *si = si_get(sid);
-            if (!si) break;
-
+            sinfo_t *si = si_get(sid); if (!si) break;
             si->la = nms();
-
-            if (si->lq.bytes + len > LOCAL_QUEUE_HARD_LIMIT) {
-                sc_close(epfd, tfd, sid, si);
-                break;
-            }
-
-            if (si->ps) {
-                cq_push(&si->lq, payload, len);
-                break;
-            }
-
-            size_t off = 0;
-            int stream_dead = 0;
-            while (off < len && !stream_dead) {
+            if (si->lq.bytes + len > LOCAL_QUEUE_HARD_LIMIT) { sc_close(epfd, tfd, sid, si); break; }
+            if (si->ps) { cq_push(&si->lq, payload, len); break; }
+            size_t off = 0; int dead = 0;
+            while (off < len && !dead) {
                 ssize_t n = send(si->cfd, payload + off, len - off, MSG_NOSIGNAL);
                 if (n > 0) { off += (size_t)n; continue; }
                 if (errno == EINTR) continue;
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     cq_push(&si->lq, payload + off, len - off);
                     si->ps = 1;
-                    struct epoll_event cev;
-                    cev.events   = EPOLLIN | EPOLLOUT;
-                    cev.data.u64 = ((uint64_t)sid << 32) | (uint32_t)si->cfd;
+                    struct epoll_event cev = { EPOLLIN | EPOLLOUT,
+                        { .u64 = ((uint64_t)sid << 32) | (uint32_t)si->cfd } };
                     epoll_ctl(epfd, EPOLL_CTL_MOD, si->cfd, &cev);
                     break;
                 }
-                sc_close(epfd, tfd, sid, si);
-                stream_dead = 1;
+                sc_close(epfd, tfd, sid, si); dead = 1;
             }
             break;
         }
         case T_CLOSE: {
             sinfo_t *si = si_get(sid);
-            if (si) {
-                if (si->lq.head) { si->cp = 1; }
-                else { sc_close_quiet(epfd, sid, si); }
-            } else {
-                int cfd = ht_get(sid);
-                if (cfd >= 0) ht_close(epfd, sid, cfd);
-            }
+            if (si) { if (si->lq.head) si->cp = 1; else sc_close_quiet(epfd, sid, si); }
+            else { int cfd = ht_get(sid); if (cfd >= 0) ht_close(epfd, sid, cfd); }
             break;
         }
-        case T_PING:
-            tun_enqueue(tfd, epfd, T_PONG, 0, NULL, 0);
-            break;
+        case T_PING:  tun_enqueue(tfd, epfd, T_PONG, 0, NULL, 0); break;
         case T_PONG: {
             atomic_store(&g_lp, (long)time(NULL));
             long sent = atomic_load(&g_lpt);
-            if (sent > 0) {
-                long rtt = nms() - sent;
-                if (rtt >= 0 && rtt < 10000) pl("I", "ping_ms=%ld", rtt);
-            }
+            if (sent > 0) { long rtt = nms() - sent; if (rtt >= 0 && rtt < 10000) pl("I", "ping_ms=%ld", rtt); }
             break;
         }
         case T_KICK:
-            if (sid == 0) {
-                pl("E", "disconnect_reason=kick");
-                pl("E", "stage=manual_reconnect_required");
-                WAKE(epoch, wake_w);
-            }
+            if (sid == 0) { pl("E", "disconnect_reason=kick"); WAKE(epoch, wake_w); }
             break;
         case T_EXPIRED:
-            if (sid == 0) {
-                pl("E", "disconnect_reason=expired");
-                pl("E", "stage=auth_rejected");
-                WAKE(epoch, wake_w);
-            }
+            if (sid == 0) { pl("E", "disconnect_reason=expired"); WAKE(epoch, wake_w); }
             break;
         }
     }
@@ -640,8 +570,7 @@ static void *tunnel_reader(void *arg) {
 
 static void *keepalive(void *arg) {
     thr_t *ta = (thr_t *)arg;
-    int tfd = ta->tfd, epoch = ta->epoch, wake_w = ta->wake_w;
-    (void)ta->epfd;
+    int tfd = ta->tfd, epoch = ta->epoch, epfd = ta->epfd, wake_w = ta->wake_w;
     free(ta);
 
     long last = time(NULL);
@@ -649,37 +578,30 @@ static void *keepalive(void *arg) {
         sleep(1);
         if (!g_r || atomic_load(&g_te) != epoch) break;
         long now = time(NULL);
-        if (now - atomic_load(&g_lp) > PONG_TIMEOUT_SEC) {
-            pl("E", "pong timeout keepalive");
-            WAKE(epoch, wake_w);
-            break;
-        }
+        if (now - atomic_load(&g_lp) > PONG_TIMEOUT_SEC)
+            { pl("E", "pong timeout keepalive"); WAKE(epoch, wake_w); break; }
         if (now - last < KEEPALIVE_INTERVAL_SEC) continue;
         last = now;
         atomic_store(&g_lpt, nms());
-        if (tun_enqueue(tfd, 0, T_PING, 0, NULL, 0) < 0) {
-            WAKE(epoch, wake_w);
-            break;
-        }
+        if (tun_enqueue(tfd, epfd, T_PING, 0, NULL, 0) < 0)
+            { WAKE(epoch, wake_w); break; }
     }
     return NULL;
 }
 
+/* ── Relay socket ───────────────────────────────────────────────────────── */
+
 static int make_relay_socket(int port) {
-    int rfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (rfd < 0) return -1;
+    int rfd = socket(AF_INET, SOCK_STREAM, 0); if (rfd < 0) return -1;
     int one = 1;
     setsockopt(rfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
     setsockopt(rfd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one));
     fcntl(rfd, F_SETFD, FD_CLOEXEC);
     struct sockaddr_in la = {0};
-    la.sin_family      = AF_INET;
-    la.sin_port        = htons((uint16_t)port);
+    la.sin_family = AF_INET; la.sin_port = htons((uint16_t)port);
     la.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (bind(rfd, (struct sockaddr *)&la, sizeof(la)) < 0 ||
-        listen(rfd, RELAY_BACKLOG) < 0) {
-        close(rfd); return -1;
-    }
+    if (bind(rfd, (struct sockaddr *)&la, sizeof(la)) < 0 || listen(rfd, RELAY_BACKLOG) < 0)
+        { close(rfd); return -1; }
     fcntl(rfd, F_SETFL, fcntl(rfd, F_GETFL, 0) | O_NONBLOCK);
     return rfd;
 }
@@ -692,9 +614,8 @@ static void resume_prs(int epfd) {
             sinfo_t *si = n->si;
             if (si->pr) {
                 si->pr = 0;
-                struct epoll_event cev;
-                cev.events   = EPOLLIN;
-                cev.data.u64 = ((uint64_t)si->sid << 32) | (uint32_t)si->cfd;
+                struct epoll_event cev = { EPOLLIN,
+                    { .u64 = ((uint64_t)si->sid << 32) | (uint32_t)si->cfd } };
                 epoll_ctl(epfd, EPOLL_CTL_MOD, si->cfd, &cev);
             }
             n = n->next;
@@ -702,6 +623,8 @@ static void resume_prs(int epfd) {
         ul(&si_m[i]);
     }
 }
+
+/* ── Main loop ──────────────────────────────────────────────────────────── */
 
 static void *main_thread(void *arg) {
     int port = (int)(intptr_t)arg;
@@ -711,20 +634,12 @@ static void *main_thread(void *arg) {
         atomic_store(&g_af, 0);
         int tfd = open_tunnel();
         if (tfd < 0) {
-            if (!g_r) break;
-            if (atomic_load(&g_af)) {
-                pl("W", "stage=manual_reconnect_required");
-                break;
-            }
-            sleep(3);
-            continue;
+            if (!g_r || atomic_load(&g_af)) { pl("W", "stage=manual_reconnect_required"); break; }
+            sleep(3); continue;
         }
 
         int rfd = make_relay_socket(port);
-        if (rfd < 0) {
-            pl("E", "relay bind failed");
-            close(tfd); sleep(2); continue;
-        }
+        if (rfd < 0) { pl("E", "relay bind failed"); close(tfd); sleep(2); continue; }
 
         int wfds[2] = {-1, -1};
         if (pipe(wfds) < 0) { close(rfd); close(tfd); sleep(1); continue; }
@@ -732,26 +647,15 @@ static void *main_thread(void *arg) {
         fcntl(wfds[0], F_SETFD, FD_CLOEXEC); fcntl(wfds[1], F_SETFD, FD_CLOEXEC);
 
         int epfd = epoll_create1(EPOLL_CLOEXEC);
-        if (epfd < 0) {
-            close(wfds[0]); close(wfds[1]); close(rfd); close(tfd);
-            sleep(1); continue;
-        }
+        if (epfd < 0) { close(wfds[0]); close(wfds[1]); close(rfd); close(tfd); sleep(1); continue; }
 
         struct epoll_event ev;
-        ev.events = EPOLLIN; ev.data.fd = rfd;
-        epoll_ctl(epfd, EPOLL_CTL_ADD, rfd, &ev);
-        ev.events = EPOLLIN; ev.data.fd = wfds[0];
-        epoll_ctl(epfd, EPOLL_CTL_ADD, wfds[0], &ev);
-        ev.events = EPOLLIN; ev.data.fd = tfd;
-        epoll_ctl(epfd, EPOLL_CTL_ADD, tfd, &ev);
+        ev.events = EPOLLIN; ev.data.fd = rfd;   epoll_ctl(epfd, EPOLL_CTL_ADD, rfd,     &ev);
+        ev.events = EPOLLIN; ev.data.fd = wfds[0]; epoll_ctl(epfd, EPOLL_CTL_ADD, wfds[0], &ev);
+        ev.events = EPOLLIN; ev.data.fd = tfd;   epoll_ctl(epfd, EPOLL_CTL_ADD, tfd,     &ev);
 
         int epoch = atomic_fetch_add(&g_te, 1) + 1;
-
-        lk(&g_m);
-        g.tf = tfd; g.rf = rfd;
-        g.ef = epfd; g.wr = wfds[0]; g.ww = wfds[1];
-        ul(&g_m);
-
+        lk(&g_m); g.tf = tfd; g.rf = rfd; g.ef = epfd; g.wr = wfds[0]; g.ww = wfds[1]; ul(&g_m);
         wq_init();
 
         thr_t *ta = malloc(sizeof(*ta));
@@ -785,11 +689,10 @@ static void *main_thread(void *arg) {
                     if (evs & EPOLLOUT) {
                         lk(&g_wq_mu);
                         int r = try_flush_wq(tfd, epfd);
-                        size_t wq_bytes = g_wq.bytes;
+                        size_t wb = g_wq.bytes;
                         ul(&g_wq_mu);
                         if (r < 0) { dead = 1; break; }
-                        if (wq_bytes < WRITE_QUEUE_LOW_WATER)
-                            resume_prs(epfd);
+                        if (wb < WRITE_QUEUE_LOW_WATER) resume_prs(epfd);
                     }
                     if (evs & (EPOLLHUP | EPOLLERR)) { dead = 1; break; }
                     continue;
@@ -798,34 +701,21 @@ static void *main_thread(void *arg) {
                 if (efd == rfd) {
                     while (1) {
                         struct sockaddr_in ca; socklen_t cl = sizeof(ca);
-                        int cfd = accept4(rfd, (struct sockaddr *)&ca, &cl,
-                                          SOCK_NONBLOCK | SOCK_CLOEXEC);
+                        int cfd = accept4(rfd, (struct sockaddr *)&ca, &cl, SOCK_NONBLOCK | SOCK_CLOEXEC);
                         if (cfd < 0) break;
-
                         uint32_t sid;
                         do { sid = (uint32_t)atomic_fetch_add(&g_ns, 1) & 0x7FFFFFFF; }
                         while (!sid || ht_get(sid) != -1);
-
                         sinfo_t *si = calloc(1, sizeof(sinfo_t));
                         if (!si) { close(cfd); continue; }
-                        si->sid            = sid;
-                        si->cfd            = cfd;
-                        si->la = nms();
-
-                        ht_put(sid, cfd);
-                        si_put(sid, si);
-
-                        if (tun_enqueue(tfd, epfd, T_OPEN, sid, NULL, 0) < 0) {
-                            ht_del(sid); si_del(sid); close(cfd); free(si);
-                            dead = 1; break;
-                        }
-
-                        struct epoll_event cev;
-                        cev.events   = EPOLLIN;
-                        cev.data.u64 = ((uint64_t)sid << 32) | (uint32_t)cfd;
-                        if (epoll_ctl(epfd, EPOLL_CTL_ADD, cfd, &cev) < 0) {
-                            ht_del(sid); si_del(sid); close(cfd); free(si);
-                        }
+                        si->sid = sid; si->cfd = cfd; si->la = nms();
+                        ht_put(sid, cfd); si_put(sid, si);
+                        if (tun_enqueue(tfd, epfd, T_OPEN, sid, NULL, 0) < 0)
+                            { ht_del(sid); si_del(sid); close(cfd); free(si); dead = 1; break; }
+                        struct epoll_event cev = { EPOLLIN,
+                            { .u64 = ((uint64_t)sid << 32) | (uint32_t)cfd } };
+                        if (epoll_ctl(epfd, EPOLL_CTL_ADD, cfd, &cev) < 0)
+                            { ht_del(sid); si_del(sid); close(cfd); free(si); }
                     }
                     continue;
                 }
@@ -835,8 +725,9 @@ static void *main_thread(void *arg) {
                 sinfo_t *si  = si_get(sid);
 
                 if (evs & (EPOLLERR | EPOLLHUP)) {
-                    if (si) { sc_close(epfd, tfd, sid, si); close(cfd); }
-                    else { epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL); ht_del(sid); close(cfd); tun_enqueue(tfd, epfd, T_CLOSE, sid, NULL, 0); }
+                    if (si) sc_close(epfd, tfd, sid, si);
+                    else { epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL); ht_del(sid); close(cfd);
+                           tun_enqueue(tfd, epfd, T_CLOSE, sid, NULL, 0); }
                     continue;
                 }
 
@@ -844,8 +735,7 @@ static void *main_thread(void *arg) {
                     int drain_done = 0;
                     while (si->lq.head) {
                         chunk_t *c = si->lq.head;
-                        ssize_t ns = send(cfd, c->data + c->offset,
-                                          c->len - c->offset, MSG_NOSIGNAL);
+                        ssize_t ns = send(cfd, c->data + c->offset, c->len - c->offset, MSG_NOSIGNAL);
                         if (ns > 0) {
                             c->offset += (size_t)ns; si->lq.bytes -= (size_t)ns;
                             if (c->offset >= c->len) {
@@ -853,26 +743,17 @@ static void *main_thread(void *arg) {
                                 if (!si->lq.head) si->lq.tail = NULL;
                                 free(c);
                             }
-                        } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                            break;
-                        } else if (errno == EINTR) {
-                            continue;
-                        } else {
-                            sc_close(epfd, tfd, sid, si);
-                            drain_done = -1; break;
-                        }
+                        } else if (errno == EAGAIN || errno == EWOULDBLOCK) { break; }
+                          else if (errno == EINTR) { continue; }
+                          else { sc_close(epfd, tfd, sid, si); drain_done = -1; break; }
                     }
                     if (drain_done < 0) continue;
-
                     if (!si->lq.head) {
-                        si->lq.bytes = 0; si->lq.tail = NULL;
-                        si->ps = 0;
-                        si->la = nms();
-                        if (si->cp) { sc_close(epfd, tfd, sid, si); }
+                        si->lq.bytes = 0; si->lq.tail = NULL; si->ps = 0; si->la = nms();
+                        if (si->cp) sc_close(epfd, tfd, sid, si);
                         else {
-                            struct epoll_event cev;
-                            cev.events   = EPOLLIN;
-                            cev.data.u64 = ((uint64_t)sid << 32) | (uint32_t)cfd;
+                            struct epoll_event cev = { EPOLLIN,
+                                { .u64 = ((uint64_t)sid << 32) | (uint32_t)cfd } };
                             epoll_ctl(epfd, EPOLL_CTL_MOD, cfd, &cev);
                         }
                     }
@@ -883,80 +764,64 @@ static void *main_thread(void *arg) {
                     ssize_t nr = recv(cfd, buf, sizeof(buf), 0);
                     if (nr > 0) {
                         if (si) si->la = nms();
-
                         lk(&g_wq_mu);
                         size_t wq_total = g_wq.bytes + (g_wp ? g_wp->total - g_wp->offset : 0);
                         ul(&g_wq_mu);
-
                         if (wq_total > WRITE_QUEUE_HIGH_WATER && si) {
-                            if (tun_enqueue(tfd, epfd, T_DATA, sid, buf, (uint16_t)nr) < 0) { dead = 1; }
-                            else { si->pr = 1; struct epoll_event cev = { 0, { .u64 = ((uint64_t)sid << 32) | (uint32_t)cfd } }; epoll_ctl(epfd, EPOLL_CTL_MOD, cfd, &cev); }
+                            if (tun_enqueue(tfd, epfd, T_DATA, sid, buf, (uint16_t)nr) < 0) dead = 1;
+                            else {
+                                si->pr = 1;
+                                struct epoll_event cev = { 0,
+                                    { .u64 = ((uint64_t)sid << 32) | (uint32_t)cfd } };
+                                epoll_ctl(epfd, EPOLL_CTL_MOD, cfd, &cev);
+                            }
                         } else {
-                            if (tun_enqueue(tfd, epfd, T_DATA, sid, buf, (uint16_t)nr) < 0)
-                                dead = 1;
+                            if (tun_enqueue(tfd, epfd, T_DATA, sid, buf, (uint16_t)nr) < 0) dead = 1;
                         }
                     } else if (nr == 0) {
-                        if (si) { sc_close(epfd, tfd, sid, si); close(cfd); }
-                        else { epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL); ht_del(sid); close(cfd); tun_enqueue(tfd, epfd, T_CLOSE, sid, NULL, 0); }
+                        if (si) sc_close(epfd, tfd, sid, si);
+                        else { epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL); ht_del(sid); close(cfd);
+                               tun_enqueue(tfd, epfd, T_CLOSE, sid, NULL, 0); }
                     }
                 }
             }
         }
 
         pl("E", "tunnel caido epoch=%d", epoch);
-
         atomic_fetch_add(&g_te, 1);
-        si_close_all(epfd);
-        ht_close_all(-1);
-
-        lk(&g_wq_mu);
-        wq_flush_locked();
-        ul(&g_wq_mu);
-
-        lk(&g_m);
-        g.tf = -1; g.rf = -1; g.ef = -1;
-        g.wr = -1; g.ww   = -1;
-        ul(&g_m);
-
-        close(epfd);
-        close(rfd);
+        si_close_all(epfd); ht_close_all(-1);
+        lk(&g_wq_mu); wq_flush_locked(); ul(&g_wq_mu);
+        lk(&g_m); g.tf = -1; g.rf = -1; g.ef = -1; g.wr = -1; g.ww = -1; ul(&g_m);
+        close(epfd); close(rfd);
         shutdown(tfd, SHUT_RDWR); close(tfd);
         close(wfds[0]); close(wfds[1]);
-
         if (g_r) sleep(3);
     }
-
     return NULL;
 }
+
+/* ── JNI exports ────────────────────────────────────────────────────────── */
 
 JNIEXPORT void JNICALL n_stop(JNIEnv *, jclass);
 
 JNIEXPORT jint JNICALL
-n_start(JNIEnv *env, jclass clazz,
-                                          jint port, jobject svc, jstring iid) {
-    (void)clazz;
+n_start(JNIEnv *env, jclass clazz, jint port, jobject svc, jstring iid) {
+    (void)clazz; (void)svc;
     lk(&g_m);
     if (g_r) { ul(&g_m); return 0; }
     pthread_t old = g.mt;
     ul(&g_m);
 
-    if (old != 0) {
-        pthread_join(old, NULL);
-        lk(&g_m); g.mt = 0; ul(&g_m);
-    }
+    if (old != 0) { pthread_join(old, NULL); lk(&g_m); g.mt = 0; ul(&g_m); }
 
     lk(&g_m);
     g.iid[0] = 0;
     if (iid) {
         const char *s = (*env)->GetStringUTFChars(env, iid, NULL);
-        if (s) { snprintf(g.iid, sizeof(g.iid), "%s", s);
-                 (*env)->ReleaseStringUTFChars(env, iid, s); }
+        if (s) { snprintf(g.iid, sizeof(g.iid), "%s", s); (*env)->ReleaseStringUTFChars(env, iid, s); }
     }
-    pl("I", "using internal_id=%s", g.iid);
-    ht_init();
-    si_init();
-    g_r = 1;
-    atomic_store(&g_ns, 1);
+    ht_init(); si_init();
+    g_r = 1; atomic_store(&g_ns, 1);
     ul(&g_m);
 
     pthread_t thr;
@@ -964,29 +829,24 @@ n_start(JNIEnv *env, jclass clazz,
         lk(&g_m); g_r = 0; ul(&g_m); return -1;
     }
     lk(&g_m); g.mt = thr; ul(&g_m);
-
     pl("I", "nativeStart lanzado");
     return 0;
 }
 
 JNIEXPORT void JNICALL
 n_stop(JNIEnv *env, jclass clazz) {
-    (void)clazz;
+    (void)env; (void)clazz;
     lk(&g_m);
     if (!g_r && g.mt == 0) { ul(&g_m); return; }
-    pthread_t th = g.mt;
-    g.mt = 0;
-    g_r = 0;
-    // g.iid persists across stop/start - don't clear it
-    int rfd  = g.rf;  g.rf  = -1;
-    int tfd  = g.tf;    g.tf    = -1;
-    int epfd = g.ef;  g.ef  = -1;
-    int wr   = g.wr;    g.wr    = -1;
-    int ww   = g.ww;    g.ww    = -1;
+    pthread_t th = g.mt; g.mt = 0; g_r = 0;
+    int rfd = g.rf; g.rf = -1;
+    int tfd = g.tf; g.tf = -1;
+    int epfd = g.ef; g.ef = -1;
+    int wr  = g.wr; g.wr = -1;
+    int ww  = g.ww; g.ww = -1;
     ul(&g_m);
 
     atomic_fetch_add(&g_te, 1);
-
     if (ww   >= 0) { uint8_t b = 1; write(ww, &b, 1); }
     if (epfd >= 0) close(epfd);
     if (rfd  >= 0) { shutdown(rfd, SHUT_RDWR); close(rfd); }
@@ -994,26 +854,30 @@ n_stop(JNIEnv *env, jclass clazz) {
     if (wr   >= 0) close(wr);
     if (ww   >= 0) close(ww);
 
-    si_close_all(-1);
-    ht_close_all(-1);
-
-    lk(&g_wq_mu);
-    wq_flush_locked();
-    ul(&g_wq_mu);
-
+    si_close_all(-1); ht_close_all(-1);
+    lk(&g_wq_mu); wq_flush_locked(); ul(&g_wq_mu);
     if (th) pthread_join(th, NULL);
 }
 
-JNIEXPORT jstring JNICALL
-n_drain(JNIEnv *env, jclass c) {
-    (void)c;
-    lk(&g_lm);
-    if (!g_ll) { ul(&g_lm); return (*env)->NewStringUTF(env, ""); }
-    char out[32768];
-    memcpy(out, g_lb, g_ll); out[g_ll] = 0;
-    g_ll = 0; g_lb[0] = 0;
-    ul(&g_lm);
-    return (*env)->NewStringUTF(env, out);
+JNIEXPORT void JNICALL
+n_set_callback(JNIEnv *env, jclass clazz, jclass cb_cls, jstring method_name) {
+    (void)clazz;
+    lk(&g_cb_mu);
+    if (g_cb_cls) { (*env)->DeleteGlobalRef(env, g_cb_cls); g_cb_cls = NULL; }
+    g_cb_mid = NULL;
+    if (cb_cls && method_name) {
+        const char *mn = (*env)->GetStringUTFChars(env, method_name, NULL);
+        if (mn) {
+            jmethodID mid = (*env)->GetStaticMethodID(env, cb_cls, mn,
+                "(Ljava/lang/String;Ljava/lang/String;)V");
+            if (mid) {
+                g_cb_cls = (*env)->NewGlobalRef(env, cb_cls);
+                g_cb_mid = mid;
+            }
+            (*env)->ReleaseStringUTFChars(env, method_name, mn);
+        }
+    }
+    ul(&g_cb_mu);
 }
 
 JNIEXPORT void JNICALL
@@ -1023,24 +887,21 @@ n_net(JNIEnv *e, jclass c, jlong net) {
 }
 
 static JNINativeMethod g_methods[] = {
-    {"nativeStart",      "(ILandroid/net/VpnService;Ljava/lang/String;)I",
-                         (void *)n_start},
-    {"nativeStop",       "()V",
-                         (void *)n_stop},
-    {"nativeDrainLogs",  "()Ljava/lang/String;",
-                         (void *)n_drain},
-    {"nativeSetNetwork", "(J)V",
-                         (void *)n_net},
+    { "nativeStart",       "(ILandroid/net/VpnService;Ljava/lang/String;)I", (void *)n_start       },
+    { "nativeStop",        "()V",                                             (void *)n_stop        },
+    { "nativeSetCallback", "(Ljava/lang/Class;Ljava/lang/String;)V",         (void *)n_set_callback },
+    { "nativeSetNetwork",  "(J)V",                                            (void *)n_net         },
 };
 
 JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *r) {
     (void)r;
+    g_jvm = vm;
     JNIEnv *env = NULL;
     if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) return JNI_ERR;
     jclass cls = (*env)->FindClass(env, "com/blacktunnel/BtProxy");
     if (!cls) return JNI_ERR;
-    if ((*env)->RegisterNatives(env, cls, g_methods,
-            sizeof(g_methods) / sizeof(g_methods[0])) < 0) return JNI_ERR;
+    if ((*env)->RegisterNatives(env, cls, g_methods, sizeof(g_methods) / sizeof(g_methods[0])) < 0)
+        return JNI_ERR;
     (*env)->DeleteLocalRef(env, cls);
     return JNI_VERSION_1_6;
 }
