@@ -491,10 +491,16 @@ final class BtProxy {
     static void doRegisterCallbacks() {
         if (!NATIVE_READY) return;
         try {
-            nativeSetCallback(BtVpnService.class, "onLog");
-            nativeSetStateCallback(BtVpnService.class, "onStateChange");
+            Class<?> svcClass = Class.forName("com.blacktunnel.BtVpnService");
+            android.util.Log.d("BtProxy", "Registering on: " + svcClass.getName());
+            svcClass.getMethod("onLog", String.class, String.class);
+            svcClass.getMethod("onStateChange", String.class);
+            android.util.Log.d("BtProxy", "Methods found OK");
+            nativeSetCallback(svcClass, "onLog");
+            nativeSetStateCallback(svcClass, "onStateChange");
+            android.util.Log.d("BtProxy", "Callbacks registered");
         } catch (Throwable t) {
-            android.util.Log.e("BtProxy", "Failed to register callbacks", t);
+            android.util.Log.e("BtProxy", "Failed: " + t, t);
         }
     }
 
