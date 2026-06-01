@@ -477,7 +477,7 @@ final class BtProxy {
         stateListener = l;
     }
 
-    private static void doRegisterCallbacks() {
+    static void doRegisterCallbacks() {
         if (!NATIVE_READY) return;
         try {
             nativeSetCallback(BtProxy.class, "onLog");
