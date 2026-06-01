@@ -927,26 +927,6 @@ n_set_state_callback(JNIEnv *env, jclass clazz, jclass cb_cls, jstring method_na
 }
 
 JNIEXPORT void JNICALL
-n_set_state_callback(JNIEnv *env, jclass clazz, jclass cb_cls, jstring method_name) {
-    (void)clazz;
-    lk(&g_st_mu);
-    if (g_st_cls) { (*env)->DeleteGlobalRef(env, g_st_cls); g_st_cls = NULL; }
-    g_st_mid = NULL;
-    if (cb_cls && method_name) {
-        const char *mn = (*env)->GetStringUTFChars(env, method_name, NULL);
-        if (mn) {
-            jmethodID mid = (*env)->GetStaticMethodID(env, cb_cls, mn, "(Ljava/lang/String;)V");
-            if (mid) {
-                g_st_cls = (*env)->NewGlobalRef(env, cb_cls);
-                g_st_mid = mid;
-            }
-            (*env)->ReleaseStringUTFChars(env, method_name, mn);
-        }
-    }
-    ul(&g_st_mu);
-}
-
-JNIEXPORT void JNICALL
 n_net(JNIEnv *e, jclass c, jlong net) {
     (void)e; (void)c;
     lk(&g_m); g.net = (net_handle_t)net; ul(&g_m);
