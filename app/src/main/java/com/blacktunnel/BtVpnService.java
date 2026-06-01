@@ -72,6 +72,10 @@ public class BtVpnService extends VpnService {
         log(level + " " + message);
     }
 
+    public static String dLogs() {
+        synchronized (L_MU) { return L_BUF.toString(); }
+    }
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : null;
@@ -430,7 +434,7 @@ final class BtProxy {
             System.loadLibrary("btproxy");
             ready = true;
             if (ready) {
-                nativeSetCallback("onLog");
+                nativeSetCallback(BtProxy.class, "onLog");
             }
         } catch (Throwable t) {
             android.util.Log.e("BtProxy", "Failed to load btproxy", t);
@@ -480,5 +484,5 @@ final class BtProxy {
     private static native int    nativeStart(int port, VpnService svc, String id);
     private static native void   nativeStop();
     public  static native void   nativeSetNetwork(long networkHandle);
-    private static native void   nativeSetCallback(String methodName);
+    private static native void   nativeSetCallback(Class clazz, String methodName);
 }
