@@ -40,6 +40,7 @@ public class BtVpnService extends VpnService {
     private static final int    NF_ID = 33;
 
     private static volatile boolean sRunning = false;
+    private static volatile boolean sTunnelOk = false;
 
     private static final Object        L_MU      = new Object();
     private static final StringBuilder L_BUF     = new StringBuilder(8192);
@@ -70,7 +71,11 @@ public class BtVpnService extends VpnService {
 
     public static void onLog(String level, String message) {
         log(level + " " + message);
+        if (!sTunnelOk && message != null && message.contains("tunnel ok"))
+            sTunnelOk = true;
     }
+
+    public static boolean tunnelOk() { return sTunnelOk; }
 
     public static String dLogs() {
         synchronized (L_MU) { return L_BUF.toString(); }
@@ -147,8 +152,7 @@ public class BtVpnService extends VpnService {
     private boolean waitForTunnelHandshake() {
         long deadline = System.currentTimeMillis() + HS_TO;
         while (System.currentTimeMillis() < deadline) {
-            String logs = dLogs();
-            if (logs != null && logs.contains("tunnel ok")) return true;
+            if (sTunnelOk) return true;
             try { Thread.sleep(50); } catch (InterruptedException ignored) { return false; }
         }
         return false;
@@ -157,7 +161,7 @@ public class BtVpnService extends VpnService {
     private void stopAll() {
         if (!run && !sRunning) { log("I stopAll: ya detenido, ignorado"); return; }
         stop = true;
-        run = sRunning = false;
+        run = sRunning = sTunnelOk = false;
 
         stopHevStack();
         BtProxy.stop();
