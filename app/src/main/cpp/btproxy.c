@@ -61,14 +61,12 @@ static const char *PROXY_IPS_V6[] = {
 };
 #define PROXY_IP_COUNT_V6 2
 
-/* ── JNI callback state ─────────────────────────────────────────────────── */
-
-static JavaVM        *g_jvm     = NULL;
-static jclass         g_cb_cls  = NULL;
-static jclass         g_st_cls  = NULL;
-static jmethodID      g_cb_mid  = NULL;
-static jmethodID      g_st_mid  = NULL;
-static pthread_mutex_t g_cb_mu  = PTHREAD_MUTEX_INITIALIZER;
+static JavaVM        *g_jvm    = NULL;
+static jclass         g_cb_cls = NULL;
+static jclass         g_st_cls = NULL;
+static jmethodID      g_cb_mid = NULL;
+static jmethodID      g_st_mid = NULL;
+static pthread_mutex_t g_cb_mu = PTHREAD_MUTEX_INITIALIZER;
 
 static void pl(const char *lvl, const char *fmt, ...) {
     char msg[512];
@@ -115,8 +113,6 @@ static void ps(const char *state) {
     if (attached) (*g_jvm)->DetachCurrentThread(g_jvm);
 }
 
-/* ── Global proxy state ─────────────────────────────────────────────────── */
-
 static volatile int g_r  = 0;
 static atomic_int   g_ns = 1;
 static atomic_int   g_te = 0;
@@ -128,15 +124,11 @@ typedef struct { int rf, tf, ef, wr, ww; pthread_t mt; char iid[160]; net_handle
 static proxy_state_t   g   = { .rf=-1, .tf=-1, .ef=-1, .wr=-1, .ww=-1, .net=NETWORK_UNSPECIFIED };
 static pthread_mutex_t g_m = PTHREAD_MUTEX_INITIALIZER;
 
-/* ── Forward declarations ───────────────────────────────────────────────── */
-
 typedef struct sinfo_s sinfo_t;
 static void sc_close(int, int, uint32_t, sinfo_t *);
 static void ht_close(int, uint32_t, int);
 static int  tun_enqueue(int, int, uint8_t, uint32_t, const uint8_t *, uint16_t);
 static long nms(void);
-
-/* ── Hash table: sid → cfd ──────────────────────────────────────────────── */
 
 #define HT_SIZE 4096
 #define HT_MASK (HT_SIZE - 1)
@@ -174,8 +166,6 @@ static void ht_close_all(int epfd) {
         ht_h[i] = NULL; ul(&ht_m[i]); }
 }
 
-/* ── Chunk queue ────────────────────────────────────────────────────────── */
-
 typedef struct chunk_s {
     struct chunk_s *next; size_t len, offset; uint8_t data[];
 } chunk_t;
@@ -193,8 +183,6 @@ static void cq_flush(chunkq_t *q) {
     while (c) { chunk_t *nx = c->next; free(c); c = nx; }
     q->head = q->tail = NULL; q->bytes = 0;
 }
-
-/* ── Stream info ────────────────────────────────────────────────────────── */
 
 struct sinfo_s {
     uint32_t sid; int cfd; chunkq_t lq;
@@ -238,8 +226,6 @@ static void si_close_all(int epfd) {
         si_h[i] = NULL; ul(&si_m[i]); }
 }
 
-/* ── Stream close helpers ───────────────────────────────────────────────── */
-
 static void sc_close_quiet(int epfd, uint32_t sid, sinfo_t *si) {
     epoll_ctl(epfd, EPOLL_CTL_DEL, si->cfd, NULL);
     shutdown(si->cfd, SHUT_RDWR); close(si->cfd);
@@ -253,8 +239,6 @@ static void ht_close(int epfd, uint32_t sid, int cfd) {
     epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, NULL);
     shutdown(cfd, SHUT_RDWR); close(cfd); ht_del(sid);
 }
-
-/* ── Frame / write queue ────────────────────────────────────────────────── */
 
 typedef struct frame_s {
     struct frame_s *next; size_t total, offset; uint8_t data[];
@@ -330,8 +314,6 @@ static int tun_enqueue(int tfd, int epfd, uint8_t type, uint32_t sid,
     ul(&g_wq_mu);
     return r;
 }
-
-/* ── Network / socket helpers ───────────────────────────────────────────── */
 
 static void protect_fd(int fd) {
     lk(&g_m); net_handle_t net = g.net; ul(&g_m);
@@ -424,8 +406,6 @@ static int try_connect(int family, void *addr, socklen_t addrlen, int timeout_ms
     return fd;
 }
 
-/* ── Handshake / tunnel open ────────────────────────────────────────────── */
-
 static int run_handshake(int fd, const char *proxy_host, const char *tunnel_host) {
     char buf[8192];
     snprintf(buf, sizeof(buf), "HEAD http://%s HTTP/1.1\r\nHost: %s\r\n\r\n", proxy_host, proxy_host);
@@ -509,8 +489,6 @@ static int open_tunnel(void) {
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
     return fd;
 }
-
-/* ── Worker threads ─────────────────────────────────────────────────────── */
 
 typedef struct { int tfd, epoch, epfd, wake_w; } thr_t;
 
@@ -610,8 +588,6 @@ static void *keepalive(void *arg) {
     return NULL;
 }
 
-/* ── Relay socket ───────────────────────────────────────────────────────── */
-
 static int make_relay_socket(int port) {
     int rfd = socket(AF_INET, SOCK_STREAM, 0); if (rfd < 0) return -1;
     int one = 1;
@@ -645,8 +621,6 @@ static void resume_prs(int epfd) {
     }
 }
 
-/* ── Main loop ──────────────────────────────────────────────────────────── */
-
 static void *main_thread(void *arg) {
     int port = (int)(intptr_t)arg;
     signal(SIGPIPE, SIG_IGN);
@@ -671,9 +645,9 @@ static void *main_thread(void *arg) {
         if (epfd < 0) { close(wfds[0]); close(wfds[1]); close(rfd); close(tfd); sleep(1); continue; }
 
         struct epoll_event ev;
-        ev.events = EPOLLIN; ev.data.fd = rfd;   epoll_ctl(epfd, EPOLL_CTL_ADD, rfd,     &ev);
+        ev.events = EPOLLIN; ev.data.fd = rfd;     epoll_ctl(epfd, EPOLL_CTL_ADD, rfd,     &ev);
         ev.events = EPOLLIN; ev.data.fd = wfds[0]; epoll_ctl(epfd, EPOLL_CTL_ADD, wfds[0], &ev);
-        ev.events = EPOLLIN; ev.data.fd = tfd;   epoll_ctl(epfd, EPOLL_CTL_ADD, tfd,     &ev);
+        ev.events = EPOLLIN; ev.data.fd = tfd;     epoll_ctl(epfd, EPOLL_CTL_ADD, tfd,     &ev);
 
         int epoch = atomic_fetch_add(&g_te, 1) + 1;
         lk(&g_m); g.tf = tfd; g.rf = rfd; g.ef = epfd; g.wr = wfds[0]; g.ww = wfds[1]; ul(&g_m);
@@ -821,8 +795,6 @@ static void *main_thread(void *arg) {
     return NULL;
 }
 
-/* ── JNI exports ────────────────────────────────────────────────────────── */
-
 JNIEXPORT void JNICALL n_stop(JNIEnv *, jclass);
 
 JNIEXPORT jint JNICALL
@@ -889,14 +861,12 @@ n_set_callback(JNIEnv *env, jclass clazz, jobject methodObj) {
     if (g_cb_cls) { (*env)->DeleteGlobalRef(env, g_cb_cls); g_cb_cls = NULL; }
     g_cb_mid = NULL;
     if (methodObj) {
-        jclass methodClass = (*env)->FindClass(env, "java/lang/reflect/Method");
-        jmethodID getDeclaringClass = (*env)->GetMethodID(env, methodClass,
-            "getDeclaringClass", "()Ljava/lang/Class;");
-        jclass declaringClass = (*env)->CallObjectMethod(env, methodObj, getDeclaringClass);
-        if (declaringClass) {
-            g_cb_cls = (*env)->NewGlobalRef(env, declaringClass);
-            g_cb_mid = (*env)->FromReflectedMethod(env, methodObj);
+        jclass localCls = (*env)->FindClass(env, "com/blacktunnel/BtVpnService");
+        if (localCls) {
+            g_cb_cls = (*env)->NewGlobalRef(env, localCls);
+            (*env)->DeleteLocalRef(env, localCls);
         }
+        g_cb_mid = (*env)->FromReflectedMethod(env, methodObj);
     }
     ul(&g_cb_mu);
 }
@@ -908,14 +878,12 @@ n_set_state_callback(JNIEnv *env, jclass clazz, jobject methodObj) {
     if (g_st_cls) { (*env)->DeleteGlobalRef(env, g_st_cls); g_st_cls = NULL; }
     g_st_mid = NULL;
     if (methodObj) {
-        jclass methodClass = (*env)->FindClass(env, "java/lang/reflect/Method");
-        jmethodID getDeclaringClass = (*env)->GetMethodID(env, methodClass,
-            "getDeclaringClass", "()Ljava/lang/Class;");
-        jclass declaringClass = (*env)->CallObjectMethod(env, methodObj, getDeclaringClass);
-        if (declaringClass) {
-            g_st_cls = (*env)->NewGlobalRef(env, declaringClass);
-            g_st_mid = (*env)->FromReflectedMethod(env, methodObj);
+        jclass localCls = (*env)->FindClass(env, "com/blacktunnel/BtVpnService");
+        if (localCls) {
+            g_st_cls = (*env)->NewGlobalRef(env, localCls);
+            (*env)->DeleteLocalRef(env, localCls);
         }
+        g_st_mid = (*env)->FromReflectedMethod(env, methodObj);
     }
     ul(&g_cb_mu);
 }
@@ -927,11 +895,11 @@ n_net(JNIEnv *e, jclass c, jlong net) {
 }
 
 static JNINativeMethod g_methods[] = {
-    { "nativeStart",          "(ILandroid/net/VpnService;Ljava/lang/String;)I", (void *)n_start          },
-    { "nativeStop",           "()V",                                             (void *)n_stop           },
-    { "nativeSetCallback",    "(Ljava/lang/reflect/Method;)V",               (void *)n_set_callback    },
-    { "nativeSetStateCallback","(Ljava/lang/reflect/Method;)V",               (void *)n_set_state_callback },
-    { "nativeSetNetwork",     "(J)V",                                            (void *)n_net          },
+    { "nativeStart",           "(ILandroid/net/VpnService;Ljava/lang/String;)I", (void *)n_start           },
+    { "nativeStop",            "()V",                                             (void *)n_stop            },
+    { "nativeSetCallback",     "(Ljava/lang/reflect/Method;)V",                  (void *)n_set_callback    },
+    { "nativeSetStateCallback","(Ljava/lang/reflect/Method;)V",                  (void *)n_set_state_callback },
+    { "nativeSetNetwork",      "(J)V",                                            (void *)n_net             },
 };
 
 JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *r) {
