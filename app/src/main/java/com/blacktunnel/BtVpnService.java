@@ -135,6 +135,7 @@ public class BtVpnService extends VpnService {
         BtProxy.stop();
         cleanupSessionResources();
 
+        BtProxy.doRegisterCallbacks();
         String iid = BtProxy.gIid(this);
         if (BtProxy.start(this, iid) < 0)        { abortStart("E btproxy start failed");      return; }
         if (!waitForTunnelHandshake())             { abortStart("E tunnel handshake timeout");   return; }
@@ -447,7 +448,14 @@ final class BtProxy {
     static java.util.function.Consumer<String> logListener;
     static java.util.function.Consumer<String> stateListener;
 
-    static { System.loadLibrary("btproxy"); NATIVE_READY = true; }
+    static {
+        try {
+            System.loadLibrary("btproxy");
+            NATIVE_READY = true;
+        } catch (Throwable t) {
+            android.util.Log.e("BtProxy", "Failed to load btproxy", t);
+        }
+    }
 
     static boolean isNativeReady() { return NATIVE_READY; }
 
@@ -463,12 +471,20 @@ final class BtProxy {
 
     static void setLogListener(java.util.function.Consumer<String> l) {
         logListener = l;
-        if (l != null) nativeSetCallback(BtProxy.class, "onLog");
     }
 
     static void setStateListener(java.util.function.Consumer<String> l) {
         stateListener = l;
-        if (l != null) nativeSetStateCallback(BtProxy.class, "onStateChange");
+    }
+
+    private static void doRegisterCallbacks() {
+        if (!NATIVE_READY) return;
+        try {
+            nativeSetCallback(BtProxy.class, "onLog");
+            nativeSetStateCallback(BtProxy.class, "onStateChange");
+        } catch (Throwable t) {
+            android.util.Log.e("BtProxy", "Failed to register callbacks", t);
+        }
     }
 
     static String gIid(Context ctx) {
