@@ -134,11 +134,22 @@ public class BtVpnService extends VpnService {
 
         BtProxy.stop();
         cleanupSessionResources();
-
         BtProxy.doRegisterCallbacks();
+
+        sTunnelOk = false;
+        sTunnelLatch = new java.util.concurrent.CountDownLatch(1);
+
         String iid = BtProxy.gIid(this);
-        if (BtProxy.start(this, iid) < 0)        { abortStart("E btproxy start failed");      return; }
-        if (!waitForTunnelHandshake())             { abortStart("E tunnel handshake timeout");   return; }
+        if (BtProxy.start(this, iid) < 0) {
+            sTunnelLatch = null;
+            abortStart("E btproxy start failed");
+            return;
+        }
+
+        boolean ok = false;
+        try { ok = sTunnelLatch.await(HS_TO, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+        sTunnelLatch = null;
+        if (!ok) { abortStart("E tunnel handshake timeout"); return; }
 
         registerNet();
         if (!startHevStack())                     { unregisterNet(); abortStart("E startHevStack failed"); return; }
