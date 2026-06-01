@@ -39,13 +39,13 @@ public class BtVpnService extends VpnService {
     private static final String CH_ID = "bt_vpn";
     private static final int    NF_ID = 33;
 
-    private static volatile boolean sRunning = false;
-    private static volatile boolean sTunnelOk = false;
+    private static final Object L_MU = new Object();
+    private static final StringBuilder L_BUF = new StringBuilder(8192);
+    private static final int L_MAX = 24000;
+    private static final long HS_TO = 12000L;
 
-    private static final Object        L_MU      = new Object();
-    private static final StringBuilder L_BUF     = new StringBuilder(8192);
-    private static final int           L_MAX     = 24000;
-    private static final long          HS_TO     = 12000L;
+    private static boolean sTunnelOk = false;
+    private static volatile boolean sRunning = false;
 
     private final ExecutorService ex = Executors.newSingleThreadExecutor();
 
@@ -141,7 +141,7 @@ public class BtVpnService extends VpnService {
     }
 
     private void recoverFromCrash() {
-        run = false; stop = false; sRunning = false;
+        run = false; stop = false; sRunning = false; sTunnelOk = false;
         try { stopHevStack(); } catch (Throwable ignored) {}
         try { BtProxy.stop(); } catch (Throwable ignored) {}
         try { unregisterNet(); } catch (Throwable ignored) {}
