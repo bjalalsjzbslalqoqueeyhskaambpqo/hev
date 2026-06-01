@@ -443,7 +443,7 @@ final class BtProxy {
     private static final String PREFS           = "strike_prefs";
     private static final String KEY_INTERNAL_ID = "internal_id";
 
-    private static final boolean NATIVE_READY = false;
+    private static boolean NATIVE_READY = false;
 
     static java.util.function.Consumer<String> logListener;
     static java.util.function.Consumer<String> stateListener;
