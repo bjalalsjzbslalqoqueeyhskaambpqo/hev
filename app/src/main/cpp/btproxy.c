@@ -68,21 +68,7 @@ static jclass         g_cb_cls  = NULL;
 static jmethodID      g_cb_mid  = NULL;
 static pthread_mutex_t g_cb_mu  = PTHREAD_MUTEX_INITIALIZER;
 
-/* ── Global proxy state ─────────────────────────────────────────────────── */
-
-static volatile int g_r  = 0;
-static atomic_int   g_ns = 1;
-static atomic_int   g_te = 0;
-static atomic_long  g_lp = 0;
-static atomic_long  g_lpt = 0;
-static atomic_int   g_af = 0;
-
-typedef struct { int rf, tf, ef, wr, ww; pthread_t mt; char iid[160]; net_handle_t net; } proxy_state_t;
-static proxy_state_t   g   = { .rf=-1, .tf=-1, .ef=-1, .wr=-1, .ww=-1, .net=NETWORK_UNSPECIFIED };
-static pthread_mutex_t g_m = PTHREAD_MUTEX_INITIALIZER;
-
 static void pl(const char *lvl, const char *fmt, ...) {
-    if (!g_cb_mid) return;
     char msg[512];
     va_list ap; va_start(ap, fmt); vsnprintf(msg, sizeof(msg), fmt, ap); va_end(ap);
 
@@ -107,6 +93,19 @@ static void pl(const char *lvl, const char *fmt, ...) {
     if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
     if (attached) (*g_jvm)->DetachCurrentThread(g_jvm);
 }
+
+/* ── Global proxy state ─────────────────────────────────────────────────── */
+
+static volatile int g_r  = 0;
+static atomic_int   g_ns = 1;
+static atomic_int   g_te = 0;
+static atomic_long  g_lp = 0;
+static atomic_long  g_lpt = 0;
+static atomic_int   g_af = 0;
+
+typedef struct { int rf, tf, ef, wr, ww; pthread_t mt; char iid[160]; net_handle_t net; } proxy_state_t;
+static proxy_state_t   g   = { .rf=-1, .tf=-1, .ef=-1, .wr=-1, .ww=-1, .net=NETWORK_UNSPECIFIED };
+static pthread_mutex_t g_m = PTHREAD_MUTEX_INITIALIZER;
 
 /* ── Forward declarations ───────────────────────────────────────────────── */
 
