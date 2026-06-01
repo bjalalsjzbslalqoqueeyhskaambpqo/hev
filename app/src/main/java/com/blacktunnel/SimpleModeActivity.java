@@ -27,6 +27,7 @@ public class SimpleModeActivity extends ComponentActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        android.util.Log.d("SMA", "onCreate: BEGIN");
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_simple_mode);
 
@@ -35,7 +36,9 @@ public class SimpleModeActivity extends ComponentActivity {
         status  = findViewById(R.id.txtStatus);
         logView = findViewById(R.id.txtLog);
 
+        android.util.Log.d("SMA", "onCreate: views bound, registering listeners");
         btn.setOnClickListener(v -> {
+            android.util.Log.d("SMA", "onClick: state=" + state);
             if (state == State.DISCONNECTED) startVpn();
             else stopVpn();
         });
@@ -45,8 +48,11 @@ public class SimpleModeActivity extends ComponentActivity {
             cm.setPrimaryClip(ClipData.newPlainText("logs", logView.getText()));
         });
 
+        android.util.Log.d("SMA", "onCreate: calling BtProxy.setLogListener");
         BtProxy.setLogListener(this::onLogReceived);
+        android.util.Log.d("SMA", "onCreate: calling BtProxy.setStateListener");
         BtProxy.setStateListener(this::onStateReceived);
+        android.util.Log.d("SMA", "onCreate: DONE, state=" + state);
     }
 
     private void onLogReceived(String line) {

@@ -72,8 +72,10 @@ public class BtVpnService extends VpnService {
 
     public static void onLog(String level, String message) {
         String line = level + " " + message;
+        android.util.Log.d("BtVpnService", "onLog: " + line);
         log(line);
         if (!sTunnelOk && message != null && message.contains("tunnel ok")) {
+            android.util.Log.d("BtVpnService", "onLog: TUNNEL OK DETECTED, countdown");
             sTunnelOk = true;
             if (sTunnelLatch != null) { sTunnelLatch.countDown(); sTunnelLatch = null; }
         }
@@ -83,6 +85,7 @@ public class BtVpnService extends VpnService {
     public static boolean tunnelOk() { return sTunnelOk; }
 
     public static void onStateChange(String state) {
+        android.util.Log.d("BtVpnService", "onStateChange: " + state);
         switch (state) {
             case "running": sRunning = true; break;
             case "stopped": sRunning = false; break;
@@ -119,6 +122,7 @@ public class BtVpnService extends VpnService {
     }
 
     private void startAll() {
+        log("D startAll: BEGIN");
         if (stop) {
             log("W startAll: stop en progreso, reintentando breve");
             try { Thread.sleep(450); } catch (InterruptedException ignored) { return; }
@@ -128,28 +132,37 @@ public class BtVpnService extends VpnService {
 
         createChannel();
         startForeground(NF_ID, buildNotif());
+        log("D startAll: notification started");
 
         Intent prep = VpnService.prepare(this);
         if (prep != null) { log("W VPN not authorized"); startActivity(prep); stopForeground(STOP_FOREGROUND_REMOVE); return; }
+        log("D startAll: VPN authorized");
 
+        log("D startAll: calling BtProxy.stop()");
         BtProxy.stop();
         cleanupSessionResources();
+        log("D startAll: stopped, registering callbacks");
         BtProxy.doRegisterCallbacks();
+        log("D startAll: callbacks registered, preparing latch");
 
         sTunnelOk = false;
         sTunnelLatch = new java.util.concurrent.CountDownLatch(1);
 
         String iid = BtProxy.gIid(this);
+        log("D startAll: iid=" + iid + ", calling BtProxy.start()");
         if (BtProxy.start(this, iid) < 0) {
             sTunnelLatch = null;
+            log("E startAll: btproxy.start returned -1");
             abortStart("E btproxy start failed");
             return;
         }
+        log("D startAll: btproxy.start returned OK, awaiting tunnel handshake");
 
         boolean ok = false;
         try { ok = sTunnelLatch.await(HS_TO, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+        log("D startAll: latch released, ok=" + ok);
         sTunnelLatch = null;
-        if (!ok) { abortStart("E tunnel handshake timeout"); return; }
+        if (!ok) { log("E startAll: tunnel handshake TIMEOUT"); abortStart("E tunnel handshake timeout"); return; }
 
         registerNet();
         if (!startHevStack())                     { unregisterNet(); abortStart("E startHevStack failed"); return; }
@@ -481,26 +494,30 @@ final class BtProxy {
     }
 
     static void setLogListener(java.util.function.Consumer<String> l) {
+        android.util.Log.d("BtProxy", "setLogListener: l=" + (l != null));
         logListener = l;
     }
 
     static void setStateListener(java.util.function.Consumer<String> l) {
+        android.util.Log.d("BtProxy", "setStateListener: l=" + (l != null));
         stateListener = l;
     }
 
     static void doRegisterCallbacks() {
+        android.util.Log.d("BtProxy", "doRegisterCallbacks: NATIVE_READY=" + NATIVE_READY);
         if (!NATIVE_READY) return;
         try {
             Class<?> svcClass = Class.forName("com.blacktunnel.BtVpnService");
-            android.util.Log.d("BtProxy", "Registering on: " + svcClass.getName());
+            android.util.Log.d("BtProxy", "doRegisterCallbacks: class=" + svcClass.getName());
             svcClass.getMethod("onLog", String.class, String.class);
             svcClass.getMethod("onStateChange", String.class);
-            android.util.Log.d("BtProxy", "Methods found OK");
+            android.util.Log.d("BtProxy", "doRegisterCallbacks: methods verified, calling nativeSetCallback");
             nativeSetCallback(svcClass, "onLog");
+            android.util.Log.d("BtProxy", "doRegisterCallbacks: nativeSetCallback done, calling nativeSetStateCallback");
             nativeSetStateCallback(svcClass, "onStateChange");
-            android.util.Log.d("BtProxy", "Callbacks registered");
+            android.util.Log.d("BtProxy", "doRegisterCallbacks: ALL DONE");
         } catch (Throwable t) {
-            android.util.Log.e("BtProxy", "Failed: " + t, t);
+            android.util.Log.e("BtProxy", "doRegisterCallbacks: FAILED: " + t, t);
         }
     }
 
