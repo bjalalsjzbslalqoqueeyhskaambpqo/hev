@@ -504,17 +504,15 @@ final class BtProxy {
     }
 
     static void doRegisterCallbacks() {
-        android.util.Log.d("BtProxy", "doRegisterCallbacks: NATIVE_READY=" + NATIVE_READY);
-        if (!NATIVE_READY) return;
+        android.util.Log.d("BtProxy", "doRegisterCallbacks: BEGIN");
+        if (!NATIVE_READY) { android.util.Log.d("BtProxy", "doRegisterCallbacks: NATIVE_READY=false, skip"); return; }
         try {
             Class<?> svcClass = Class.forName("com.blacktunnel.BtVpnService");
-            android.util.Log.d("BtProxy", "doRegisterCallbacks: class=" + svcClass.getName());
-            svcClass.getMethod("onLog", String.class, String.class);
-            svcClass.getMethod("onStateChange", String.class);
-            android.util.Log.d("BtProxy", "doRegisterCallbacks: methods verified, calling nativeSetCallback");
-            nativeSetCallback(svcClass, "onLog");
-            android.util.Log.d("BtProxy", "doRegisterCallbacks: nativeSetCallback done, calling nativeSetStateCallback");
-            nativeSetStateCallback(svcClass, "onStateChange");
+            java.lang.reflect.Method mLog = svcClass.getMethod("onLog", String.class, String.class);
+            java.lang.reflect.Method mState = svcClass.getMethod("onStateChange", String.class);
+            android.util.Log.d("BtProxy", "doRegisterCallbacks: methods found, registering...");
+            nativeSetCallback(mLog);
+            nativeSetStateCallback(mState);
             android.util.Log.d("BtProxy", "doRegisterCallbacks: ALL DONE");
         } catch (Throwable t) {
             android.util.Log.e("BtProxy", "doRegisterCallbacks: FAILED: " + t, t);
@@ -551,6 +549,6 @@ final class BtProxy {
     private static native int    nativeStart(int port, VpnService svc, String id);
     private static native void   nativeStop();
     public  static native void   nativeSetNetwork(long networkHandle);
-    private static native void   nativeSetCallback(Class clazz, String methodName);
-    private static native void   nativeSetStateCallback(Class clazz, String methodName);
+    private static native void nativeSetCallback(java.lang.reflect.Method m);
+    private static native void nativeSetStateCallback(java.lang.reflect.Method m);
 }
