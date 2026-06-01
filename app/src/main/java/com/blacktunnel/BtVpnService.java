@@ -480,8 +480,8 @@ final class BtProxy {
     static void doRegisterCallbacks() {
         if (!NATIVE_READY) return;
         try {
-            nativeSetCallback(BtProxy.class, "onLog");
-            nativeSetStateCallback(BtProxy.class, "onStateChange");
+            nativeSetCallback(BtVpnService.class, "onLog");
+            nativeSetStateCallback(BtVpnService.class, "onStateChange");
         } catch (Throwable t) {
             android.util.Log.e("BtProxy", "Failed to register callbacks", t);
         }
