@@ -5,22 +5,25 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.widget.Button;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import androidx.activity.ComponentActivity;
-import java.util.concurrent.Executors;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 public class SimpleModeActivity extends ComponentActivity {
 
     private enum State { DISCONNECTED, CONNECTING, CONNECTED }
 
-    private State       state   = State.DISCONNECTED;
-    private Button      btn;
-    private Button      copyBtn;
-    private TextView    status;
-    private TextView    logView;
-    private StringBuilder fullLog = new StringBuilder();
+    private State state = State.DISCONNECTED;
+    private Button btn;
+    private Button copyBtn;
+    private TextView status;
+    private TextView logView;
+    private final CopyOnWriteArrayList<String> pendingLogs = new CopyOnWriteArrayList<>();
+    private final Handler ui = new Handler(Looper.getMainLooper());
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -39,10 +42,34 @@ public class SimpleModeActivity extends ComponentActivity {
 
         copyBtn.setOnClickListener(v -> {
             ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-            cm.setPrimaryClip(ClipData.newPlainText("logs", fullLog.toString()));
+            cm.setPrimaryClip(ClipData.newPlainText("logs", logView.getText()));
         });
 
-        startMonitoring();
+        BtProxy.setLogListener(this::onLogReceived);
+        BtProxy.setStateListener(this::onStateReceived);
+    }
+
+    private void onLogReceived(String line) {
+        ui.post(() -> {
+            appendLog(line + "\n");
+        });
+    }
+
+    private void onStateReceived(String stateStr) {
+        ui.post(() -> {
+            switch (stateStr) {
+                case "running" -> {
+                    if (state == State.CONNECTING) {
+                        state = State.CONNECTED;
+                        updateUi();
+                    }
+                }
+                case "stopped" -> {
+                    state = State.DISCONNECTED;
+                    updateUi();
+                }
+            }
+        });
     }
 
     private void startVpn() {
@@ -60,9 +87,6 @@ public class SimpleModeActivity extends ComponentActivity {
         Intent intent = new Intent(this, BtVpnService.class);
         intent.setAction(BtVpnService.ACTION_STOP);
         startService(intent);
-
-        state = State.DISCONNECTED;
-        updateUi();
     }
 
     private void updateUi() {
@@ -86,39 +110,14 @@ public class SimpleModeActivity extends ComponentActivity {
     }
 
     private void appendLog(String line) {
-        fullLog.append(line);
-        runOnUiThread(() -> {
-            logView.setText(fullLog.toString());
-            ((ScrollView) logView.getParent()).scrollTo(0, logView.getHeight());
-        });
-    }
-
-    private void startMonitoring() {
-        Executors.newSingleThreadExecutor().submit(() -> {
-            while (true) {
-                String logs = BtVpnService.dLogs();
-                if (logs != null && !logs.isEmpty()) {
-                    String[] lines = logs.split("\n");
-                    for (String line : lines) {
-                        if (!line.trim().isEmpty()) appendLog(line + "\n");
-                    }
-                }
-
-                if (BtVpnService.tunnelOk() && state == State.CONNECTING) {
-                    state = State.CONNECTED;
-                    runOnUiThread(this::updateUi);
-                }
-                if (!BtVpnService.iRun() && state != State.DISCONNECTED) {
-                    state = State.DISCONNECTED;
-                    runOnUiThread(this::updateUi);
-                }
-                try { Thread.sleep(200); } catch (InterruptedException ignored) {}
-            }
-        });
+        logView.append(line);
+        ((ScrollView) logView.getParent()).scrollTo(0, logView.getHeight());
     }
 
     @Override
     protected void onDestroy() {
+        BtProxy.setLogListener(null);
+        BtProxy.setStateListener(null);
         super.onDestroy();
     }
 }

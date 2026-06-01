@@ -65,8 +65,11 @@ static const char *PROXY_IPS_V6[] = {
 
 static JavaVM        *g_jvm     = NULL;
 static jclass         g_cb_cls  = NULL;
+static jclass         g_st_cls  = NULL;
 static jmethodID      g_cb_mid  = NULL;
+static jmethodID      g_st_mid  = NULL;
 static pthread_mutex_t g_cb_mu  = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_st_mu  = PTHREAD_MUTEX_INITIALIZER;
 
 static void pl(const char *lvl, const char *fmt, ...) {
     char msg[512];
@@ -90,6 +93,25 @@ static void pl(const char *lvl, const char *fmt, ...) {
     if (jlvl && jmsg) (*env)->CallStaticVoidMethod(env, cls, mid, jlvl, jmsg);
     if (jlvl) (*env)->DeleteLocalRef(env, jlvl);
     if (jmsg) (*env)->DeleteLocalRef(env, jmsg);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (attached) (*g_jvm)->DetachCurrentThread(g_jvm);
+}
+
+static void ps(const char *state) {
+    if (!g_st_mid) return;
+    JNIEnv *env = NULL;
+    int attached = 0;
+    lk(&g_st_mu);
+    jclass cls = g_st_cls; jmethodID mid = g_st_mid;
+    ul(&g_st_mu);
+    if (!cls || !mid || !g_jvm) return;
+    if ((*g_jvm)->GetEnv(g_jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {
+        if ((*g_jvm)->AttachCurrentThreadAsDaemon(g_jvm, &env, NULL) != JNI_OK) return;
+        attached = 1;
+    }
+    jstring js = (*env)->NewStringUTF(env, state);
+    if (js) (*env)->CallStaticVoidMethod(env, cls, mid, js);
+    if (js) (*env)->DeleteLocalRef(env, js);
     if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
     if (attached) (*g_jvm)->DetachCurrentThread(g_jvm);
 }
@@ -830,6 +852,7 @@ n_start(JNIEnv *env, jclass clazz, jint port, jobject svc, jstring iid) {
     }
     lk(&g_m); g.mt = thr; ul(&g_m);
     pl("I", "nativeStart lanzado");
+    ps("running");
     return 0;
 }
 
@@ -856,6 +879,7 @@ n_stop(JNIEnv *env, jclass clazz) {
 
     si_close_all(-1); ht_close_all(-1);
     lk(&g_wq_mu); wq_flush_locked(); ul(&g_wq_mu);
+    ps("stopped");
     if (th) pthread_join(th, NULL);
 }
 
@@ -881,16 +905,37 @@ n_set_callback(JNIEnv *env, jclass clazz, jclass cb_cls, jstring method_name) {
 }
 
 JNIEXPORT void JNICALL
+n_set_state_callback(JNIEnv *env, jclass clazz, jclass cb_cls, jstring method_name) {
+    (void)clazz;
+    lk(&g_st_mu);
+    if (g_st_cls) { (*env)->DeleteGlobalRef(env, g_st_cls); g_st_cls = NULL; }
+    g_st_mid = NULL;
+    if (cb_cls && method_name) {
+        const char *mn = (*env)->GetStringUTFChars(env, method_name, NULL);
+        if (mn) {
+            jmethodID mid = (*env)->GetStaticMethodID(env, cb_cls, mn, "(Ljava/lang/String;)V");
+            if (mid) {
+                g_st_cls = (*env)->NewGlobalRef(env, cb_cls);
+                g_st_mid = mid;
+            }
+            (*env)->ReleaseStringUTFChars(env, method_name, mn);
+        }
+    }
+    ul(&g_st_mu);
+}
+
+JNIEXPORT void JNICALL
 n_net(JNIEnv *e, jclass c, jlong net) {
     (void)e; (void)c;
     lk(&g_m); g.net = (net_handle_t)net; ul(&g_m);
 }
 
 static JNINativeMethod g_methods[] = {
-    { "nativeStart",       "(ILandroid/net/VpnService;Ljava/lang/String;)I", (void *)n_start       },
-    { "nativeStop",        "()V",                                             (void *)n_stop        },
-    { "nativeSetCallback", "(Ljava/lang/Class;Ljava/lang/String;)V",         (void *)n_set_callback },
-    { "nativeSetNetwork",  "(J)V",                                            (void *)n_net         },
+    { "nativeStart",          "(ILandroid/net/VpnService;Ljava/lang/String;)I", (void *)n_start          },
+    { "nativeStop",           "()V",                                             (void *)n_stop           },
+    { "nativeSetCallback",    "(Ljava/lang/Class;Ljava/lang/String;)V",         (void *)n_set_callback    },
+    { "nativeSetStateCallback","(Ljava/lang/Class;Ljava/lang/String;)V",        (void *)n_set_state_callback },
+    { "nativeSetNetwork",     "(J)V",                                            (void *)n_net          },
 };
 
 JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *r) {

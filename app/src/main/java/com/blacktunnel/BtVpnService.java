@@ -46,6 +46,7 @@ public class BtVpnService extends VpnService {
 
     private static boolean sTunnelOk = false;
     private static volatile boolean sRunning = false;
+    private static java.util.concurrent.CountDownLatch sTunnelLatch = null;
 
     private final ExecutorService ex = Executors.newSingleThreadExecutor();
 
@@ -70,12 +71,24 @@ public class BtVpnService extends VpnService {
     }
 
     public static void onLog(String level, String message) {
-        log(level + " " + message);
-        if (!sTunnelOk && message != null && message.contains("tunnel ok"))
+        String line = level + " " + message;
+        log(line);
+        if (!sTunnelOk && message != null && message.contains("tunnel ok")) {
             sTunnelOk = true;
+            if (sTunnelLatch != null) { sTunnelLatch.countDown(); sTunnelLatch = null; }
+        }
+        if (logListener != null) logListener.accept(line);
     }
 
     public static boolean tunnelOk() { return sTunnelOk; }
+
+    public static void onStateChange(String state) {
+        switch (state) {
+            case "running": sRunning = true; break;
+            case "stopped": sRunning = false; break;
+        }
+        if (stateListener != null) stateListener.accept(state);
+    }
 
     public static String dLogs() {
         synchronized (L_MU) { return L_BUF.toString(); }
@@ -150,12 +163,11 @@ public class BtVpnService extends VpnService {
     }
 
     private boolean waitForTunnelHandshake() {
-        long deadline = System.currentTimeMillis() + HS_TO;
-        while (System.currentTimeMillis() < deadline) {
-            if (sTunnelOk) return true;
-            try { Thread.sleep(50); } catch (InterruptedException ignored) { return false; }
-        }
-        return false;
+        sTunnelLatch = new java.util.concurrent.CountDownLatch(1);
+        boolean ok = false;
+        try { ok = sTunnelLatch.await(HS_TO, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+        sTunnelLatch = null;
+        return ok;
     }
 
     private void stopAll() {
@@ -432,6 +444,9 @@ final class BtProxy {
 
     private static final boolean NATIVE_READY;
 
+    private static java.util.function.Consumer<String> logListener;
+    private static java.util.function.Consumer<String> stateListener;
+
     static {
         boolean ready = false;
         try {
@@ -439,6 +454,7 @@ final class BtProxy {
             ready = true;
             if (ready) {
                 nativeSetCallback(BtProxy.class, "onLog");
+                nativeSetStateCallback(BtProxy.class, "onStateChange");
             }
         } catch (Throwable t) {
             android.util.Log.e("BtProxy", "Failed to load btproxy", t);
@@ -457,6 +473,9 @@ final class BtProxy {
         if (!NATIVE_READY) return;
         nativeStop();
     }
+
+    static void setLogListener(java.util.function.Consumer<String> l) { logListener = l; }
+    static void setStateListener(java.util.function.Consumer<String> l) { stateListener = l; }
 
     static String gIid(Context ctx) {
         SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
@@ -489,4 +508,5 @@ final class BtProxy {
     private static native void   nativeStop();
     public  static native void   nativeSetNetwork(long networkHandle);
     private static native void   nativeSetCallback(Class clazz, String methodName);
+    private static native void   nativeSetStateCallback(Class clazz, String methodName);
 }
