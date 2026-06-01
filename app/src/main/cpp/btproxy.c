@@ -108,19 +108,6 @@ static void pl(const char *lvl, const char *fmt, ...) {
     if (attached) (*g_jvm)->DetachCurrentThread(g_jvm);
 }
 
-/* ── Global proxy state ─────────────────────────────────────────────────── */
-
-static volatile int g_r  = 0;
-static atomic_int   g_ns = 1;
-static atomic_int   g_te = 0;
-static atomic_long  g_lp = 0;
-static atomic_long  g_lpt = 0;
-static atomic_int   g_af = 0;
-
-typedef struct { int rf, tf, ef, wr, ww; pthread_t mt; char iid[160]; net_handle_t net; } proxy_state_t;
-static proxy_state_t   g   = { .rf=-1, .tf=-1, .ef=-1, .wr=-1, .ww=-1, .net=NETWORK_UNSPECIFIED };
-static pthread_mutex_t g_m = PTHREAD_MUTEX_INITIALIZER;
-
 /* ── Forward declarations ───────────────────────────────────────────────── */
 
 typedef struct sinfo_s sinfo_t;
@@ -873,7 +860,6 @@ n_stop(JNIEnv *env, jclass clazz) {
     if (th) pthread_join(th, NULL);
 }
 
-<<<<<<< HEAD
 JNIEXPORT void JNICALL
 n_set_callback(JNIEnv *env, jclass clazz, jclass cb_cls, jstring method_name) {
     (void)clazz;
@@ -895,46 +881,17 @@ n_set_callback(JNIEnv *env, jclass clazz, jclass cb_cls, jstring method_name) {
     ul(&g_cb_mu);
 }
 
-=======
->>>>>>> 6ee5c19 (Replace polling drainLogs with C→Java callback)
 JNIEXPORT void JNICALL
 n_net(JNIEnv *e, jclass c, jlong net) {
     (void)e; (void)c;
     lk(&g_m); g.net = (net_handle_t)net; ul(&g_m);
 }
 
-JNIEXPORT void JNICALL
-n_setCallback(JNIEnv *env, jclass cls, jstring methodName) {
-    if (!env || !cls || !methodName) return;
-    const char *mname = (*env)->GetStringUTFChars(env, methodName, NULL);
-    if (!mname) return;
-    if (g_jvm) {
-        JNIEnv *e = NULL;
-        (*g_jvm)->GetEnv(g_jvm, (void**)&e, JNI_VERSION_1_6);
-        if (e && g_cb_obj) (*e)->DeleteGlobalRef(e, g_cb_obj);
-    }
-    (*env)->GetJavaVM(env, &g_jvm);
-    g_cb_obj = (*env)->NewGlobalRef(env, cls);
-    g_cb_log = (*env)->GetStaticMethodID(env, cls, mname, "(Ljava/lang/String;Ljava/lang/String;)V");
-    (*env)->ReleaseStringUTFChars(env, methodName, mname);
-}
-
 static JNINativeMethod g_methods[] = {
-<<<<<<< HEAD
     { "nativeStart",       "(ILandroid/net/VpnService;Ljava/lang/String;)I", (void *)n_start       },
     { "nativeStop",        "()V",                                             (void *)n_stop        },
     { "nativeSetCallback", "(Ljava/lang/Class;Ljava/lang/String;)V",         (void *)n_set_callback },
     { "nativeSetNetwork",  "(J)V",                                            (void *)n_net         },
-=======
-    {"nativeStart",      "(ILandroid/net/VpnService;Ljava/lang/String;)I",
-                         (void *)n_start},
-    {"nativeStop",       "()V",
-                         (void *)n_stop},
-    {"nativeSetNetwork", "(J)V",
-                         (void *)n_net},
-    {"nativeSetCallback", "(Ljava/lang/String;)V",
-                         (void *)n_setCallback},
->>>>>>> 6ee5c19 (Replace polling drainLogs with C→Java callback)
 };
 
 JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *r) {
